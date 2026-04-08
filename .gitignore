@@ -1,0 +1,24 @@
+# Build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# IDE
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.env
+
+# AWF runtime data
+.awf/storage/states/
+.awf/storage/logs/
+
+# Temporary files
+*.tmp
+*.bak
+.grepai/
+.specify/
+.awf/

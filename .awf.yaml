@@ -1,0 +1,3 @@
+version: "1"
+log_level: info
+output_format: text
