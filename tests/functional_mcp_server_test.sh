@@ -61,6 +61,8 @@ TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 assert_contains "echo tool listed" "$TOOLS_LINE" '"name":"echo"'
 assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo back the input message"'
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
+assert_contains "remember_fact tool listed" "$TOOLS_LINE" '"name":"remember_fact"'
+assert_contains "define_rule tool listed" "$TOOLS_LINE" '"name":"define_rule"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -88,6 +90,48 @@ echo "Test: Graceful shutdown on STDIO close"
 printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" >/dev/null 2>&1
 EXIT_CODE=$?
 assert_exit_code "exits with code 0 on EOF" "$EXIT_CODE" 0
+
+# --- Test 6: remember_fact asserts a fact and returns success ---
+echo "Test: remember_fact tool invocation"
+REMEMBER_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}"
+RESPONSE=$(send_mcp "$REMEMBER_INPUT")
+REMEMBER_LINE=$(echo "$RESPONSE" | grep '"id":6')
+
+assert_contains "remember_fact returns success" "$REMEMBER_LINE" '"isError":false'
+assert_contains "remember_fact confirms asserted fact" "$REMEMBER_LINE" 'user_prefers(dark_mode)'
+
+# --- Test 7: remember_fact with missing fact key returns error ---
+echo "Test: remember_fact missing argument error"
+MISSING_FACT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$MISSING_FACT_INPUT")
+MISSING_FACT_LINE=$(echo "$RESPONSE" | grep '"id":7')
+
+assert_contains "missing fact key returns isError true" "$MISSING_FACT_LINE" '"isError":true'
+
+# --- Test 8: define_rule asserts a rule and returns success ---
+echo "Test: define_rule tool invocation"
+DEFINE_RULE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"mortal(X)\",\"body\":\"human(X)\"}}}"
+RESPONSE=$(send_mcp "$DEFINE_RULE_INPUT")
+DEFINE_RULE_LINE=$(echo "$RESPONSE" | grep '"id":8')
+
+assert_contains "define_rule returns success" "$DEFINE_RULE_LINE" '"isError":false'
+assert_contains "define_rule confirms asserted rule head" "$DEFINE_RULE_LINE" 'mortal(X)'
+
+# --- Test 9: define_rule with missing arguments returns error ---
+echo "Test: define_rule missing argument error"
+MISSING_RULE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$MISSING_RULE_INPUT")
+MISSING_RULE_LINE=$(echo "$RESPONSE" | grep '"id":9')
+
+assert_contains "missing rule arguments returns isError true" "$MISSING_RULE_LINE" '"isError":true'
 
 # --- Summary ---
 echo ""
