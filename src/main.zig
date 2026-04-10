@@ -23,15 +23,19 @@ pub fn main() !void {
 
 test {
     _ = echo;
+    _ = @import("prolog/engine.zig");
+}
+
+fn initTestServer() mcp.Server {
+    return mcp.Server.init(.{
+        .name = "zpm",
+        .version = "0.1.0",
+        .allocator = std.testing.allocator,
+    });
 }
 
 test "server initializes with correct name and version" {
-    const allocator = std.testing.allocator;
-    var server = mcp.Server.init(.{
-        .name = "zpm",
-        .version = "0.1.0",
-        .allocator = allocator,
-    });
+    var server = initTestServer();
     defer server.deinit();
 
     try std.testing.expectEqualStrings("zpm", server.config.name);
@@ -39,12 +43,7 @@ test "server initializes with correct name and version" {
 }
 
 test "server registers echo tool" {
-    const allocator = std.testing.allocator;
-    var server = mcp.Server.init(.{
-        .name = "zpm",
-        .version = "0.1.0",
-        .allocator = allocator,
-    });
+    var server = initTestServer();
     defer server.deinit();
 
     try server.addTool(echo.tool);
@@ -53,12 +52,7 @@ test "server registers echo tool" {
 }
 
 test "server capabilities include tools after registration" {
-    const allocator = std.testing.allocator;
-    var server = mcp.Server.init(.{
-        .name = "zpm",
-        .version = "0.1.0",
-        .allocator = allocator,
-    });
+    var server = initTestServer();
     defer server.deinit();
 
     try std.testing.expect(server.capabilities.tools == null);

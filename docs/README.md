@@ -8,6 +8,7 @@ Welcome to zpm documentation. Choose your path:
 
 ## For Developers
 
+- **[Prolog Engine Reference](reference/prolog-engine.md)** — Engine API, query syntax, and sandboxing constraints
 - **[MCP Tools Reference](reference/mcp-tools.md)** — Available tools and their JSON-RPC methods
 - **[Project Brief](project-brief.md)** — Vision, requirements, and success criteria
 - **[Architecture Decision Records](ADR/)** — Design decisions and rationale

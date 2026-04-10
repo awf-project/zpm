@@ -4,7 +4,8 @@ This guide walks you through building and running the zpm Model Context Protocol
 
 ## Prerequisites
 
-- Zig 0.15.2 or later
+- [Zig](https://ziglang.org/download/) 0.15.2 or later
+- [Rust](https://www.rust-lang.org/tools/install) stable toolchain (for scryer-prolog FFI compilation)
 - A terminal or command prompt
 
 ## 1. Build the Server
@@ -97,7 +98,9 @@ The server handles the MCP protocol handshake and tool discovery automatically.
 
 **Invalid JSON:** Check your JSON format. The MCP protocol is strict about JSON-RPC 2.0 compliance.
 
-**Missing tool error:** Only the `echo` tool is available in F001. More tools will be added in future releases.
+**Missing tool error:** Only the `echo` tool is currently available. Prolog query/assert/retract tools will be added in F003.
+
+**Rust build errors:** Ensure `cargo` is in your PATH. The first build compiles scryer-prolog from source, which takes ~60-90 seconds. Subsequent builds use the Cargo cache.
 
 ## Next Steps
 

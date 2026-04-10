@@ -7,14 +7,15 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
 - Echo tool for health-check and smoke testing
-- Zero external runtime dependencies (statically linked)
-- Sub-10ms response latency
+- Prolog inference engine with scryer-prolog C-ABI integration
+- Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
 
 ### Prerequisites
 
 - [Zig](https://ziglang.org/download/) >= 0.15.2
+- [Rust](https://www.rust-lang.org/tools/install) stable (for scryer-prolog FFI compilation)
 
 ### Build and Run
 
@@ -49,12 +50,15 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 | Command | Description |
 |---------|-------------|
-| `make build` | Build the server binary |
-| `make test` | Run unit tests (inline Zig tests) |
-| `make functional-test` | Run end-to-end MCP protocol tests |
-| `make fmt` | Format source code |
-| `make lint` | Check formatting |
+| `make build` | Build the server binary (includes Rust FFI compilation) |
+| `make check` | Run all checks (lint + test + e2e) |
 | `make clean` | Remove build artifacts |
+| `make ffi-build` | Build the Rust FFI static library only |
+| `make fmt` | Format source code |
+| `make functional-test` | Run end-to-end MCP protocol tests |
+| `make functional-test-engine` | Run end-to-end Prolog engine tests |
+| `make lint` | Check formatting |
+| `make test` | Run unit tests (inline Zig tests) |
 
 ## MCP Tools
 
@@ -69,17 +73,24 @@ src/
   main.zig          # MCP server entry point (STDIO transport)
   tools/
     echo.zig        # Echo tool handler
+  prolog/
+    engine.zig      # Prolog engine with query, assert/retract, loading
+    ffi.zig         # C-ABI extern declarations for scryer-prolog
+ffi/
+  zpm-prolog-ffi/   # Rust staticlib wrapping scryer-prolog
+    src/lib.rs
 tests/
-  functional_mcp_server_test.sh  # End-to-end protocol tests
+  functional_mcp_server_test.sh    # End-to-end MCP protocol tests
+  functional_prolog_engine_test.sh # End-to-end Prolog engine tests
 ```
 
-The project uses a flat module structure. Full hexagonal architecture (ports/adapters) is deferred until F002 when domain complexity justifies it.
+The project uses a flat module structure. Hexagonal architecture is deferred until domain complexity justifies it; see [ADR-0002](docs/ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md) for the rationale.
 
 ## Roadmap
 
 - [x] F001: MCP server creation via mcp.zig
-- [ ] F002: Prolog inference engine integration
-- [ ] F003: Fact, rule, and query tools
+- [x] F002: Prolog inference engine integration (scryer-prolog via Rust FFI)
+- [ ] F003: Fact, rule, and query tools (MCP tool wrappers around engine)
 
 ## Documentation
 
