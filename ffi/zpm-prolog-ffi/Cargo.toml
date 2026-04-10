@@ -1,0 +1,11 @@
+[package]
+name = "zpm-prolog-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+scryer-prolog = { git = "https://github.com/mthom/scryer-prolog", branch = "master" }
+serde_json = "1"

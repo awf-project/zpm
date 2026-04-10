@@ -1,10 +1,11 @@
 ## Project
 
-zpm is a Prolog inference engine for the Model Context Protocol (MCP), written in Zig. It enables deterministic logical reasoning for AI agents via STDIO JSON-RPC transport. Currently on F001 (MCP server with echo tool); F002 (Prolog engine) and F003 (fact/rule/query tools) are next.
+zpm is a Prolog inference engine for the Model Context Protocol (MCP), written in Zig. It enables deterministic logical reasoning for AI agents via STDIO JSON-RPC transport. F001 (MCP server) and F002 (Prolog engine with scryer-prolog integration) are complete; F003 (fact/rule/query tools) is next.
 
 ## Build & Run
 
-- **Zig >= 0.15.2** required; single dependency: `mcp.zig` (fetched via `build.zig.zon`)
+- **Zig >= 0.15.2** and **Rust stable** required (Rust needed for scryer-prolog FFI compilation)
+- **mcp.zig** library dependency (fetched via `build.zig.zon`); **scryer-prolog** linked as Rust staticlib
 - Binary output: `zig-out/bin/zpm`
 
 | Command | Purpose |
@@ -14,7 +15,8 @@ zpm is a Prolog inference engine for the Model Context Protocol (MCP), written i
 | `make functional-test` | End-to-end MCP protocol tests (bash) |
 | `make fmt` | Format source |
 | `make lint` | Check formatting |
-| `make clean` | Remove `zig-out/` and `.zig-cache/` |
+| `make clean` | Remove `zig-out/`, `.zig-cache/`, and Rust artifacts |
+| `make ffi-build` | Build Rust FFI staticlib only (called by `build`) |
 
 ## Architecture
 
@@ -23,6 +25,12 @@ src/
   main.zig        # Server entry point: STDIO transport, tool registration
   tools/
     echo.zig      # Tool handler + inline tests
+  prolog/
+    engine.zig    # Prolog engine: init/deinit, query, assert/retract, load
+    ffi.zig       # C-ABI extern declarations for scryer-prolog FFI
+ffi/
+  zpm-prolog-ffi/ # Rust staticlib wrapping scryer-prolog with extern "C" API
+    src/lib.rs
 tests/
   functional_mcp_server_test.sh
 docs/
@@ -33,7 +41,8 @@ docs/
 ```
 
 - Executable-only project (no library module); `src/main.zig` is the single root
-- Flat module structure; hexagonal architecture deferred until F002 domain complexity justifies it
+- Flat module structure; hexagonal architecture deferred until domain complexity justifies it (see [ADR-0002](docs/ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md))
+- Engine module (`src/prolog/engine.zig`) wraps Rust FFI staticlib (`ffi/zpm-prolog-ffi/src/lib.rs`) exposing scryer-prolog via C-ABI
 - MCP protocol version `2025-11-25`, server capabilities: tools only (`listChanged: true`)
 
 ## Architecture Rules
@@ -55,3 +64,10 @@ docs/
 - Maintain Zig version parity between `.github/workflows/ci.yaml` and local environment; version drift silently breaks CI
 - Track all file modifications (docs, build config, manifests) in task descriptions; unplanned changes obscure scope
 - Tool handlers must handle `null` args gracefully — return `ToolError.InvalidArguments`, not a crash
+- Always explicitly free HashMap entries in error paths; Zig's StringHashMap.deinit() only frees backing array, not user keys/values
+- Always generate unique temp filenames with thread ID or atomic counter, not just PID; concurrent calls with same PID cause race conditions
+- Always implement timeout enforcement with actual timers and cancellation; config validation alone does not enforce limits
+
+## Review Standards
+
+- Never mark spec requirements complete without verifying actual implementation; requirement validation must check enforcement, not just partial satisfaction

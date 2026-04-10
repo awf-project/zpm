@@ -16,6 +16,10 @@ zig-cache/
 .awf/storage/states/
 .awf/storage/logs/
 
+# Rust
+ffi/zpm-prolog-ffi/target/
+engine.o
+
 # Temporary files
 *.tmp
 *.bak
