@@ -1,95 +1,95 @@
 # zpm
 
-A Zig package manager library built with hexagonal architecture.
+A high-performance MCP (Model Context Protocol) server written in Zig, designed to bridge Large Language Models with a Prolog inference engine for deterministic logical reasoning.
 
-## Installation
+## Features
 
-### From Source
+- MCP protocol version `2025-11-25` over STDIO transport
+- Tool registration and discovery via `tools/list`
+- Echo tool for health-check and smoke testing
+- Zero external runtime dependencies (statically linked)
+- Sub-10ms response latency
 
-```bash
-git clone https://github.com/YOUR_ORG/zpm.git
-cd zpm
-zig build --summary all
-```
+## Quick Start
 
 ### Prerequisites
 
-- Zig 0.15.2+
+- [Zig](https://ziglang.org/download/) >= 0.15.2
 
-## Usage
+### Build and Run
 
-### As a Library
+```bash
+# Build the server binary
+make build
 
-Add zpm as a dependency in your `build.zig.zon`, then import it in your build:
+# Run unit tests
+make test
 
-```zig
-const zpm = b.dependency("zpm", .{
-    .target = target,
-    .optimize = optimize,
-});
-your_module.addImport("zpm", zpm.module("zpm"));
+# Run functional (end-to-end) tests
+make functional-test
 ```
 
-```zig
-const zpm = @import("zpm");
+The built binary is located at `zig-out/bin/zpm`.
 
-pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    try zpm.greet("World", stdout);
+### Connect via MCP Client
+
+Add zpm to your MCP client configuration. For example, in Claude Code's `settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "zpm": {
+      "command": "/path/to/zig-out/bin/zpm"
+    }
+  }
 }
 ```
 
-## Development
+## Commands
 
-### Build
+| Command | Description |
+|---------|-------------|
+| `make build` | Build the server binary |
+| `make test` | Run unit tests (inline Zig tests) |
+| `make functional-test` | Run end-to-end MCP protocol tests |
+| `make fmt` | Format source code |
+| `make lint` | Check formatting |
+| `make clean` | Remove build artifacts |
 
-```bash
-make build
-```
+## MCP Tools
 
-### Test
+| Tool | Description | Arguments |
+|------|-------------|-----------|
+| `echo` | Returns the provided message (health-check) | `message` (string, required) |
 
-```bash
-make test
-```
-
-### Lint
-
-```bash
-make lint
-```
-
-### Format
-
-```bash
-make fmt
-```
-
-### Clean
-
-```bash
-make clean
-```
-
-## Project Structure
+## Architecture
 
 ```
-zpm/
-├── src/
-│   ├── domain/            # Business logic (no external deps)
-│   ├── application/       # Use cases, services
-│   ├── infrastructure/    # Adapters (I/O, network)
-│   ├── interfaces/        # CLI entry point, config parsing
-│   ├── domain.zig         # Domain barrel export
-│   ├── application.zig    # Application barrel export
-│   ├── infrastructure.zig # Infrastructure barrel export
-│   ├── interfaces.zig     # Interfaces barrel export
-│   └── root.zig           # Library entry point
-├── build.zig
-├── build.zig.zon
-└── Makefile
+src/
+  main.zig          # MCP server entry point (STDIO transport)
+  tools/
+    echo.zig        # Echo tool handler
+tests/
+  functional_mcp_server_test.sh  # End-to-end protocol tests
 ```
+
+The project uses a flat module structure. Full hexagonal architecture (ports/adapters) is deferred until F002 when domain complexity justifies it.
+
+## Roadmap
+
+- [x] F001: MCP server creation via mcp.zig
+- [ ] F002: Prolog inference engine integration
+- [ ] F003: Fact, rule, and query tools
+
+## Documentation
+
+See the [`docs/`](docs/) directory:
+
+- [Project Brief](docs/project-brief.md) -- Vision and objectives
+- [Getting Started](docs/getting-started/) -- Build, install, and first steps
+- [Reference](docs/reference/) -- MCP tools and protocol details
+- [ADR](docs/ADR/) -- Architecture Decision Records
 
 ## License
 
-EUPL v1.2 - see [LICENSE](LICENSE) for details.
+See [LICENSE](LICENSE).

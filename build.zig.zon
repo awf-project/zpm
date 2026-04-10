@@ -3,7 +3,12 @@
     .name = .zpm,
     .version = "0.1.0",
     .minimum_zig_version = "0.15.2",
-    .dependencies = .{},
+    .dependencies = .{
+        .mcp = .{
+            .url = "git+https://github.com/muhammad-fiaz/mcp.zig.git#fdcf351801901424feedf5da33428c370ac4ae4a",
+            .hash = "mcp-0.0.3-cIUFgzd2AwCQe32r6I7vkQKkhQvlDEd75sKWNLk6vVtG",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
