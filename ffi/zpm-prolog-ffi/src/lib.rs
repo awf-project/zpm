@@ -113,7 +113,11 @@ pub extern "C" fn prolog_assert(handle: *mut std::ffi::c_void, clause: *const c_
     };
 
     let machine = unsafe { &mut *(handle as *mut scryer_prolog::Machine) };
-    let query = format!("assertz({clause_str}).");
+    let query = if clause_str.contains(":-") {
+        format!("assertz(({clause_str})).")
+    } else {
+        format!("assertz({clause_str}).")
+    };
 
     with_suppressed_panics(AssertUnwindSafe(|| {
         if let Some(answer) = machine.run_query(&query).next() {
