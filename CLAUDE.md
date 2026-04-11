@@ -67,6 +67,7 @@ docs/
 - Always explicitly free HashMap entries in error paths; Zig's StringHashMap.deinit() only frees backing array, not user keys/values
 - Always generate unique temp filenames with thread ID or atomic counter, not just PID; concurrent calls with same PID cause race conditions
 - Always implement timeout enforcement with actual timers and cancellation; config validation alone does not enforce limits
+- Always test resource unavailability in tool handlers; verify ExecutionFailed is returned when critical dependencies (engine, memory allocations) are null
 
 ## Review Standards
 

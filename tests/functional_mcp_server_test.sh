@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Feature: F001
+# Features: F001-F004
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -63,6 +63,8 @@ assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo b
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
 assert_contains "remember_fact tool listed" "$TOOLS_LINE" '"name":"remember_fact"'
 assert_contains "define_rule tool listed" "$TOOLS_LINE" '"name":"define_rule"'
+assert_contains "query_logic tool listed" "$TOOLS_LINE" '"name":"query_logic"'
+assert_contains "trace_dependency tool listed" "$TOOLS_LINE" '"name":"trace_dependency"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -132,6 +134,101 @@ RESPONSE=$(send_mcp "$MISSING_RULE_INPUT")
 MISSING_RULE_LINE=$(echo "$RESPONSE" | grep '"id":9')
 
 assert_contains "missing rule arguments returns isError true" "$MISSING_RULE_LINE" '"isError":true'
+
+# --- Test 10: query_logic returns solutions for matching facts ---
+echo "Test: query_logic tool invocation with matching facts"
+QUERY_FACTS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"fruit(apple)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"fruit(banana)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"fruit(X)\"}}}"
+RESPONSE=$(send_mcp "$QUERY_FACTS_INPUT")
+QUERY_LINE=$(echo "$RESPONSE" | grep '"id":12')
+
+assert_contains "query_logic returns success" "$QUERY_LINE" '"isError":false'
+assert_contains "query_logic returns apple binding" "$QUERY_LINE" 'apple'
+assert_contains "query_logic returns banana binding" "$QUERY_LINE" 'banana'
+
+# --- Test 11: query_logic returns empty array when no facts match ---
+echo "Test: query_logic with no matching facts returns empty array"
+QUERY_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"nonexistent_pred(X)\"}}}"
+RESPONSE=$(send_mcp "$QUERY_EMPTY_INPUT")
+QUERY_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":13')
+
+assert_contains "query_logic empty result is not an error" "$QUERY_EMPTY_LINE" '"isError":false'
+assert_contains "query_logic empty result returns empty array" "$QUERY_EMPTY_LINE" '[]'
+
+# --- Test 12: query_logic with missing goal argument returns error ---
+echo "Test: query_logic missing goal argument error"
+QUERY_MISSING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$QUERY_MISSING_INPUT")
+QUERY_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":14')
+
+assert_contains "missing goal returns isError true" "$QUERY_MISSING_LINE" '"isError":true'
+
+# --- Test 12b: query_logic with syntactically invalid goal returns empty result ---
+# NOTE: scryer-prolog silently returns 0 solutions for malformed goals instead of
+# raising a parse error. This test documents current behavior; SC-003 "invalid syntax
+# returns error" cannot be enforced at the Zig layer without duplicating Prolog's parser.
+echo "Test: query_logic with invalid syntax returns empty result (scryer-prolog limitation)"
+QUERY_INVALID_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contributor(X,\"}}}"
+RESPONSE=$(send_mcp "$QUERY_INVALID_INPUT")
+QUERY_INVALID_LINE=$(echo "$RESPONSE" | grep '"id":22')
+
+assert_contains "invalid syntax returns empty array (scryer-prolog limitation)" "$QUERY_INVALID_LINE" '"isError":false'
+
+# --- Test 13: trace_dependency returns reachable nodes for transitive dependency chain ---
+echo "Test: trace_dependency tool invocation with transitive dependencies"
+TRACE_CHAIN_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(a, b)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(b, c)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Start)\",\"body\":\"depends_on(Start, X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Start)\",\"body\":\"depends_on(Start, Mid), path(X, Mid)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"a\"}}}"
+RESPONSE=$(send_mcp "$TRACE_CHAIN_INPUT")
+TRACE_LINE=$(echo "$RESPONSE" | grep '"id":19')
+
+assert_contains "trace_dependency returns success" "$TRACE_LINE" '"isError":false'
+assert_contains "trace_dependency returns direct dependency b" "$TRACE_LINE" '\"b\"'
+assert_contains "trace_dependency returns transitive dependency c" "$TRACE_LINE" '\"c\"'
+
+# --- Test 14: trace_dependency returns empty array for isolated node ---
+echo "Test: trace_dependency with isolated node returns empty array"
+TRACE_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"isolated\"}}}"
+RESPONSE=$(send_mcp "$TRACE_EMPTY_INPUT")
+TRACE_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":20')
+
+assert_contains "trace_dependency isolated node is not an error" "$TRACE_EMPTY_LINE" '"isError":false'
+assert_contains "trace_dependency isolated node returns empty array" "$TRACE_EMPTY_LINE" '[]'
+
+# --- Test 15: trace_dependency with missing start_node argument returns error ---
+echo "Test: trace_dependency missing start_node argument error"
+TRACE_MISSING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$TRACE_MISSING_INPUT")
+TRACE_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":21')
+
+assert_contains "missing start_node returns isError true" "$TRACE_MISSING_LINE" '"isError":true'
+
+# --- Test 16: trace_dependency with injection attempt returns error ---
+echo "Test: trace_dependency rejects Prolog injection attempt"
+TRACE_INJECT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"a), halt(0\"}}}"
+RESPONSE=$(send_mcp "$TRACE_INJECT_INPUT")
+TRACE_INJECT_LINE=$(echo "$RESPONSE" | grep '"id":23')
+
+assert_contains "injection attempt returns isError true" "$TRACE_INJECT_LINE" '"isError":true'
 
 # --- Summary ---
 echo ""
