@@ -491,11 +491,207 @@ If the `start_node` argument is missing, null, or empty:
 }
 ```
 
+## Verify Consistency Tool
+
+**Name:** `verify_consistency`
+
+**Description:** Check the knowledge base for integrity violations by querying `integrity_violation/N` predicates. Returns all detected contradictions or constraint breaches with their variable bindings.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "verify_consistency",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "scope": {
+      "type": "string",
+      "description": "Optional domain scope to filter integrity checks (e.g. \"deployment\")"
+    }
+  },
+  "required": []
+}
+```
+
+### Response (Success with Violations)
+
+Requires `integrity_violation/1` rules defined via `define_rule`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"violations\":[\"deploy_v3\"]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success with No Violations)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"violations\":[]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the Prolog engine is unavailable:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ExecutionFailed",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+## Explain Why Tool
+
+**Name:** `explain_why`
+
+**Description:** Trace the proof tree for a given fact and return a structured JSON explanation of how it was derived. Uses recursive `clause/2` querying to reconstruct the deduction chain.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "tools/call",
+  "params": {
+    "name": "explain_why",
+    "arguments": {
+      "fact": "risky(deploy_v3)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "fact": {
+      "type": "string",
+      "description": "The Prolog term to explain (e.g. \"risky(deploy_v3)\")"
+    },
+    "max_depth": {
+      "type": "integer",
+      "description": "Optional maximum proof tree depth (truncates deeper levels)"
+    }
+  },
+  "required": ["fact"]
+}
+```
+
+### Response (Success — Fact Proven)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"fact\":\"risky(deploy_v3)\",\"proven\":true,\"proof_tree\":{\"goal\":\"risky(deploy_v3)\",\"rule_applied\":\"risky(X) :- untested(X), in_production(X)\",\"children\":[{\"goal\":\"untested(deploy_v3)\",\"rule_applied\":\"fact\",\"children\":[]},{\"goal\":\"in_production(deploy_v3)\",\"rule_applied\":\"fact\",\"children\":[]}]}}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success — Fact Not Proven)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"fact\":\"risky(deploy_v3)\",\"proven\":false,\"proof_tree\":null}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `fact` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
 ## Future Tools
 
 The following tools are planned for future releases:
 
-- **retract** — Remove facts from the knowledge base
-- **explain** — Generate proof explanations for queries
+- **forget_fact** — Remove facts from the knowledge base
+- **clear_context** — Clear all facts from the knowledge base
 
 See [Roadmap](../../README.md#roadmap) for details.
