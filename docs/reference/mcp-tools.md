@@ -297,11 +297,204 @@ If the rule has invalid Prolog syntax (e.g. unbalanced parentheses):
 }
 ```
 
+## Query Logic Tool
+
+**Name:** `query_logic`
+
+**Description:** Execute a Prolog goal and return all variable bindings as JSON. Evaluates a deterministic Prolog query against the knowledge base and returns all solutions with their variable bindings.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "query_logic",
+    "arguments": {
+      "goal": "fruit(X)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "A Prolog goal to query (e.g. \"fruit(X)\", \"parent(john, Y)\")"
+    }
+  },
+  "required": ["goal"]
+}
+```
+
+### Response (Success with Results)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[{\"X\":\"apple\"},{\"X\":\"banana\"}]"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success with No Results)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[]"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `goal` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+## Trace Dependency Tool
+
+**Name:** `trace_dependency`
+
+**Description:** Trace transitive dependencies from a start node using `path/2` rules. Queries the knowledge base for all nodes reachable from a given start node through dependency chains, useful for exploring graph-like structures in logical knowledge bases.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "tools/call",
+  "params": {
+    "name": "trace_dependency",
+    "arguments": {
+      "start_node": "a"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "start_node": {
+      "type": "string",
+      "description": "The starting node to trace dependencies from (e.g. \"a\", \"module_a\")"
+    }
+  },
+  "required": ["start_node"]
+}
+```
+
+### Response (Success with Dependencies)
+
+Requires `path/2` rule defined in the knowledge base (typically via `define_rule`):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[\"b\",\"c\"]"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success with No Dependencies)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[]"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `start_node` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
 ## Future Tools
 
 The following tools are planned for future releases:
 
-- **query** — Evaluate deterministic Prolog queries
 - **retract** — Remove facts from the knowledge base
 - **explain** — Generate proof explanations for queries
 

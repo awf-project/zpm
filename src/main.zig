@@ -4,6 +4,8 @@ const echo = @import("tools/echo.zig");
 const remember_fact = @import("tools/remember_fact.zig");
 const define_rule = @import("tools/define_rule.zig");
 const context = @import("tools/context.zig");
+const query_logic = @import("tools/query_logic.zig");
+const trace_dependency = @import("tools/trace_dependency.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub fn main() !void {
@@ -27,15 +29,19 @@ pub fn main() !void {
     try server.addTool(echo.tool);
     try server.addTool(remember_fact.tool);
     try server.addTool(define_rule.tool);
+    try server.addTool(query_logic.tool);
+    try server.addTool(trace_dependency.tool);
 
     try server.run(.stdio);
 }
 
 test {
     _ = echo;
-    _ = @import("tools/context.zig");
-    _ = @import("tools/remember_fact.zig");
-    _ = @import("tools/define_rule.zig");
+    _ = context;
+    _ = remember_fact;
+    _ = define_rule;
+    _ = query_logic;
+    _ = trace_dependency;
     _ = @import("prolog/engine.zig");
 }
 
@@ -64,23 +70,15 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers both echo and remember_fact tools" {
-    var server = initTestServer();
-    defer server.deinit();
-
-    try server.addTool(echo.tool);
-    try server.addTool(remember_fact.tool);
-
-    try std.testing.expectEqual(@as(usize, 2), server.tools.count());
-}
-
-test "server registers all three tools" {
+test "server registers all five tools" {
     var server = initTestServer();
     defer server.deinit();
 
     try server.addTool(echo.tool);
     try server.addTool(remember_fact.tool);
     try server.addTool(define_rule.tool);
+    try server.addTool(query_logic.tool);
+    try server.addTool(trace_dependency.tool);
 
-    try std.testing.expectEqual(@as(usize, 3), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 5), server.tools.count());
 }

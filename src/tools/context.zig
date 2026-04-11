@@ -7,6 +7,10 @@ pub fn setEngine(e: *Engine) void {
     engine = e;
 }
 
+pub fn clearEngine() void {
+    engine = null;
+}
+
 pub fn getEngine() ?*Engine {
     return engine;
 }
