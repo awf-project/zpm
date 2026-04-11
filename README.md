@@ -10,6 +10,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Prolog inference engine with scryer-prolog C-ABI integration
 - Knowledge management tools: assert facts and define rules via MCP
 - Exploration tools: query Prolog goals and trace transitive dependencies via MCP
+- Supervision tools: verify knowledge base consistency and explain proof chains via MCP
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -68,9 +69,11 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 |------|-------------|-----------|
 | `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
+| `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional) |
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
 | `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required) |
+| `verify_consistency` | Check knowledge base for integrity violations | `scope` (string, optional) |
 
 ## Architecture
 
@@ -78,12 +81,14 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 src/
   main.zig          # MCP server entry point (STDIO transport)
   tools/
-    context.zig        # Engine singleton for tool handlers
-    define_rule.zig    # Define rule tool handler
-    echo.zig           # Echo tool handler
-    query_logic.zig    # Query logic tool handler
-    remember_fact.zig  # Remember fact tool handler
-    trace_dependency.zig # Trace dependency tool handler
+    context.zig            # Engine singleton for tool handlers
+    define_rule.zig        # Define rule tool handler
+    echo.zig               # Echo tool handler
+    explain_why.zig        # Proof tree explanation tool handler
+    query_logic.zig        # Query logic tool handler
+    remember_fact.zig      # Remember fact tool handler
+    trace_dependency.zig   # Trace dependency tool handler
+    verify_consistency.zig # Knowledge base consistency checker
   prolog/
     engine.zig      # Prolog engine with query, assert/retract, loading
     ffi.zig         # C-ABI extern declarations for scryer-prolog
@@ -103,6 +108,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F002: Prolog inference engine integration (scryer-prolog via Rust FFI)
 - [x] F003: Knowledge management tools — write (remember_fact, define_rule)
 - [x] F004: Knowledge management tools — read (query_logic, trace_dependency)
+- [x] F005: Supervision and quality tools (verify_consistency, explain_why)
 
 ## Documentation
 

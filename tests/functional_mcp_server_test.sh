@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F004
+# Features: F001-F005
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -65,6 +65,8 @@ assert_contains "remember_fact tool listed" "$TOOLS_LINE" '"name":"remember_fact
 assert_contains "define_rule tool listed" "$TOOLS_LINE" '"name":"define_rule"'
 assert_contains "query_logic tool listed" "$TOOLS_LINE" '"name":"query_logic"'
 assert_contains "trace_dependency tool listed" "$TOOLS_LINE" '"name":"trace_dependency"'
+assert_contains "verify_consistency tool listed" "$TOOLS_LINE" '"name":"verify_consistency"'
+assert_contains "explain_why tool listed" "$TOOLS_LINE" '"name":"explain_why"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -229,6 +231,78 @@ RESPONSE=$(send_mcp "$TRACE_INJECT_INPUT")
 TRACE_INJECT_LINE=$(echo "$RESPONSE" | grep '"id":23')
 
 assert_contains "injection attempt returns isError true" "$TRACE_INJECT_LINE" '"isError":true'
+
+# --- Test 17: verify_consistency returns no violations for empty knowledge base ---
+echo "Test: verify_consistency with empty knowledge base"
+VERIFY_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$VERIFY_EMPTY_INPUT")
+VERIFY_LINE=$(echo "$RESPONSE" | grep '"id":24')
+
+assert_contains "verify_consistency is not an error" "$VERIFY_LINE" '"isError":false'
+assert_contains "verify_consistency returns empty violations array" "$VERIFY_LINE" '\"violations\":[]'
+
+# --- Test 18: verify_consistency detects integrity violation ---
+echo "Test: verify_consistency with integrity_violation rule fires"
+VERIFY_VIOLATION_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"integrity_violation(X)\",\"body\":\"risky(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$VERIFY_VIOLATION_INPUT")
+VERIFY_VIOLATION_LINE=$(echo "$RESPONSE" | grep '"id":27')
+
+assert_contains "verify_consistency with violation is not an error" "$VERIFY_VIOLATION_LINE" '"isError":false'
+assert_contains "verify_consistency returns deploy_v3 as violation" "$VERIFY_VIOLATION_LINE" 'deploy_v3'
+
+# --- Test 19: explain_why returns proof tree for asserted fact ---
+echo "Test: explain_why with provable fact"
+EXPLAIN_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}"
+RESPONSE=$(send_mcp "$EXPLAIN_INPUT")
+EXPLAIN_LINE=$(echo "$RESPONSE" | grep '"id":29')
+
+assert_contains "explain_why is not an error" "$EXPLAIN_LINE" '"isError":false'
+assert_contains "explain_why returns proven true" "$EXPLAIN_LINE" '\"proven\":true'
+assert_contains "explain_why includes fact in proof" "$EXPLAIN_LINE" 'risky(deploy_v3)'
+
+# --- Test 20: explain_why returns proven false for unprovable fact ---
+echo "Test: explain_why with unprovable fact"
+EXPLAIN_UNPROVABLE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"unknown_fact(x)\"}}}"
+RESPONSE=$(send_mcp "$EXPLAIN_UNPROVABLE_INPUT")
+EXPLAIN_UNPROVABLE_LINE=$(echo "$RESPONSE" | grep '"id":30')
+
+assert_contains "explain_why unprovable is not an error" "$EXPLAIN_UNPROVABLE_LINE" '"isError":false'
+assert_contains "explain_why returns proven false" "$EXPLAIN_UNPROVABLE_LINE" '\"proven\":false'
+
+# --- Test 21: explain_why with missing fact argument returns error ---
+echo "Test: explain_why missing fact argument error"
+EXPLAIN_MISSING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$EXPLAIN_MISSING_INPUT")
+EXPLAIN_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":31')
+
+assert_contains "missing fact argument returns isError true" "$EXPLAIN_MISSING_LINE" '"isError":true'
+
+# --- Test 22: explain_why returns proof tree for rule-derived fact ---
+echo "Test: explain_why with rule-derived fact returns proof tree"
+EXPLAIN_RULE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"ancestor(X, Y)\",\"body\":\"parent(X, Y)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":34,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"ancestor(alice, bob)\"}}}"
+RESPONSE=$(send_mcp "$EXPLAIN_RULE_INPUT")
+EXPLAIN_RULE_LINE=$(echo "$RESPONSE" | grep '"id":34')
+
+assert_contains "explain_why rule-derived is not an error" "$EXPLAIN_RULE_LINE" '"isError":false'
+assert_contains "explain_why rule-derived returns proven true" "$EXPLAIN_RULE_LINE" '\"proven\":true'
+assert_contains "explain_why rule-derived has non-empty children" "$EXPLAIN_RULE_LINE" '\"children\":[{'
 
 # --- Summary ---
 echo ""

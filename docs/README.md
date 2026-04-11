@@ -6,6 +6,10 @@ Welcome to zpm documentation. Choose your path:
 
 - **[Getting Started with MCP Server](getting-started/mcp-server.md)** — Set up and run the zpm MCP server in 5 minutes
 
+## For Users
+
+- **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains
+
 ## For Developers
 
 - **[Prolog Engine Reference](reference/prolog-engine.md)** — Engine API, query syntax, and sandboxing constraints

@@ -6,6 +6,8 @@ const define_rule = @import("tools/define_rule.zig");
 const context = @import("tools/context.zig");
 const query_logic = @import("tools/query_logic.zig");
 const trace_dependency = @import("tools/trace_dependency.zig");
+const verify_consistency = @import("tools/verify_consistency.zig");
+const explain_why = @import("tools/explain_why.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub fn main() !void {
@@ -31,6 +33,8 @@ pub fn main() !void {
     try server.addTool(define_rule.tool);
     try server.addTool(query_logic.tool);
     try server.addTool(trace_dependency.tool);
+    try server.addTool(verify_consistency.tool);
+    try server.addTool(explain_why.tool);
 
     try server.run(.stdio);
 }
@@ -42,6 +46,8 @@ test {
     _ = define_rule;
     _ = query_logic;
     _ = trace_dependency;
+    _ = verify_consistency;
+    _ = explain_why;
     _ = @import("prolog/engine.zig");
 }
 
@@ -70,7 +76,7 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers all five tools" {
+test "server registers all six tools" {
     var server = initTestServer();
     defer server.deinit();
 
@@ -79,6 +85,8 @@ test "server registers all five tools" {
     try server.addTool(define_rule.tool);
     try server.addTool(query_logic.tool);
     try server.addTool(trace_dependency.tool);
+    try server.addTool(verify_consistency.tool);
+    try server.addTool(explain_why.tool);
 
-    try std.testing.expectEqual(@as(usize, 5), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 7), server.tools.count());
 }

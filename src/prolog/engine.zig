@@ -167,6 +167,25 @@ fn jsonValueToTerm(allocator: std.mem.Allocator, value: std.json.Value) !Term {
             }
             break :blk Term{ .list = items };
         },
+        .object => |o| blk: {
+            const functor_val = o.get("functor") orelse break :blk Term{ .atom = try allocator.dupe(u8, "null") };
+            const args_val = o.get("args") orelse break :blk Term{ .atom = try allocator.dupe(u8, "null") };
+            const functor = switch (functor_val) {
+                .string => |s| try allocator.dupe(u8, s),
+                else => break :blk Term{ .atom = try allocator.dupe(u8, "null") },
+            };
+            errdefer allocator.free(functor);
+            const args_arr = switch (args_val) {
+                .array => |a| a,
+                else => break :blk Term{ .atom = try allocator.dupe(u8, "null") },
+            };
+            const args = try allocator.alloc(Term, args_arr.items.len);
+            errdefer allocator.free(args);
+            for (args_arr.items, 0..) |item, idx| {
+                args[idx] = try jsonValueToTerm(allocator, item);
+            }
+            break :blk Term{ .compound = .{ .functor = functor, .args = args } };
+        },
         else => Term{ .atom = try allocator.dupe(u8, "null") },
     };
 }
