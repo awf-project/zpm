@@ -11,6 +11,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Knowledge management tools: assert facts and define rules via MCP
 - Exploration tools: query Prolog goals and trace transitive dependencies via MCP
 - Supervision tools: verify knowledge base consistency and explain proof chains via MCP
+- Knowledge schema discovery: introspect predicates and their types via MCP
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -70,6 +71,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
 | `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional) |
+| `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | (no required arguments) |
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
 | `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required) |
@@ -85,6 +87,7 @@ src/
     define_rule.zig        # Define rule tool handler
     echo.zig               # Echo tool handler
     explain_why.zig        # Proof tree explanation tool handler
+    get_knowledge_schema.zig # Knowledge schema introspection tool handler
     query_logic.zig        # Query logic tool handler
     remember_fact.zig      # Remember fact tool handler
     trace_dependency.zig   # Trace dependency tool handler
@@ -109,6 +112,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F003: Knowledge management tools — write (remember_fact, define_rule)
 - [x] F004: Knowledge management tools — read (query_logic, trace_dependency)
 - [x] F005: Supervision and quality tools (verify_consistency, explain_why)
+- [x] F006: Knowledge schema discovery (get_knowledge_schema)
 
 ## Documentation
 

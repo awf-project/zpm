@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F005
+# Features: F001-F006
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -67,6 +67,7 @@ assert_contains "query_logic tool listed" "$TOOLS_LINE" '"name":"query_logic"'
 assert_contains "trace_dependency tool listed" "$TOOLS_LINE" '"name":"trace_dependency"'
 assert_contains "verify_consistency tool listed" "$TOOLS_LINE" '"name":"verify_consistency"'
 assert_contains "explain_why tool listed" "$TOOLS_LINE" '"name":"explain_why"'
+assert_contains "get_knowledge_schema tool listed" "$TOOLS_LINE" '"name":"get_knowledge_schema"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -303,6 +304,49 @@ EXPLAIN_RULE_LINE=$(echo "$RESPONSE" | grep '"id":34')
 assert_contains "explain_why rule-derived is not an error" "$EXPLAIN_RULE_LINE" '"isError":false'
 assert_contains "explain_why rule-derived returns proven true" "$EXPLAIN_RULE_LINE" '\"proven\":true'
 assert_contains "explain_why rule-derived has non-empty children" "$EXPLAIN_RULE_LINE" '\"children\":[{'
+
+# --- Test 23: get_knowledge_schema returns empty list for empty knowledge base ---
+echo "Test: get_knowledge_schema with empty knowledge base"
+SCHEMA_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":35,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$SCHEMA_EMPTY_INPUT")
+SCHEMA_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":35')
+
+assert_contains "get_knowledge_schema empty KB is not an error" "$SCHEMA_EMPTY_LINE" '"isError":false'
+assert_contains "get_knowledge_schema empty KB returns empty predicates" "$SCHEMA_EMPTY_LINE" '\"predicates\":[]'
+assert_contains "get_knowledge_schema empty KB returns total 0" "$SCHEMA_EMPTY_LINE" '\"total\":0'
+
+# --- Test 24: get_knowledge_schema returns predicates after asserting facts ---
+echo "Test: get_knowledge_schema returns asserted predicates with name and arity"
+SCHEMA_FACTS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":36,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":37,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(a, b)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":38,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp "$SCHEMA_FACTS_INPUT")
+SCHEMA_FACTS_LINE=$(echo "$RESPONSE" | grep '"id":38')
+
+assert_contains "get_knowledge_schema populated KB is not an error" "$SCHEMA_FACTS_LINE" '"isError":false'
+assert_contains "get_knowledge_schema returns user_prefers predicate" "$SCHEMA_FACTS_LINE" '\"name\":\"user_prefers\"'
+assert_contains "get_knowledge_schema returns arity 1 for user_prefers" "$SCHEMA_FACTS_LINE" '\"arity\":1'
+assert_contains "get_knowledge_schema returns depends_on predicate" "$SCHEMA_FACTS_LINE" '\"name\":\"depends_on\"'
+assert_contains "get_knowledge_schema returns arity 2 for depends_on" "$SCHEMA_FACTS_LINE" '\"arity\":2'
+assert_contains "get_knowledge_schema returns total 2" "$SCHEMA_FACTS_LINE" '\"total\":2'
+
+# --- Test 25: get_knowledge_schema shows type:both for mixed fact+rule predicate ---
+echo "Test: get_knowledge_schema classifies mixed fact+rule predicate as type both"
+SCHEMA_BOTH_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(a, b)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Z)\",\"body\":\"path(X, Y), path(Y, Z)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$SCHEMA_BOTH_INPUT")
+SCHEMA_BOTH_LINE=$(echo "$RESPONSE" | grep '"id":41')
+
+assert_contains "get_knowledge_schema both is not an error" "$SCHEMA_BOTH_LINE" '"isError":false'
+assert_contains "get_knowledge_schema classifies path/2 as both" "$SCHEMA_BOTH_LINE" '\"type\":\"both\"'
 
 # --- Summary ---
 echo ""

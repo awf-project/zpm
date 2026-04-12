@@ -687,6 +687,108 @@ If the `fact` argument is missing, null, or empty:
 }
 ```
 
+## Get Knowledge Schema Tool
+
+**Name:** `get_knowledge_schema`
+
+**Description:** Introspect the knowledge base to discover all user-defined predicates, their arities, and whether they are facts, rules, or both. Returns structural metadata only — no predicate content is exposed.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "tools/call",
+  "params": {
+    "name": "get_knowledge_schema",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+No arguments are required. The tool accepts empty or null arguments.
+
+### Response (Success with Predicates)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"predicates\":[{\"name\":\"user_prefers\",\"arity\":1,\"type\":\"fact\",\"count\":2},{\"name\":\"depends_on\",\"arity\":2,\"type\":\"fact\",\"count\":3},{\"name\":\"path\",\"arity\":2,\"type\":\"both\",\"count\":4}],\"total\":3}"
+      }
+    ]
+  }
+}
+```
+
+Each predicate entry includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Predicate functor name |
+| `arity` | integer | Number of arguments |
+| `type` | string | `"fact"`, `"rule"`, or `"both"` |
+| `count` | integer | Total number of clauses |
+
+The root-level `total` field indicates the number of user-defined predicates.
+
+### Response (Empty Knowledge Base)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"predicates\":[],\"total\":0}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the Prolog engine is not initialized:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ExecutionFailed",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
 ## Future Tools
 
 The following tools are planned for future releases:
