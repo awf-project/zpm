@@ -789,11 +789,201 @@ If the Prolog engine is not initialized:
 }
 ```
 
-## Future Tools
+## Forget Fact Tool
 
-The following tools are planned for future releases:
+**Name:** `forget_fact`
 
-- **forget_fact** — Remove facts from the knowledge base
-- **clear_context** — Clear all facts from the knowledge base
+**Description:** Remove a single fact from the knowledge base by retracting the first matching clause. Uses Prolog's `retract/1` semantics — when multiple identical facts exist, only one is removed per call.
 
-See [Roadmap](../../README.md#roadmap) for details.
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "tools/call",
+  "params": {
+    "name": "forget_fact",
+    "arguments": {
+      "fact": "human(socrates)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "fact": {
+      "type": "string",
+      "description": "A Prolog fact to retract (e.g. \"human(socrates)\")"
+    }
+  },
+  "required": ["fact"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Retracted: human(socrates)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Fact Not Found)
+
+If the fact does not exist in the knowledge base:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "No matching clause found for: human(socrates)",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If the `fact` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Clear Context Tool
+
+**Name:** `clear_context`
+
+**Description:** Remove all facts from the knowledge base matching a given category or pattern. Uses Prolog's `retractall/1` semantics — clears all clauses matching the pattern in a single operation. The tool always succeeds, even when no matching facts exist (idempotent behavior).
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "tools/call",
+  "params": {
+    "name": "clear_context",
+    "arguments": {
+      "category": "project(beta, _)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "description": "A Prolog pattern to match facts for bulk deletion (e.g. \"project(beta, _)\", \"role(_, _)\")"
+    }
+  },
+  "required": ["category"]
+}
+```
+
+### Response (Success - Matched Facts)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cleared all facts matching: project(beta, _)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success - No Matches)
+
+When no facts match the pattern (idempotent — still returns success):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cleared all facts matching: nonexistent(_, _)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If the `category` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
