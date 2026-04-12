@@ -8,6 +8,7 @@ const query_logic = @import("tools/query_logic.zig");
 const trace_dependency = @import("tools/trace_dependency.zig");
 const verify_consistency = @import("tools/verify_consistency.zig");
 const explain_why = @import("tools/explain_why.zig");
+const get_knowledge_schema = @import("tools/get_knowledge_schema.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub fn main() !void {
@@ -35,6 +36,7 @@ pub fn main() !void {
     try server.addTool(trace_dependency.tool);
     try server.addTool(verify_consistency.tool);
     try server.addTool(explain_why.tool);
+    try server.addTool(get_knowledge_schema.tool);
 
     try server.run(.stdio);
 }
@@ -48,6 +50,7 @@ test {
     _ = trace_dependency;
     _ = verify_consistency;
     _ = explain_why;
+    _ = get_knowledge_schema;
     _ = @import("prolog/engine.zig");
 }
 
@@ -76,7 +79,7 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers all six tools" {
+test "server registers all eight tools" {
     var server = initTestServer();
     defer server.deinit();
 
@@ -87,6 +90,17 @@ test "server registers all six tools" {
     try server.addTool(trace_dependency.tool);
     try server.addTool(verify_consistency.tool);
     try server.addTool(explain_why.tool);
+    try server.addTool(get_knowledge_schema.tool);
 
-    try std.testing.expectEqual(@as(usize, 7), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 8), server.tools.count());
+}
+
+test "server registers get_knowledge_schema tool" {
+    var server = initTestServer();
+    defer server.deinit();
+
+    try server.addTool(get_knowledge_schema.tool);
+
+    try std.testing.expectEqual(@as(usize, 1), server.tools.count());
+    try std.testing.expect(server.tools.contains("get_knowledge_schema"));
 }

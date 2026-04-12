@@ -8,6 +8,7 @@ Welcome to zpm documentation. Choose your path:
 
 ## For Users
 
+- **[Schema Discovery](user-guide/schema-discovery.md)** — Explore predicates in the knowledge base
 - **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains
 
 ## For Developers
