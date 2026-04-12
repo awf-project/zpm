@@ -117,6 +117,13 @@ pub const Engine = struct {
         return self.retract(clause);
     }
 
+    pub fn retractAll(self: *Engine, head: []const u8) EngineError!void {
+        const stripped = stripDot(head);
+        const head_z = self.allocator.dupeZ(u8, stripped) catch return EngineError.OutOfMemory;
+        defer self.allocator.free(head_z);
+        if (ffi.prolog_retractall(self.handle, head_z) != 0) return EngineError.RetractFailed;
+    }
+
     pub fn loadFile(self: *Engine, path: []const u8) EngineError!void {
         const path_z = self.allocator.dupeZ(u8, path) catch return EngineError.OutOfMemory;
         defer self.allocator.free(path_z);
@@ -162,8 +169,14 @@ fn jsonValueToTerm(allocator: std.mem.Allocator, value: std.json.Value) !Term {
         .float => |f| Term{ .float = f },
         .array => |a| blk: {
             const items = try allocator.alloc(Term, a.items.len);
+            var items_init: usize = 0;
+            errdefer {
+                for (items[0..items_init]) |it| freeTerm(allocator, it);
+                allocator.free(items);
+            }
             for (a.items, 0..) |item, idx| {
                 items[idx] = try jsonValueToTerm(allocator, item);
+                items_init = idx + 1;
             }
             break :blk Term{ .list = items };
         },
@@ -180,9 +193,14 @@ fn jsonValueToTerm(allocator: std.mem.Allocator, value: std.json.Value) !Term {
                 else => break :blk Term{ .atom = try allocator.dupe(u8, "null") },
             };
             const args = try allocator.alloc(Term, args_arr.items.len);
-            errdefer allocator.free(args);
+            var args_init: usize = 0;
+            errdefer {
+                for (args[0..args_init]) |a| freeTerm(allocator, a);
+                allocator.free(args);
+            }
             for (args_arr.items, 0..) |item, idx| {
                 args[idx] = try jsonValueToTerm(allocator, item);
+                args_init = idx + 1;
             }
             break :blk Term{ .compound = .{ .functor = functor, .args = args } };
         },
@@ -392,4 +410,41 @@ test "Engine.query returns OutOfMemory when max_memory_bytes is too small" {
     try engine.assert("memtest(x).");
     const err = engine.query("memtest(X)");
     try testing.expectError(EngineError.OutOfMemory, err);
+}
+
+test "Engine.retractAll removes all matching facts" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.assertFact("color(red).");
+    try engine.assertFact("color(green).");
+    try engine.assertFact("color(blue).");
+
+    try engine.retractAll("color(_)");
+
+    var result = try engine.query("color(X)");
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 0), result.solutions.len);
+}
+
+test "Engine.retractAll succeeds when no facts match" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.retractAll("nonexistent(_)");
+}
+
+test "Engine.retractAll only removes matching predicate facts" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.assertFact("animal(cat).");
+    try engine.assertFact("color(red).");
+
+    try engine.retractAll("color(_)");
+
+    var result = try engine.query("animal(X)");
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 1), result.solutions.len);
+    try testing.expectEqualStrings("cat", result.solutions[0].bindings.get("X").?.atom);
 }

@@ -5,6 +5,7 @@ pub extern "C" fn prolog_deinit(handle: ?*anyopaque) void;
 pub extern "C" fn prolog_query(handle: ?*anyopaque, goal: [*:0]const u8) ?[*:0]u8;
 pub extern "C" fn prolog_assert(handle: ?*anyopaque, clause: [*:0]const u8) i32;
 pub extern "C" fn prolog_retract(handle: ?*anyopaque, clause: [*:0]const u8) i32;
+pub extern "C" fn prolog_retractall(handle: ?*anyopaque, head: [*:0]const u8) i32;
 pub extern "C" fn prolog_load_file(handle: ?*anyopaque, path: [*:0]const u8) i32;
 pub extern "C" fn prolog_load_string(handle: ?*anyopaque, source: [*:0]const u8) i32;
 pub extern "C" fn prolog_free_string(s: ?[*:0]u8) void;
@@ -43,4 +44,9 @@ test "prolog_assert succeeds and query finds asserted fact" {
 
     const json = std.mem.sliceTo(result.?, 0);
     try std.testing.expect(std.mem.indexOf(u8, json, "hello") != null);
+}
+
+test "prolog_retractall with null handle returns error code" {
+    const rc = prolog_retractall(null, "color(_)");
+    try std.testing.expectEqual(@as(i32, -1), rc);
 }

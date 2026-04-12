@@ -3,8 +3,11 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use scryer_prolog::{LeafAnswer, MachineBuilder, Term};
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn term_to_json(term: &Term) -> serde_json::Value {
     match term {
@@ -40,6 +43,35 @@ fn ensure_dot(goal: &str) -> String {
     } else {
         format!("{goal}.")
     }
+}
+
+fn run_command(
+    handle: *mut std::ffi::c_void,
+    input: *const c_char,
+    build_query: impl FnOnce(&str) -> String,
+    accept_false: bool,
+) -> i32 {
+    if handle.is_null() || input.is_null() {
+        return -1;
+    }
+    let input_str = match unsafe { CStr::from_ptr(input).to_str() } {
+        Ok(s) => s.to_owned(),
+        Err(_) => return -1,
+    };
+    let machine = unsafe { &mut *(handle as *mut scryer_prolog::Machine) };
+    let query = build_query(&input_str);
+    with_suppressed_panics(AssertUnwindSafe(|| {
+        if let Some(answer) = machine.run_query(&query).next() {
+            match answer {
+                Ok(LeafAnswer::True) | Ok(LeafAnswer::LeafAnswer { .. }) => 0,
+                Ok(LeafAnswer::False) if accept_false => 0,
+                Ok(LeafAnswer::False) | Ok(LeafAnswer::Exception(_)) | Err(_) => -1,
+            }
+        } else {
+            0
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -104,58 +136,29 @@ pub extern "C" fn prolog_query(handle: *mut std::ffi::c_void, goal: *const c_cha
 
 #[no_mangle]
 pub extern "C" fn prolog_assert(handle: *mut std::ffi::c_void, clause: *const c_char) -> i32 {
-    if handle.is_null() || clause.is_null() {
-        return -1;
-    }
-    let clause_str = match unsafe { CStr::from_ptr(clause).to_str() } {
-        Ok(s) => s.to_owned(),
-        Err(_) => return -1,
-    };
-
-    let machine = unsafe { &mut *(handle as *mut scryer_prolog::Machine) };
-    let query = if clause_str.contains(":-") {
-        format!("assertz(({clause_str})).")
-    } else {
-        format!("assertz({clause_str}).")
-    };
-
-    with_suppressed_panics(AssertUnwindSafe(|| {
-        if let Some(answer) = machine.run_query(&query).next() {
-            match answer {
-                Ok(LeafAnswer::True) | Ok(LeafAnswer::LeafAnswer { .. }) => 0,
-                Ok(LeafAnswer::False) | Ok(LeafAnswer::Exception(_)) | Err(_) => -1,
+    run_command(
+        handle,
+        clause,
+        |s| {
+            if s.contains(":-") {
+                format!("assertz(({s})).")
+            } else {
+                format!("assertz({s}).")
             }
-        } else {
-            0
-        }
-    }))
-    .unwrap_or(-1)
+        },
+        false,
+    )
 }
 
 #[no_mangle]
 pub extern "C" fn prolog_retract(handle: *mut std::ffi::c_void, clause: *const c_char) -> i32 {
-    if handle.is_null() || clause.is_null() {
-        return -1;
-    }
-    let clause_str = match unsafe { CStr::from_ptr(clause).to_str() } {
-        Ok(s) => s.to_owned(),
-        Err(_) => return -1,
-    };
+    run_command(handle, clause, |s| format!("once(retract({s}))."), false)
+}
 
-    let machine = unsafe { &mut *(handle as *mut scryer_prolog::Machine) };
-    let query = format!("retract({clause_str}).");
-
-    with_suppressed_panics(AssertUnwindSafe(|| {
-        if let Some(answer) = machine.run_query(&query).next() {
-            match answer {
-                Ok(LeafAnswer::True) | Ok(LeafAnswer::LeafAnswer { .. }) => 0,
-                Ok(LeafAnswer::False) | Ok(LeafAnswer::Exception(_)) | Err(_) => -1,
-            }
-        } else {
-            0
-        }
-    }))
-    .unwrap_or(-1)
+#[no_mangle]
+pub extern "C" fn prolog_retractall(handle: *mut std::ffi::c_void, head: *const c_char) -> i32 {
+    // retractall/1 always succeeds per ISO Prolog; accept_false: true
+    run_command(handle, head, |s| format!("retractall({s})."), true)
 }
 
 #[no_mangle]
@@ -201,7 +204,11 @@ pub extern "C" fn prolog_load_string(handle: *mut std::ffi::c_void, source: *con
 
     // Write to a temp file and consult via run_query so parse errors become
     // Prolog exceptions (LeafAnswer::Exception) instead of corrupting machine state.
-    let tmp_path = std::env::temp_dir().join(format!("zpm_load_{}.pl", std::process::id()));
+    let tmp_path = std::env::temp_dir().join(format!(
+        "zpm_load_{}_{}.pl",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     if std::fs::write(&tmp_path, &source_str).is_err() {
         return -1;
     }
@@ -297,5 +304,23 @@ mod tests {
         let path = CString::new("/nonexistent/path/file.pl").unwrap();
         assert_ne!(prolog_load_file(handle, path.as_ptr()), 0);
         prolog_deinit(handle);
+    }
+
+    #[test]
+    fn retractall_asserted_facts_returns_zero() {
+        let handle = prolog_init();
+        let clause1 = CString::new("likes(alice, bob)").unwrap();
+        let clause2 = CString::new("likes(alice, carol)").unwrap();
+        prolog_assert(handle, clause1.as_ptr());
+        prolog_assert(handle, clause2.as_ptr());
+        let head = CString::new("likes(alice, _)").unwrap();
+        assert_eq!(prolog_retractall(handle, head.as_ptr()), 0);
+        prolog_deinit(handle);
+    }
+
+    #[test]
+    fn retractall_null_handle_returns_minus_one() {
+        let head = CString::new("foo(_)").unwrap();
+        assert_eq!(prolog_retractall(std::ptr::null_mut(), head.as_ptr()), -1);
     }
 }

@@ -84,6 +84,36 @@ pub fn build(b: *std.Build) void {
     linkFfi(engine_unit_tests, b, &patch_ffi.step);
     const run_engine_unit_tests = b.addRunArtifact(engine_unit_tests);
     test_step.dependOn(&run_engine_unit_tests.step);
+
+    // forget_fact tool tests (pre-registration, F007)
+    const forget_fact_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/forget_fact.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    forget_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    forget_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const forget_fact_unit_tests = b.addTest(.{
+        .root_module = forget_fact_test_module,
+    });
+    linkFfi(forget_fact_unit_tests, b, &patch_ffi.step);
+    const run_forget_fact_unit_tests = b.addRunArtifact(forget_fact_unit_tests);
+    test_step.dependOn(&run_forget_fact_unit_tests.step);
+
+    // clear_context tool tests (pre-registration, F007)
+    const clear_context_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/clear_context.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    clear_context_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    clear_context_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const clear_context_unit_tests = b.addTest(.{
+        .root_module = clear_context_test_module,
+    });
+    linkFfi(clear_context_unit_tests, b, &patch_ffi.step);
+    const run_clear_context_unit_tests = b.addRunArtifact(clear_context_unit_tests);
+    test_step.dependOn(&run_clear_context_unit_tests.step);
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {

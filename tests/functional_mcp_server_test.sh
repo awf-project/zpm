@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F006
+# Features: F001-F007
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -68,6 +68,8 @@ assert_contains "trace_dependency tool listed" "$TOOLS_LINE" '"name":"trace_depe
 assert_contains "verify_consistency tool listed" "$TOOLS_LINE" '"name":"verify_consistency"'
 assert_contains "explain_why tool listed" "$TOOLS_LINE" '"name":"explain_why"'
 assert_contains "get_knowledge_schema tool listed" "$TOOLS_LINE" '"name":"get_knowledge_schema"'
+assert_contains "forget_fact tool listed" "$TOOLS_LINE" '"name":"forget_fact"'
+assert_contains "clear_context tool listed" "$TOOLS_LINE" '"name":"clear_context"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -347,6 +349,132 @@ SCHEMA_BOTH_LINE=$(echo "$RESPONSE" | grep '"id":41')
 
 assert_contains "get_knowledge_schema both is not an error" "$SCHEMA_BOTH_LINE" '"isError":false'
 assert_contains "get_knowledge_schema classifies path/2 as both" "$SCHEMA_BOTH_LINE" '\"type\":\"both\"'
+
+# Feature: F007
+# --- Test 26: forget_fact retracts existing fact, query confirms absence ---
+echo "Test: forget_fact retracts asserted fact"
+FORGET_EXISTING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(jean, manager)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(jean, manager)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"role(jean, manager)\"}}}
+"
+RESPONSE=$(send_mcp "$FORGET_EXISTING_INPUT")
+FORGET_LINE=$(echo "$RESPONSE" | grep '"id":43')
+QUERY_AFTER_LINE=$(echo "$RESPONSE" | grep '"id":44')
+
+assert_contains "forget_fact returns success" "$FORGET_LINE" '"isError":false'
+assert_contains "forget_fact confirms retracted fact" "$FORGET_LINE" 'role(jean, manager)'
+assert_contains "query after forget_fact returns empty" "$QUERY_AFTER_LINE" '[]'
+
+# --- Test 27: forget_fact returns error for non-existent fact ---
+echo "Test: forget_fact with non-existent fact returns error"
+FORGET_MISSING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(nobody, ghost)\"}}}
+"
+RESPONSE=$(send_mcp "$FORGET_MISSING_INPUT")
+FORGET_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":45')
+
+assert_contains "forget_fact non-existent returns isError true" "$FORGET_MISSING_LINE" '"isError":true'
+
+# --- Test 28: forget_fact returns error for empty fact ---
+echo "Test: forget_fact with empty fact returns error"
+FORGET_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"\"}}}
+"
+RESPONSE=$(send_mcp "$FORGET_EMPTY_INPUT")
+FORGET_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":46')
+
+assert_contains "forget_fact empty fact returns isError true" "$FORGET_EMPTY_LINE" '"isError":true'
+
+# --- Test 29: forget_fact with missing arguments returns error ---
+echo "Test: forget_fact missing argument error"
+FORGET_NULL_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":47,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp "$FORGET_NULL_INPUT")
+FORGET_NULL_LINE=$(echo "$RESPONSE" | grep '"id":47')
+
+assert_contains "forget_fact missing args returns isError true" "$FORGET_NULL_LINE" '"isError":true'
+
+# --- Test 30: clear_context removes all matching facts, query confirms ---
+echo "Test: clear_context removes all matching facts"
+CLEAR_MULTI_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":48,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(beta, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":49,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(beta, owner(alice))\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(alpha, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":51,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"project(beta, _)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":52,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"project(beta, _)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":53,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"project(Name, _)\"}}}
+"
+RESPONSE=$(send_mcp "$CLEAR_MULTI_INPUT")
+CLEAR_LINE=$(echo "$RESPONSE" | grep '"id":51')
+QUERY_BETA_LINE=$(echo "$RESPONSE" | grep '"id":52')
+QUERY_ALPHA_LINE=$(echo "$RESPONSE" | grep '"id":53')
+
+assert_contains "clear_context returns success" "$CLEAR_LINE" '"isError":false'
+assert_contains "clear_context confirms pattern" "$CLEAR_LINE" 'project(beta, _)'
+assert_contains "query after clear_context beta returns empty" "$QUERY_BETA_LINE" '[]'
+assert_contains "clear_context preserves non-matching facts" "$QUERY_ALPHA_LINE" 'alpha'
+
+# --- Test 31: clear_context is idempotent when no facts match ---
+echo "Test: clear_context with no matching facts returns success"
+CLEAR_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":54,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"nonexistent_category(_)\"}}}
+"
+RESPONSE=$(send_mcp "$CLEAR_EMPTY_INPUT")
+CLEAR_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":54')
+
+assert_contains "clear_context no-match returns success" "$CLEAR_EMPTY_LINE" '"isError":false'
+
+# --- Test 32: clear_context returns error for empty category ---
+echo "Test: clear_context with empty category returns error"
+CLEAR_EMPTY_CAT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":55,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"\"}}}
+"
+RESPONSE=$(send_mcp "$CLEAR_EMPTY_CAT_INPUT")
+CLEAR_EMPTY_CAT_LINE=$(echo "$RESPONSE" | grep '"id":55')
+
+assert_contains "clear_context empty category returns isError true" "$CLEAR_EMPTY_CAT_LINE" '"isError":true'
+
+# --- Test 33: clear_context with missing arguments returns error ---
+echo "Test: clear_context missing argument error"
+CLEAR_NULL_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":56,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp "$CLEAR_NULL_INPUT")
+CLEAR_NULL_LINE=$(echo "$RESPONSE" | grep '"id":56')
+
+assert_contains "clear_context missing args returns isError true" "$CLEAR_NULL_LINE" '"isError":true'
+
+# --- Test 34: forget_fact retracts only first duplicate (US3) ---
+echo "Test: forget_fact retracts only first duplicate"
+FORGET_DUPE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":57,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":58,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":59,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"likes(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":62,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"likes(alice, bob)\"}}}
+"
+RESPONSE=$(send_mcp "$FORGET_DUPE_INPUT")
+FORGET_FIRST_LINE=$(echo "$RESPONSE" | grep '"id":59')
+QUERY_ONE_LEFT_LINE=$(echo "$RESPONSE" | grep '"id":60')
+FORGET_SECOND_LINE=$(echo "$RESPONSE" | grep '"id":61')
+QUERY_ZERO_LEFT_LINE=$(echo "$RESPONSE" | grep '"id":62')
+
+assert_contains "first forget_fact on duplicate returns success" "$FORGET_FIRST_LINE" '"isError":false'
+assert_contains "one duplicate remains after first retraction" "$QUERY_ONE_LEFT_LINE" '[{}]'
+assert_contains "second forget_fact on duplicate returns success" "$FORGET_SECOND_LINE" '"isError":false'
+assert_contains "zero duplicates remain after second retraction" "$QUERY_ZERO_LEFT_LINE" '[]'
 
 # --- Summary ---
 echo ""

@@ -10,6 +10,7 @@ Welcome to zpm documentation. Choose your path:
 
 - **[Schema Discovery](user-guide/schema-discovery.md)** — Explore predicates in the knowledge base
 - **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains
+- **[Fact Deletion](user-guide/fact-deletion.md)** — Remove individual facts or clear entire categories
 
 ## For Developers
 

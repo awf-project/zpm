@@ -12,6 +12,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Exploration tools: query Prolog goals and trace transitive dependencies via MCP
 - Supervision tools: verify knowledge base consistency and explain proof chains via MCP
 - Knowledge schema discovery: introspect predicates and their types via MCP
+- Delete tools: retract individual facts or clear entire categories from the knowledge base
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -68,9 +69,11 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
+| `clear_context` | Clear all facts from the knowledge base matching a pattern | `category` (string, required) |
 | `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
 | `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional) |
+| `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required) |
 | `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | (no required arguments) |
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
@@ -83,10 +86,12 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 src/
   main.zig          # MCP server entry point (STDIO transport)
   tools/
+    clear_context.zig      # Clear context tool handler (bulk fact deletion)
     context.zig            # Engine singleton for tool handlers
     define_rule.zig        # Define rule tool handler
     echo.zig               # Echo tool handler
     explain_why.zig        # Proof tree explanation tool handler
+    forget_fact.zig        # Forget fact tool handler (single fact deletion)
     get_knowledge_schema.zig # Knowledge schema introspection tool handler
     query_logic.zig        # Query logic tool handler
     remember_fact.zig      # Remember fact tool handler
@@ -113,6 +118,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F004: Knowledge management tools — read (query_logic, trace_dependency)
 - [x] F005: Supervision and quality tools (verify_consistency, explain_why)
 - [x] F006: Knowledge schema discovery (get_knowledge_schema)
+- [x] F007: Fact deletion tools (forget_fact, clear_context)
 
 ## Documentation
 
