@@ -11,6 +11,8 @@ const explain_why = @import("tools/explain_why.zig");
 const get_knowledge_schema = @import("tools/get_knowledge_schema.zig");
 const forget_fact = @import("tools/forget_fact.zig");
 const clear_context = @import("tools/clear_context.zig");
+const update_fact = @import("tools/update_fact.zig");
+const upsert_fact = @import("tools/upsert_fact.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub fn main() !void {
@@ -41,6 +43,8 @@ pub fn main() !void {
     try server.addTool(get_knowledge_schema.tool);
     try server.addTool(forget_fact.tool);
     try server.addTool(clear_context.tool);
+    try server.addTool(update_fact.tool);
+    try server.addTool(upsert_fact.tool);
 
     try server.run(.stdio);
 }
@@ -57,6 +61,8 @@ test {
     _ = get_knowledge_schema;
     _ = forget_fact;
     _ = clear_context;
+    _ = update_fact;
+    _ = upsert_fact;
     _ = @import("prolog/engine.zig");
 }
 
@@ -85,7 +91,7 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers all ten tools" {
+test "server registers all twelve tools" {
     var server = initTestServer();
     defer server.deinit();
 
@@ -99,8 +105,10 @@ test "server registers all ten tools" {
     try server.addTool(get_knowledge_schema.tool);
     try server.addTool(forget_fact.tool);
     try server.addTool(clear_context.tool);
+    try server.addTool(update_fact.tool);
+    try server.addTool(upsert_fact.tool);
 
-    try std.testing.expectEqual(@as(usize, 10), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 12), server.tools.count());
 }
 
 test "server registers get_knowledge_schema tool" {

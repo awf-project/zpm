@@ -987,3 +987,440 @@ If the `category` argument is missing, null, or empty:
   }
 }
 ```
+
+---
+
+## Update Fact Tool
+
+**Name:** `update_fact`
+
+**Description:** Atomically replace an existing Prolog fact in the knowledge base (retract old_fact, assert new_fact). Returns an error if old_fact is not found, leaving the knowledge base unchanged.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "update_fact",
+    "arguments": {
+      "old_fact": "server(alpha, \"1.0\")",
+      "new_fact": "server(alpha, \"2.0\")"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "old_fact": {
+      "type": "string",
+      "description": "The existing Prolog fact to retract (e.g. \"server(alpha, \\\"1.0\\\")\")"
+    },
+    "new_fact": {
+      "type": "string",
+      "description": "The new Prolog fact to assert in its place (e.g. \"server(alpha, \\\"2.0\\\")\")"
+    }
+  },
+  "required": ["old_fact", "new_fact"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Updated: server(alpha, \"1.0\") -> server(alpha, \"2.0\")"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Fact Not Found)
+
+If the old fact does not exist in the knowledge base:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "No matching clause for: server(alpha, \"1.0\")",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Rule Syntax)
+
+If the new_fact contains rule syntax (`:-`):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "new_fact must not contain rule syntax",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If either argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Upsert Fact Tool
+
+**Name:** `upsert_fact`
+
+**Description:** Insert or replace a Prolog fact in the knowledge base. Retracts all existing clauses matching the same functor and first argument, then asserts the new fact. Succeeds even if no prior fact exists.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "tools/call",
+  "params": {
+    "name": "upsert_fact",
+    "arguments": {
+      "fact": "deploy(prod, v2)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "fact": {
+      "type": "string",
+      "description": "A Prolog fact to insert or replace (e.g. \"deploy(prod, v2)\")"
+    }
+  },
+  "required": ["fact"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Upserted: deploy(prod, v2)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Rule Syntax)
+
+If the fact contains rule syntax (`:-`):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "fact must not contain rule syntax",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If the `fact` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Update Fact Tool
+
+**Name:** `update_fact`
+
+**Description:** Atomically replace an existing fact with a new fact. The operation is all-or-nothing: if the old fact does not exist, the new fact is not asserted and an error is returned. This ensures fact replacements are guaranteed or fail cleanly without partial updates.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✗
+- Atomic: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "update_fact",
+    "arguments": {
+      "old_fact": "role(jean, manager)",
+      "new_fact": "role(jean, director)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "old_fact": {
+      "type": "string",
+      "description": "The existing Prolog fact to retract (e.g. \"role(jean, manager)\")"
+    },
+    "new_fact": {
+      "type": "string",
+      "description": "The new Prolog fact to assert (e.g. \"role(jean, director)\")"
+    }
+  },
+  "required": ["old_fact", "new_fact"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Updated: role(jean, manager) → role(jean, director)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Old Fact Not Found)
+
+If the old fact does not exist in the knowledge base:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "No matching clause found for: role(nonexistent, manager)",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If `old_fact` or `new_fact` arguments are missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Upsert Fact Tool
+
+**Name:** `upsert_fact`
+
+**Description:** Atomically replace a fact if it exists (based on functor and first argument), or insert the fact if no match is found. All existing facts matching the functor and first argument are removed before the new fact is asserted. The tool always succeeds, even when inserting a new fact.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Non-destructive: ✗
+- Atomic: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "tools/call",
+  "params": {
+    "name": "upsert_fact",
+    "arguments": {
+      "fact": "deploy(prod, v2)"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "fact": {
+      "type": "string",
+      "description": "A Prolog fact to insert or update (e.g. \"deploy(prod, v2)\")"
+    }
+  },
+  "required": ["fact"]
+}
+```
+
+### Response (Success - Inserted)
+
+When the fact is new and no match exists:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Inserted: deploy(prod, v2)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success - Updated)
+
+When one or more matching facts are replaced:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Updated: deploy(prod, v1) → deploy(prod, v2)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Invalid Arguments)
+
+If the `fact` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```

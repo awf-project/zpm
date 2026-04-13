@@ -13,6 +13,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Supervision tools: verify knowledge base consistency and explain proof chains via MCP
 - Knowledge schema discovery: introspect predicates and their types via MCP
 - Delete tools: retract individual facts or clear entire categories from the knowledge base
+- Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -78,6 +79,8 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
 | `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required) |
+| `update_fact` | Atomically replace an existing fact (retract old, assert new) | `old_fact` (string, required), `new_fact` (string, required) |
+| `upsert_fact` | Replace a fact matching functor+first arg, or insert if not found | `fact` (string, required) |
 | `verify_consistency` | Check knowledge base for integrity violations | `scope` (string, optional) |
 
 ## Architecture
@@ -96,6 +99,8 @@ src/
     query_logic.zig        # Query logic tool handler
     remember_fact.zig      # Remember fact tool handler
     trace_dependency.zig   # Trace dependency tool handler
+    update_fact.zig        # Update fact tool handler (atomic replacement)
+    upsert_fact.zig        # Upsert fact tool handler (insert or replace)
     verify_consistency.zig # Knowledge base consistency checker
   prolog/
     engine.zig      # Prolog engine with query, assert/retract, loading
@@ -119,6 +124,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F005: Supervision and quality tools (verify_consistency, explain_why)
 - [x] F006: Knowledge schema discovery (get_knowledge_schema)
 - [x] F007: Fact deletion tools (forget_fact, clear_context)
+- [x] F008: Fact update and upsert tools (update_fact, upsert_fact)
 
 ## Documentation
 
