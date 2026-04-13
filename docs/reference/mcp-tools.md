@@ -1217,30 +1217,29 @@ If the `fact` argument is missing, null, or empty:
 
 ---
 
-## Update Fact Tool
+## Assume Fact Tool
 
-**Name:** `update_fact`
+**Name:** `assume_fact`
 
-**Description:** Atomically replace an existing fact with a new fact. The operation is all-or-nothing: if the old fact does not exist, the new fact is not asserted and an error is returned. This ensures fact replacements are guaranteed or fail cleanly without partial updates.
+**Description:** Assert a Prolog fact under a named assumption for truth maintenance tracking. The assumption name must be lowercase alphanumeric with underscores. Mutations are journaled to the WAL.
 
 **Annotations:**
 - Read-only: ✗
-- Idempotent: ✗
+- Idempotent: ✓
 - Non-destructive: ✗
-- Atomic: ✓
 
 ### Request
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 12,
+  "id": 14,
   "method": "tools/call",
   "params": {
-    "name": "update_fact",
+    "name": "assume_fact",
     "arguments": {
-      "old_fact": "role(jean, manager)",
-      "new_fact": "role(jean, director)"
+      "fact": "available(server_a)",
+      "assumption": "infra_healthy"
     }
   }
 }
@@ -1252,16 +1251,16 @@ If the `fact` argument is missing, null, or empty:
 {
   "type": "object",
   "properties": {
-    "old_fact": {
+    "fact": {
       "type": "string",
-      "description": "The existing Prolog fact to retract (e.g. \"role(jean, manager)\")"
+      "description": "A Prolog fact to assert (e.g. \"available(server_a)\")"
     },
-    "new_fact": {
+    "assumption": {
       "type": "string",
-      "description": "The new Prolog fact to assert (e.g. \"role(jean, director)\")"
+      "description": "The assumption name justifying this fact (e.g. \"infra_healthy\")"
     }
   },
-  "required": ["old_fact", "new_fact"]
+  "required": ["fact", "assumption"]
 }
 ```
 
@@ -1270,46 +1269,26 @@ If the `fact` argument is missing, null, or empty:
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 12,
+  "id": 14,
   "result": {
     "content": [
       {
         "type": "text",
-        "text": "Updated: role(jean, manager) → role(jean, director)"
+        "text": "Assumed: available(server_a) under assumption 'infra_healthy'"
       }
     ]
   }
 }
 ```
 
-### Response (Error - Old Fact Not Found)
+### Response (Error)
 
-If the old fact does not exist in the knowledge base:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 12,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "No matching clause found for: role(nonexistent, manager)",
-        "isError": true
-      }
-    ]
-  }
-}
-```
-
-### Response (Error - Invalid Arguments)
-
-If `old_fact` or `new_fact` arguments are missing, null, or empty:
+If `fact` or `assumption` is missing, null, or empty:
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 12,
+  "id": 14,
   "result": {
     "content": [
       {
@@ -1324,29 +1303,28 @@ If `old_fact` or `new_fact` arguments are missing, null, or empty:
 
 ---
 
-## Upsert Fact Tool
+## Get Belief Status Tool
 
-**Name:** `upsert_fact`
+**Name:** `get_belief_status`
 
-**Description:** Atomically replace a fact if it exists (based on functor and first argument), or insert the fact if no match is found. All existing facts matching the functor and first argument are removed before the new fact is asserted. The tool always succeeds, even when inserting a new fact.
+**Description:** Query whether a belief is currently supported and which assumptions justify it. Returns the belief status (`in` or `out`), the list of justifying assumptions, and the fact source attribution (`interactive`, `snapshot`, `journal`, or `unknown`).
 
 **Annotations:**
-- Read-only: ✗
+- Read-only: ✓
 - Idempotent: ✓
-- Non-destructive: ✗
-- Atomic: ✓
+- Non-destructive: ✓
 
 ### Request
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 15,
   "method": "tools/call",
   "params": {
-    "name": "upsert_fact",
+    "name": "get_belief_status",
     "arguments": {
-      "fact": "deploy(prod, v2)"
+      "fact": "available(server_a)"
     }
   }
 }
@@ -1360,45 +1338,520 @@ If `old_fact` or `new_fact` arguments are missing, null, or empty:
   "properties": {
     "fact": {
       "type": "string",
-      "description": "A Prolog fact to insert or update (e.g. \"deploy(prod, v2)\")"
+      "description": "The Prolog fact to check belief status for (e.g. \"available(server_a)\")"
     }
   },
   "required": ["fact"]
 }
 ```
 
-### Response (Success - Inserted)
-
-When the fact is new and no match exists:
+### Response (Success)
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 15,
   "result": {
     "content": [
       {
         "type": "text",
-        "text": "Inserted: deploy(prod, v2)"
+        "text": "{\"status\":\"in\",\"justifications\":[\"infra_healthy\"],\"source\":\"interactive\"}"
       }
     ]
   }
 }
 ```
 
-### Response (Success - Updated)
+### Response (Error)
 
-When one or more matching facts are replaced:
+If the `fact` argument is missing, null, or empty:
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 15,
   "result": {
     "content": [
       {
         "type": "text",
-        "text": "Updated: deploy(prod, v1) → deploy(prod, v2)"
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Get Justification Tool
+
+**Name:** `get_justification`
+
+**Description:** Return all facts currently supported by a given assumption.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 16,
+  "method": "tools/call",
+  "params": {
+    "name": "get_justification",
+    "arguments": {
+      "assumption": "infra_healthy"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "assumption": {
+      "type": "string",
+      "description": "The assumption name to query (e.g. \"infra_healthy\")"
+    }
+  },
+  "required": ["assumption"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 16,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"facts\":[\"available(server_a)\"]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `assumption` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 16,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## List Assumptions Tool
+
+**Name:** `list_assumptions`
+
+**Description:** Return all named assumptions currently registered in the truth maintenance system. Returns a deduplicated list.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 17,
+  "method": "tools/call",
+  "params": {
+    "name": "list_assumptions",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 17,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"assumptions\":[\"infra_healthy\",\"budget_approved\"]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Empty)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 17,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"assumptions\":[]}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Retract Assumption Tool
+
+**Name:** `retract_assumption`
+
+**Description:** Retract a named assumption and remove all facts that have no remaining justifications. Mutations are journaled to the WAL.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 18,
+  "method": "tools/call",
+  "params": {
+    "name": "retract_assumption",
+    "arguments": {
+      "assumption": "infra_healthy"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "assumption": {
+      "type": "string",
+      "description": "The assumption name to retract (e.g. \"infra_healthy\")"
+    }
+  },
+  "required": ["assumption"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 18,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Retracted assumption 'infra_healthy': 2 fact(s) removed"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `assumption` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 18,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Retract Assumptions Tool
+
+**Name:** `retract_assumptions`
+
+**Description:** Retract all assumptions matching a glob-style pattern with full propagation semantics. Each retracted assumption's dependent facts are cleaned up. Mutations are journaled to the WAL.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 19,
+  "method": "tools/call",
+  "params": {
+    "name": "retract_assumptions",
+    "arguments": {
+      "pattern": "infra_*"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "pattern": {
+      "type": "string",
+      "description": "A glob-style pattern to match assumption names (e.g. \"infra_*\")"
+    }
+  },
+  "required": ["pattern"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 19,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Retracted pattern 'infra_*': 3 assumption(s) removed"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `pattern` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 19,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Save Snapshot Tool
+
+**Name:** `save_snapshot`
+
+**Description:** Persist the current Prolog knowledge base to a named snapshot file. The snapshot contains all facts, rules, and TMS metadata in valid Prolog source syntax. After a snapshot, the WAL journal is rotated.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✓
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 20,
+  "method": "tools/call",
+  "params": {
+    "name": "save_snapshot",
+    "arguments": {
+      "name": "before_refactor"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "A name for the snapshot (e.g. \"before_refactor\")"
+    }
+  },
+  "required": ["name"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 20,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Snapshot 'before_refactor' saved successfully."
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `name` argument is missing, null, or empty:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 20,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Restore Snapshot Tool
+
+**Name:** `restore_snapshot`
+
+**Description:** Restore the Prolog knowledge base from a named snapshot file. This replaces the current knowledge base state entirely with the snapshot contents.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 21,
+  "method": "tools/call",
+  "params": {
+    "name": "restore_snapshot",
+    "arguments": {
+      "name": "before_refactor"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The snapshot name to restore from (e.g. \"before_refactor\")"
+    }
+  },
+  "required": ["name"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 21,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Snapshot 'before_refactor' restored successfully."
+      }
+    ]
+  }
+}
+```
+
+### Response (Error - Not Found)
+
+If the snapshot file does not exist:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 21,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ExecutionFailed",
+        "isError": true
       }
     ]
   }
@@ -1407,17 +1860,162 @@ When one or more matching facts are replaced:
 
 ### Response (Error - Invalid Arguments)
 
-If the `fact` argument is missing, null, or empty:
+If the `name` argument is missing, null, or empty:
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 21,
   "result": {
     "content": [
       {
         "type": "text",
         "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## List Snapshots Tool
+
+**Name:** `list_snapshots`
+
+**Description:** List all available Prolog knowledge base snapshots.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 22,
+  "method": "tools/call",
+  "params": {
+    "name": "list_snapshots",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 22,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Snapshots: [before_refactor, daily_backup]"
+      }
+    ]
+  }
+}
+```
+
+### Response (Empty)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 22,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Snapshots: []"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Get Persistence Status Tool
+
+**Name:** `get_persistence_status`
+
+**Description:** Query the health and status of the persistence subsystem, including operational mode, persistence directory, last snapshot, and journal size.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 23,
+  "method": "tools/call",
+  "params": {
+    "name": "get_persistence_status",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 23,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "status: active\ndir: /tmp/zpm-persistence\nlast_snapshot: before_refactor\njournal_size: 1024 bytes"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the persistence manager is unavailable:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 23,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ExecutionFailed",
         "isError": true
       }
     ]

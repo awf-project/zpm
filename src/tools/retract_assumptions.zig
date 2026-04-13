@@ -1,7 +1,10 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
+const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const engine_mod = @import("../prolog/engine.zig");
+const term_utils = @import("term_utils");
 const Term = engine_mod.Term;
 
 pub const tool = mcp.tools.Tool{
@@ -31,42 +34,6 @@ fn globMatch(pattern: []const u8, str: []const u8) bool {
     return false;
 }
 
-fn termToString(allocator: std.mem.Allocator, term: Term) ![]u8 {
-    return switch (term) {
-        .atom => |s| allocator.dupe(u8, s),
-        .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
-        .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
-        .variable => |s| allocator.dupe(u8, s),
-        .compound => |c| {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(allocator);
-            try buf.appendSlice(allocator, c.functor);
-            try buf.append(allocator, '(');
-            for (c.args, 0..) |arg, i| {
-                if (i > 0) try buf.append(allocator, ',');
-                const arg_str = try termToString(allocator, arg);
-                defer allocator.free(arg_str);
-                try buf.appendSlice(allocator, arg_str);
-            }
-            try buf.append(allocator, ')');
-            return buf.toOwnedSlice(allocator);
-        },
-        .list => |items| {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(allocator);
-            try buf.append(allocator, '[');
-            for (items, 0..) |item, i| {
-                if (i > 0) try buf.append(allocator, ',');
-                const item_str = try termToString(allocator, item);
-                defer allocator.free(item_str);
-                try buf.appendSlice(allocator, item_str);
-            }
-            try buf.append(allocator, ']');
-            return buf.toOwnedSlice(allocator);
-        },
-    };
-}
-
 fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, assumption: []const u8) !void {
     const query_str = try std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption});
     defer allocator.free(query_str);
@@ -87,7 +54,7 @@ fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, a
 
     for (qr.solutions) |solution| {
         const fact_term = solution.bindings.get("F") orelse continue;
-        const fact_str = termToString(allocator, fact_term) catch continue;
+        const fact_str = term_utils.termToString(allocator, fact_term) catch continue;
         fact_strings.append(allocator, fact_str) catch {
             allocator.free(fact_str);
             continue;
@@ -134,7 +101,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     for (list_qr.solutions) |solution| {
         const a_term = solution.bindings.get("A") orelse continue;
-        const a_str = termToString(allocator, a_term) catch continue;
+        const a_str = term_utils.termToString(allocator, a_term) catch continue;
         defer allocator.free(a_str);
 
         if (!globMatch(pattern, a_str)) continue;
@@ -157,6 +124,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     for (matching.items) |assumption| {
         retractAssumption(allocator, engine, assumption) catch {};
+        if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+            pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = assumption }) catch {};
+        }
     }
 
     const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
@@ -262,4 +232,42 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     const result = handler(allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+}
+
+test "handler journals each retracted assumption to WAL" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    try engine.assertFact("deployed(app, prod).");
+    try engine.assertFact("tms_justification(deployed(app, prod), session1_a1).");
+    try engine.assertFact("running(service).");
+    try engine.assertFact("tms_justification(running(service), session1_a2).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("pattern", .{ .string = "session1_*" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var content_buf: [2048]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "session1_a1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "session1_a2") != null);
 }

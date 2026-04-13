@@ -1,6 +1,8 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
+const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 
 pub const tool = mcp.tools.Tool{
     .name = "remember_fact",
@@ -21,6 +23,13 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
+    if (std.fmt.allocPrint(allocator, "zpm_source({s}, interactive).", .{fact})) |sc| {
+        defer allocator.free(sc);
+        engine.assertFact(sc) catch {};
+    } else |_| {}
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = fact }) catch {};
+    }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -76,6 +85,65 @@ test "handler returns error result when fact is empty string" {
 
     const result = try handler(allocator, args);
     try std.testing.expect(result.is_error);
+}
+
+test "handler journals mutation to WAL when persistence manager is active" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "logged(event)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var content_buf: [1024]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "logged(event)") != null);
+}
+
+test "handler asserts zpm_source interactive attribution alongside fact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "feature_enabled(dark_mode)" });
+    const args = std.json.Value{ .object = obj };
+
+    _ = try handler(allocator, args);
+
+    var qr = try engine.query("zpm_source(feature_enabled(dark_mode), S)");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+    const s_term = qr.solutions[0].bindings.get("S") orelse return error.TestUnexpectedNull;
+    const source = switch (s_term) {
+        .atom => |s| s,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqualStrings("interactive", source);
 }
 
 test "handler returns error result for invalid Prolog syntax" {

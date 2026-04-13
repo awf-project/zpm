@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F009
+# Features: F001-F010
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -49,7 +49,15 @@ assert_exit_code() {
 
 send_mcp() {
     local input="$1"
-    printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" 2>/dev/null || true
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    printf '%s' "$input" | ZPM_DATA_DIR="$tmpdir" timeout "$TIMEOUT" "$BINARY" 2>/dev/null || true
+    rm -rf "$tmpdir"
+}
+
+send_mcp_persist() {
+    local input="$1" dir="$2"
+    printf '%s' "$input" | ZPM_DATA_DIR="$dir" timeout "$TIMEOUT" "$BINARY" 2>/dev/null || true
 }
 
 # --- Test 1: Initialize handshake returns correct server info ---
@@ -721,17 +729,172 @@ assert_contains "retract_assumptions pattern returns success" "$RETRACT_PAT_LINE
 assert_contains "retract_assumptions reports 2 assumptions retracted" "$RETRACT_PAT_LINE" '2 assumption(s) removed'
 assert_contains "non-matching assumption fact survives pattern retraction" "$QUERY_REMAIN_LINE" '[{}]'
 
-# --- Test 50: tools/list returns all 18 registered tools ---
-echo "Test: tools/list returns all 18 tools"
+# Feature: F010
+# --- Test 50: tools/list returns all 22 registered tools ---
+echo "Test: tools/list returns all 22 tools"
 TOOLSLIST_ALL_INPUT="${INIT_REQ}
 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
 {\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/list\",\"params\":{}}"
 RESPONSE=$(send_mcp "$TOOLSLIST_ALL_INPUT")
 TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":200')
 
-for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions; do
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status; do
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
 done
+
+# --- Test 51: save_snapshot persists current knowledge base to disk (US3) ---
+echo "Test: save_snapshot creates a named snapshot file"
+PERSIST_DIR_51=$(mktemp -d)
+SAVE_SNAP_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":106,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"persisted(data)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":107,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"test_snap\"}}}
+"
+RESPONSE=$(send_mcp_persist "$SAVE_SNAP_INPUT" "$PERSIST_DIR_51")
+SAVE_LINE=$(echo "$RESPONSE" | grep '"id":107')
+
+assert_contains "save_snapshot returns success" "$SAVE_LINE" '"isError":false'
+assert_contains "save_snapshot confirms snapshot name" "$SAVE_LINE" 'test_snap'
+rm -rf "$PERSIST_DIR_51"
+
+# --- Test 52: list_snapshots enumerates available snapshots (US5) ---
+echo "Test: list_snapshots returns saved snapshot names"
+PERSIST_DIR_52=$(mktemp -d)
+LIST_SNAP_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":108,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"snap_alpha\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":109,\"method\":\"tools/call\",\"params\":{\"name\":\"list_snapshots\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp_persist "$LIST_SNAP_INPUT" "$PERSIST_DIR_52")
+LIST_LINE=$(echo "$RESPONSE" | grep '"id":109')
+
+assert_contains "list_snapshots returns success" "$LIST_LINE" '"isError":false'
+assert_contains "list_snapshots includes saved snapshot" "$LIST_LINE" 'snap_alpha'
+rm -rf "$PERSIST_DIR_52"
+
+# --- Test 53: restore_snapshot loads knowledge base from snapshot file (US3) ---
+echo "Test: restore_snapshot restores from named snapshot"
+PERSIST_DIR_53=$(mktemp -d)
+RESTORE_SNAP_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":110,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"before_snap(x)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":111,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"restore_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":112,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"restore_test\"}}}
+"
+RESPONSE=$(send_mcp_persist "$RESTORE_SNAP_INPUT" "$PERSIST_DIR_53")
+RESTORE_LINE=$(echo "$RESPONSE" | grep '"id":112')
+
+assert_contains "restore_snapshot returns success" "$RESTORE_LINE" '"isError":false'
+assert_contains "restore_snapshot confirms snapshot name" "$RESTORE_LINE" 'restore_test'
+rm -rf "$PERSIST_DIR_53"
+
+# --- Test 54: get_persistence_status reports journal and directory info (US5) ---
+echo "Test: get_persistence_status returns status fields"
+PERSIST_DIR_54=$(mktemp -d)
+STATUS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":113,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"tracked(entry)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":114,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp_persist "$STATUS_INPUT" "$PERSIST_DIR_54")
+STATUS_LINE=$(echo "$RESPONSE" | grep '"id":114')
+
+assert_contains "get_persistence_status returns success" "$STATUS_LINE" '"isError":false'
+assert_contains "get_persistence_status includes active status" "$STATUS_LINE" 'active'
+rm -rf "$PERSIST_DIR_54"
+
+# --- Test 55: WAL replay restores knowledge base after server restart (US1, US2) ---
+echo "Test: WAL replays facts on server restart"
+PERSIST_DIR_55=$(mktemp -d)
+WAL_WRITE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":115,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"durable(alpha)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":116,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"durable(beta)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$WAL_WRITE_INPUT" "$PERSIST_DIR_55")
+WRITE_LINE=$(echo "$RESPONSE" | grep '"id":116')
+assert_contains "WAL write returns success" "$WRITE_LINE" '"isError":false'
+
+WAL_REPLAY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":117,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"durable(alpha)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":118,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"durable(beta)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$WAL_REPLAY_INPUT" "$PERSIST_DIR_55")
+REPLAY_LINE1=$(echo "$RESPONSE" | grep '"id":117')
+REPLAY_LINE2=$(echo "$RESPONSE" | grep '"id":118')
+assert_contains "WAL replays first fact after restart" "$REPLAY_LINE1" '[{}]'
+assert_contains "WAL replays second fact after restart" "$REPLAY_LINE2" '[{}]'
+rm -rf "$PERSIST_DIR_55"
+
+# --- Test 56: WAL replay respects clear_context operation (US2) ---
+echo "Test: WAL replay preserves clear_context operation"
+PERSIST_DIR_56=$(mktemp -d)
+CLEAR_WAL_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":119,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"temp_cache(x)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":120,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"temp_cache(_)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":121,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"persistent(y)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$CLEAR_WAL_INPUT" "$PERSIST_DIR_56")
+CLEAR_LINE=$(echo "$RESPONSE" | grep '"id":120')
+assert_contains "clear_context write returns success" "$CLEAR_LINE" '"isError":false'
+
+CLEAR_REPLAY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":122,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"temp_cache(x)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":123,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"persistent(y)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$CLEAR_REPLAY_INPUT" "$PERSIST_DIR_56")
+CLEAR_REPLAY_PRE=$(echo "$RESPONSE" | grep '"id":122')
+CLEAR_REPLAY_POST=$(echo "$RESPONSE" | grep '"id":123')
+assert_contains "cleared fact absent after restart" "$CLEAR_REPLAY_PRE" '[]'
+assert_contains "post-clear fact present after restart" "$CLEAR_REPLAY_POST" '[{}]'
+rm -rf "$PERSIST_DIR_56"
+
+# --- Test 57: Snapshot + subsequent WAL entries both restored on restart (US1, US3) ---
+echo "Test: Snapshot plus post-snapshot WAL entries survive restart"
+PERSIST_DIR_57=$(mktemp -d)
+SNAP_WAL_WRITE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":124,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"pre_snap(one)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":125,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"pre_snap(two)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":126,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"mid_session\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":127,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"post_snap(three)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$SNAP_WAL_WRITE_INPUT" "$PERSIST_DIR_57")
+SNAP_LINE=$(echo "$RESPONSE" | grep '"id":126')
+POST_LINE=$(echo "$RESPONSE" | grep '"id":127')
+assert_contains "save_snapshot mid-session succeeds" "$SNAP_LINE" '"isError":false'
+assert_contains "post-snapshot fact write succeeds" "$POST_LINE" '"isError":false'
+
+SNAP_WAL_REPLAY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":128,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"pre_snap(one)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":129,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"pre_snap(two)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":130,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"post_snap(three)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$SNAP_WAL_REPLAY_INPUT" "$PERSIST_DIR_57")
+REPLAY_PRE1=$(echo "$RESPONSE" | grep '"id":128')
+REPLAY_PRE2=$(echo "$RESPONSE" | grep '"id":129')
+REPLAY_POST=$(echo "$RESPONSE" | grep '"id":130')
+assert_contains "pre-snapshot fact 1 survives restart" "$REPLAY_PRE1" '[{}]'
+assert_contains "pre-snapshot fact 2 survives restart" "$REPLAY_PRE2" '[{}]'
+assert_contains "post-snapshot WAL fact survives restart" "$REPLAY_POST" '[{}]'
+rm -rf "$PERSIST_DIR_57"
+
+# --- Test 58: get_persistence_status on fresh server reports zero state (US5) ---
+echo "Test: get_persistence_status reports zero state on fresh server"
+PERSIST_DIR_58=$(mktemp -d)
+FRESH_STATUS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":131,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp_persist "$FRESH_STATUS_INPUT" "$PERSIST_DIR_58")
+FRESH_LINE=$(echo "$RESPONSE" | grep '"id":131')
+assert_contains "fresh persistence status returns success" "$FRESH_LINE" '"isError":false'
+assert_contains "fresh persistence reports active mode" "$FRESH_LINE" 'active'
+rm -rf "$PERSIST_DIR_58"
 
 # --- Summary ---
 echo ""

@@ -79,6 +79,7 @@ fn isBuiltin(name: []const u8) bool {
     if (name[0] == '$') return true;
     if (std.mem.indexOf(u8, name, ":") != null) return true;
     if (std.mem.eql(u8, name, "tms_justification")) return true;
+    if (std.mem.eql(u8, name, "zpm_source")) return true;
     return false;
 }
 

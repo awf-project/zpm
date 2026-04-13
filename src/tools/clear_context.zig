@@ -1,6 +1,9 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
+const wal = @import("../persistence/wal.zig");
+const JournalEntry = wal.JournalEntry;
 
 pub const tool = mcp.tools.Tool{
     .name = "clear_context",
@@ -18,6 +21,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     if (category.len == 0) return mcp.tools.errorResult(allocator, "Category must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
     engine.retractAll(category) catch return mcp.tools.ToolError.ExecutionFailed;
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = category }) catch {};
+    }
     const msg = std.fmt.allocPrint(allocator, "Cleared: {s}", .{category}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -48,6 +54,39 @@ test "handler retracts all matching facts and returns confirmation" {
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "color(_)") != null);
+}
+
+test "handler journals cleared category to WAL when persistence manager is active" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+    try engine.assertFact("color(red).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("category", .{ .string = "color(_)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var content_buf: [1024]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "color(_)") != null);
 }
 
 test "handler succeeds when no facts match category" {

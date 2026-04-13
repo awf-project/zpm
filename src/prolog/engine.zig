@@ -72,6 +72,14 @@ pub const Engine = struct {
             std.heap.page_allocator.destroy(self);
             return EngineError.InitFailed;
         }
+        // Declare predicates used for runtime assertion as dynamic so Scryer Prolog
+        // accepts assertions without raising existence_error(procedure, ...).
+        self.loadString(":- dynamic(zpm_source/2). :- dynamic(tms_justification/2).") catch {
+            ffi.prolog_deinit(self.handle);
+            _ = self.gpa.deinit();
+            std.heap.page_allocator.destroy(self);
+            return EngineError.InitFailed;
+        };
         return self;
     }
 
@@ -92,14 +100,16 @@ pub const Engine = struct {
         defer self.allocator.free(goal_z);
         const raw = ffi.prolog_query(self.handle, goal_z) orelse return EngineError.QueryFailed;
         defer ffi.prolog_free_string(raw);
-        return parseQueryResult(self.allocator, std.mem.sliceTo(raw, 0));
+        const raw_str = std.mem.sliceTo(raw, 0);
+        return parseQueryResult(self.allocator, raw_str);
     }
 
     pub fn assert(self: *Engine, clause: []const u8) EngineError!void {
         const stripped = stripDot(clause);
         const clause_z = self.allocator.dupeZ(u8, stripped) catch return EngineError.OutOfMemory;
         defer self.allocator.free(clause_z);
-        if (ffi.prolog_assert(self.handle, clause_z) != 0) return EngineError.AssertFailed;
+        const rc = ffi.prolog_assert(self.handle, clause_z);
+        if (rc != 0) return EngineError.AssertFailed;
     }
 
     pub fn retract(self: *Engine, clause: []const u8) EngineError!void {

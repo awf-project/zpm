@@ -1,6 +1,9 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
+const wal = @import("../persistence/wal.zig");
+const JournalEntry = wal.JournalEntry;
 
 pub const tool = mcp.tools.Tool{
     .name = "update_fact",
@@ -29,6 +32,12 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     };
 
     engine.assertFact(new_fact) catch return mcp.tools.ToolError.ExecutionFailed;
+
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        const ts = std.time.timestamp();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retract, .clause = old_fact }) catch {};
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = new_fact }) catch {};
+    }
 
     const msg = std.fmt.allocPrint(allocator, "Updated: {s}", .{new_fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -131,4 +140,40 @@ test "handler returns error result when new_fact contains rule syntax" {
 
     const result = try handler(allocator, args);
     try std.testing.expect(result.is_error);
+}
+
+test "handler journals old_fact and new_fact as atomic group to WAL" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    try engine.assertFact("server(alpha, v1).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "server(alpha, v2)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var content_buf: [2048]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "server(alpha, v1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "server(alpha, v2)") != null);
 }

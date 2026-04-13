@@ -78,12 +78,75 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_module.addImport("prolog/engine.zig", engine_test_module);
+    exe_module.addImport("../prolog/engine.zig", engine_test_module);
     const engine_unit_tests = b.addTest(.{
         .root_module = engine_test_module,
     });
     linkFfi(engine_unit_tests, b, &patch_ffi.step);
     const run_engine_unit_tests = b.addRunArtifact(engine_unit_tests);
     test_step.dependOn(&run_engine_unit_tests.step);
+
+    // wal persistence module (F010) — declared early for tool test dependencies
+    const wal_test_module = b.createModule(.{
+        .root_source_file = b.path("src/persistence/wal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wal_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const wal_unit_tests = b.addTest(.{
+        .root_module = wal_test_module,
+    });
+    linkFfi(wal_unit_tests, b, &patch_ffi.step);
+    const run_wal_unit_tests = b.addRunArtifact(wal_unit_tests);
+    test_step.dependOn(&run_wal_unit_tests.step);
+
+    // term_utils shared module (used by tools and persistence)
+    const term_utils_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/term_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    term_utils_module.addImport("../prolog/engine.zig", engine_test_module);
+    const term_utils_exe_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/term_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    term_utils_exe_module.addImport("../prolog/engine.zig", engine_test_module);
+    exe_module.addImport("term_utils", term_utils_exe_module);
+
+    // snapshot persistence module (F010) — declared early for tool test dependencies
+    const snapshot_test_module = b.createModule(.{
+        .root_source_file = b.path("src/persistence/snapshot.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    snapshot_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    snapshot_test_module.addImport("term_utils", term_utils_module);
+    const snapshot_unit_tests = b.addTest(.{
+        .root_module = snapshot_test_module,
+    });
+    linkFfi(snapshot_unit_tests, b, &patch_ffi.step);
+    const run_snapshot_unit_tests = b.addRunArtifact(snapshot_unit_tests);
+    test_step.dependOn(&run_snapshot_unit_tests.step);
+
+    // manager persistence module (F010) — declared early for tool test dependencies
+    const manager_test_module = b.createModule(.{
+        .root_source_file = b.path("src/persistence/manager.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    manager_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    manager_test_module.addImport("term_utils", term_utils_module);
+    manager_test_module.addImport("snapshot.zig", snapshot_test_module);
+    manager_test_module.addImport("wal.zig", wal_test_module);
+    const manager_unit_tests = b.addTest(.{
+        .root_module = manager_test_module,
+    });
+    linkFfi(manager_unit_tests, b, &patch_ffi.step);
+    const run_manager_unit_tests = b.addRunArtifact(manager_unit_tests);
+    test_step.dependOn(&run_manager_unit_tests.step);
 
     // forget_fact tool tests (pre-registration, F007)
     const forget_fact_test_module = b.createModule(.{
@@ -93,6 +156,8 @@ pub fn build(b: *std.Build) void {
     });
     forget_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
     forget_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    forget_fact_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    forget_fact_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const forget_fact_unit_tests = b.addTest(.{
         .root_module = forget_fact_test_module,
     });
@@ -108,6 +173,8 @@ pub fn build(b: *std.Build) void {
     });
     clear_context_test_module.addImport("mcp", mcp_dep.module("mcp"));
     clear_context_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    clear_context_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    clear_context_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const clear_context_unit_tests = b.addTest(.{
         .root_module = clear_context_test_module,
     });
@@ -123,6 +190,8 @@ pub fn build(b: *std.Build) void {
     });
     update_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
     update_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    update_fact_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    update_fact_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const update_fact_unit_tests = b.addTest(.{
         .root_module = update_fact_test_module,
     });
@@ -138,6 +207,8 @@ pub fn build(b: *std.Build) void {
     });
     upsert_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
     upsert_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    upsert_fact_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    upsert_fact_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const upsert_fact_unit_tests = b.addTest(.{
         .root_module = upsert_fact_test_module,
     });
@@ -153,6 +224,8 @@ pub fn build(b: *std.Build) void {
     });
     assume_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
     assume_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    assume_fact_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    assume_fact_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const assume_fact_unit_tests = b.addTest(.{
         .root_module = assume_fact_test_module,
     });
@@ -168,6 +241,8 @@ pub fn build(b: *std.Build) void {
     });
     retract_assumption_test_module.addImport("mcp", mcp_dep.module("mcp"));
     retract_assumption_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    retract_assumption_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    retract_assumption_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const retract_assumption_unit_tests = b.addTest(.{
         .root_module = retract_assumption_test_module,
     });
@@ -228,12 +303,86 @@ pub fn build(b: *std.Build) void {
     });
     retract_assumptions_test_module.addImport("mcp", mcp_dep.module("mcp"));
     retract_assumptions_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    retract_assumptions_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    retract_assumptions_test_module.addImport("../persistence/wal.zig", wal_test_module);
     const retract_assumptions_unit_tests = b.addTest(.{
         .root_module = retract_assumptions_test_module,
     });
     linkFfi(retract_assumptions_unit_tests, b, &patch_ffi.step);
     const run_retract_assumptions_unit_tests = b.addRunArtifact(retract_assumptions_unit_tests);
     test_step.dependOn(&run_retract_assumptions_unit_tests.step);
+
+    retract_assumption_test_module.addImport("term_utils", term_utils_module);
+    get_justification_test_module.addImport("term_utils", term_utils_module);
+    retract_assumptions_test_module.addImport("term_utils", term_utils_module);
+
+    // restore_snapshot tool tests (F010)
+    const restore_snapshot_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/restore_snapshot.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    restore_snapshot_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    restore_snapshot_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    restore_snapshot_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    restore_snapshot_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    const restore_snapshot_unit_tests = b.addTest(.{
+        .root_module = restore_snapshot_test_module,
+    });
+    linkFfi(restore_snapshot_unit_tests, b, &patch_ffi.step);
+    const run_restore_snapshot_unit_tests = b.addRunArtifact(restore_snapshot_unit_tests);
+    test_step.dependOn(&run_restore_snapshot_unit_tests.step);
+
+    // save_snapshot tool tests (F010)
+    const save_snapshot_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/save_snapshot.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    save_snapshot_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    save_snapshot_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    save_snapshot_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    save_snapshot_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    const save_snapshot_unit_tests = b.addTest(.{
+        .root_module = save_snapshot_test_module,
+    });
+    linkFfi(save_snapshot_unit_tests, b, &patch_ffi.step);
+    const run_save_snapshot_unit_tests = b.addRunArtifact(save_snapshot_unit_tests);
+    test_step.dependOn(&run_save_snapshot_unit_tests.step);
+
+    // list_snapshots tool tests (F010)
+    const list_snapshots_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/list_snapshots.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    list_snapshots_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    list_snapshots_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    list_snapshots_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    list_snapshots_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    const list_snapshots_unit_tests = b.addTest(.{
+        .root_module = list_snapshots_test_module,
+    });
+    linkFfi(list_snapshots_unit_tests, b, &patch_ffi.step);
+    const run_list_snapshots_unit_tests = b.addRunArtifact(list_snapshots_unit_tests);
+    test_step.dependOn(&run_list_snapshots_unit_tests.step);
+
+    // get_persistence_status tool tests (F010)
+    const get_persistence_status_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/get_persistence_status.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    get_persistence_status_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    get_persistence_status_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    get_persistence_status_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    get_persistence_status_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    const get_persistence_status_unit_tests = b.addTest(.{
+        .root_module = get_persistence_status_test_module,
+    });
+    linkFfi(get_persistence_status_unit_tests, b, &patch_ffi.step);
+    const run_get_persistence_status_unit_tests = b.addRunArtifact(get_persistence_status_unit_tests);
+    test_step.dependOn(&run_get_persistence_status_unit_tests.step);
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {

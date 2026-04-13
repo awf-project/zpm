@@ -1,6 +1,9 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
+const wal = @import("../persistence/wal.zig");
+const JournalEntry = wal.JournalEntry;
 
 pub const tool = mcp.tools.Tool{
     .name = "forget_fact",
@@ -21,6 +24,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retract, .clause = fact }) catch {};
+    }
     const msg = std.fmt.allocPrint(allocator, "Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -79,6 +85,39 @@ test "handler returns error result when fact is empty string" {
 
     const result = try handler(allocator, args);
     try std.testing.expect(result.is_error);
+}
+
+test "handler journals retraction to WAL when persistence manager is active" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+    try engine.assertFact("session(active).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "session(active)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var content_buf: [1024]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "session(active)") != null);
 }
 
 test "handler returns error result when fact does not exist in knowledge base" {
