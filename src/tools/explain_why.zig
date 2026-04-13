@@ -2,6 +2,7 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
+const term_utils = @import("term_utils");
 
 pub const tool = mcp.tools.Tool{
     .name = "explain_why",
@@ -122,51 +123,13 @@ fn collectGoals(allocator: std.mem.Allocator, term: engine_mod.Term, goals: *std
                 try collectGoals(allocator, c.args[0], goals);
                 try collectGoals(allocator, c.args[1], goals);
             } else {
-                try goals.append(allocator, try termToString(allocator, term));
+                try goals.append(allocator, try term_utils.termToString(allocator, term));
             }
         },
         else => {
-            try goals.append(allocator, try termToString(allocator, term));
+            try goals.append(allocator, try term_utils.termToString(allocator, term));
         },
     }
-}
-
-fn termToString(allocator: std.mem.Allocator, term: engine_mod.Term) ![]u8 {
-    return switch (term) {
-        .atom => |s| allocator.dupe(u8, s),
-        .integer => |i| std.fmt.allocPrint(allocator, "{d}", .{i}),
-        .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
-        .variable => |s| allocator.dupe(u8, s),
-        .list => |items| blk: {
-            var aw: std.io.Writer.Allocating = .init(allocator);
-            defer aw.deinit();
-            const writer = &aw.writer;
-            try writer.writeByte('[');
-            for (items, 0..) |item, i| {
-                if (i > 0) try writer.writeByte(',');
-                const s = try termToString(allocator, item);
-                defer allocator.free(s);
-                try writer.writeAll(s);
-            }
-            try writer.writeByte(']');
-            break :blk aw.toOwnedSlice();
-        },
-        .compound => |c| blk: {
-            var aw: std.io.Writer.Allocating = .init(allocator);
-            defer aw.deinit();
-            const writer = &aw.writer;
-            try writer.writeAll(c.functor);
-            try writer.writeByte('(');
-            for (c.args, 0..) |arg, i| {
-                if (i > 0) try writer.writeByte(',');
-                const s = try termToString(allocator, arg);
-                defer allocator.free(s);
-                try writer.writeAll(s);
-            }
-            try writer.writeByte(')');
-            break :blk aw.toOwnedSlice();
-        },
-    };
 }
 
 test "handler returns proof tree for provable fact" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
+const term_utils = @import("term_utils");
 const Term = engine_mod.Term;
 
 pub const tool = mcp.tools.Tool{
@@ -14,42 +15,6 @@ pub const tool = mcp.tools.Tool{
     },
     .handler = handler,
 };
-
-fn termToString(allocator: std.mem.Allocator, term: Term) ![]u8 {
-    return switch (term) {
-        .atom => |s| allocator.dupe(u8, s),
-        .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
-        .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
-        .variable => |s| allocator.dupe(u8, s),
-        .compound => |c| {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(allocator);
-            try buf.appendSlice(allocator, c.functor);
-            try buf.append(allocator, '(');
-            for (c.args, 0..) |arg, i| {
-                if (i > 0) try buf.appendSlice(allocator, ", ");
-                const arg_str = try termToString(allocator, arg);
-                defer allocator.free(arg_str);
-                try buf.appendSlice(allocator, arg_str);
-            }
-            try buf.append(allocator, ')');
-            return buf.toOwnedSlice(allocator);
-        },
-        .list => |items| {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(allocator);
-            try buf.append(allocator, '[');
-            for (items, 0..) |item, i| {
-                if (i > 0) try buf.appendSlice(allocator, ", ");
-                const item_str = try termToString(allocator, item);
-                defer allocator.free(item_str);
-                try buf.appendSlice(allocator, item_str);
-            }
-            try buf.append(allocator, ']');
-            return buf.toOwnedSlice(allocator);
-        },
-    };
-}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
@@ -72,7 +37,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     for (qr.solutions) |solution| {
         const fact_term = solution.bindings.get("F") orelse continue;
-        const fact_str = termToString(allocator, fact_term) catch continue;
+        const fact_str = term_utils.termToString(allocator, fact_term) catch continue;
         facts.append(allocator, fact_str) catch {
             allocator.free(fact_str);
             continue;

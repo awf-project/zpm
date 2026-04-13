@@ -3,6 +3,7 @@ const Engine = @import("../prolog/engine.zig").Engine;
 
 var mutex = std.Thread.Mutex{};
 var engine: ?*Engine = null;
+var persistence_manager: ?*anyopaque = null;
 
 pub fn setEngine(e: *Engine) void {
     mutex.lock();
@@ -20,6 +21,25 @@ pub fn getEngine() ?*Engine {
     mutex.lock();
     defer mutex.unlock();
     return engine;
+}
+
+pub fn setPersistenceManager(pm: *anyopaque) void {
+    mutex.lock();
+    defer mutex.unlock();
+    persistence_manager = pm;
+}
+
+pub fn clearPersistenceManager() void {
+    mutex.lock();
+    defer mutex.unlock();
+    persistence_manager = null;
+}
+
+pub fn getPersistenceManagerAs(comptime T: type) ?*T {
+    mutex.lock();
+    defer mutex.unlock();
+    const pm = persistence_manager orelse return null;
+    return @ptrCast(@alignCast(pm));
 }
 
 test "getEngine returns null before setEngine is called" {

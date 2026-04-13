@@ -13,6 +13,7 @@ Welcome to zpm documentation. Choose your path:
 - **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains
 - **[Fact Deletion](user-guide/fact-deletion.md)** — Remove individual facts or clear entire categories
 - **[Truth Maintenance System](user-guide/truth-maintenance.md)** — Manage assumptions and automatically propagate belief changes
+- **[Knowledge Base Persistence](user-guide/persistence.md)** — Save and restore knowledge base state with snapshots and automatic recovery
 
 ## For Developers
 
