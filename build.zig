@@ -144,6 +144,96 @@ pub fn build(b: *std.Build) void {
     linkFfi(upsert_fact_unit_tests, b, &patch_ffi.step);
     const run_upsert_fact_unit_tests = b.addRunArtifact(upsert_fact_unit_tests);
     test_step.dependOn(&run_upsert_fact_unit_tests.step);
+
+    // assume_fact tool tests (F009)
+    const assume_fact_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/assume_fact.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    assume_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    assume_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const assume_fact_unit_tests = b.addTest(.{
+        .root_module = assume_fact_test_module,
+    });
+    linkFfi(assume_fact_unit_tests, b, &patch_ffi.step);
+    const run_assume_fact_unit_tests = b.addRunArtifact(assume_fact_unit_tests);
+    test_step.dependOn(&run_assume_fact_unit_tests.step);
+
+    // retract_assumption tool tests (F009)
+    const retract_assumption_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/retract_assumption.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    retract_assumption_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    retract_assumption_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const retract_assumption_unit_tests = b.addTest(.{
+        .root_module = retract_assumption_test_module,
+    });
+    linkFfi(retract_assumption_unit_tests, b, &patch_ffi.step);
+    const run_retract_assumption_unit_tests = b.addRunArtifact(retract_assumption_unit_tests);
+    test_step.dependOn(&run_retract_assumption_unit_tests.step);
+
+    // get_belief_status tool tests (F009)
+    const get_belief_status_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/get_belief_status.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    get_belief_status_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    get_belief_status_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const get_belief_status_unit_tests = b.addTest(.{
+        .root_module = get_belief_status_test_module,
+    });
+    linkFfi(get_belief_status_unit_tests, b, &patch_ffi.step);
+    const run_get_belief_status_unit_tests = b.addRunArtifact(get_belief_status_unit_tests);
+    test_step.dependOn(&run_get_belief_status_unit_tests.step);
+
+    // get_justification tool tests (F009)
+    const get_justification_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/get_justification.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    get_justification_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    get_justification_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const get_justification_unit_tests = b.addTest(.{
+        .root_module = get_justification_test_module,
+    });
+    linkFfi(get_justification_unit_tests, b, &patch_ffi.step);
+    const run_get_justification_unit_tests = b.addRunArtifact(get_justification_unit_tests);
+    test_step.dependOn(&run_get_justification_unit_tests.step);
+
+    // list_assumptions tool tests (F009)
+    const list_assumptions_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/list_assumptions.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    list_assumptions_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    list_assumptions_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const list_assumptions_unit_tests = b.addTest(.{
+        .root_module = list_assumptions_test_module,
+    });
+    linkFfi(list_assumptions_unit_tests, b, &patch_ffi.step);
+    const run_list_assumptions_unit_tests = b.addRunArtifact(list_assumptions_unit_tests);
+    test_step.dependOn(&run_list_assumptions_unit_tests.step);
+
+    // retract_assumptions tool tests (F009)
+    const retract_assumptions_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/retract_assumptions.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    retract_assumptions_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    retract_assumptions_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const retract_assumptions_unit_tests = b.addTest(.{
+        .root_module = retract_assumptions_test_module,
+    });
+    linkFfi(retract_assumptions_unit_tests, b, &patch_ffi.step);
+    const run_retract_assumptions_unit_tests = b.addRunArtifact(retract_assumptions_unit_tests);
+    test_step.dependOn(&run_retract_assumptions_unit_tests.step);
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {

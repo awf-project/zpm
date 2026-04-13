@@ -13,6 +13,12 @@ const forget_fact = @import("tools/forget_fact.zig");
 const clear_context = @import("tools/clear_context.zig");
 const update_fact = @import("tools/update_fact.zig");
 const upsert_fact = @import("tools/upsert_fact.zig");
+const assume_fact = @import("tools/assume_fact.zig");
+const retract_assumption = @import("tools/retract_assumption.zig");
+const get_belief_status = @import("tools/get_belief_status.zig");
+const get_justification = @import("tools/get_justification.zig");
+const list_assumptions = @import("tools/list_assumptions.zig");
+const retract_assumptions = @import("tools/retract_assumptions.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub fn main() !void {
@@ -45,6 +51,12 @@ pub fn main() !void {
     try server.addTool(clear_context.tool);
     try server.addTool(update_fact.tool);
     try server.addTool(upsert_fact.tool);
+    try server.addTool(assume_fact.tool);
+    try server.addTool(retract_assumption.tool);
+    try server.addTool(get_belief_status.tool);
+    try server.addTool(get_justification.tool);
+    try server.addTool(list_assumptions.tool);
+    try server.addTool(retract_assumptions.tool);
 
     try server.run(.stdio);
 }
@@ -63,6 +75,12 @@ test {
     _ = clear_context;
     _ = update_fact;
     _ = upsert_fact;
+    _ = assume_fact;
+    _ = retract_assumption;
+    _ = get_belief_status;
+    _ = get_justification;
+    _ = list_assumptions;
+    _ = retract_assumptions;
     _ = @import("prolog/engine.zig");
 }
 
@@ -91,7 +109,7 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers all twelve tools" {
+test "server registers all eighteen tools" {
     var server = initTestServer();
     defer server.deinit();
 
@@ -107,8 +125,14 @@ test "server registers all twelve tools" {
     try server.addTool(clear_context.tool);
     try server.addTool(update_fact.tool);
     try server.addTool(upsert_fact.tool);
+    try server.addTool(assume_fact.tool);
+    try server.addTool(retract_assumption.tool);
+    try server.addTool(get_belief_status.tool);
+    try server.addTool(get_justification.tool);
+    try server.addTool(list_assumptions.tool);
+    try server.addTool(retract_assumptions.tool);
 
-    try std.testing.expectEqual(@as(usize, 12), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 18), server.tools.count());
 }
 
 test "server registers get_knowledge_schema tool" {

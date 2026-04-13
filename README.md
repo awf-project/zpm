@@ -14,6 +14,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Knowledge schema discovery: introspect predicates and their types via MCP
 - Delete tools: retract individual facts or clear entire categories from the knowledge base
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
+- Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -70,14 +71,20 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
+| `assume_fact` | Assert a fact under a named assumption with automatic justification tracking | `assumption` (string, required), `fact` (string, required) |
 | `clear_context` | Clear all facts from the knowledge base matching a pattern | `category` (string, required) |
 | `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
 | `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional) |
 | `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required) |
+| `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required) |
+| `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required) |
 | `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | (no required arguments) |
+| `list_assumptions` | List all currently active assumptions and their associated facts | (no required arguments) |
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
+| `retract_assumption` | Retract a named assumption and propagate its removal through the knowledge base | `assumption` (string, required) |
+| `retract_assumptions` | Retract all assumptions matching a glob-style pattern | `pattern` (string, required) |
 | `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required) |
 | `update_fact` | Atomically replace an existing fact (retract old, assert new) | `old_fact` (string, required), `new_fact` (string, required) |
 | `upsert_fact` | Replace a fact matching functor+first arg, or insert if not found | `fact` (string, required) |
@@ -89,16 +96,28 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 src/
   main.zig          # MCP server entry point (STDIO transport)
   tools/
+    assume_fact.zig        # Assume fact tool handler (assumption-based justification)
     clear_context.zig      # Clear context tool handler (bulk fact deletion)
     context.zig            # Engine singleton for tool handlers
     define_rule.zig        # Define rule tool handler
     echo.zig               # Echo tool handler
     explain_why.zig        # Proof tree explanation tool handler
     forget_fact.zig        # Forget fact tool handler (single fact deletion)
+    get_belief_status.zig  # Belief status query tool handler
+    get_justification.zig  # Justification query tool handler
     get_knowledge_schema.zig # Knowledge schema introspection tool handler
+    list_assumptions.zig   # List assumptions tool handler
     query_logic.zig        # Query logic tool handler
     remember_fact.zig      # Remember fact tool handler
+    retract_assumption.zig # Retract assumption tool handler (with propagation)
+    retract_assumptions.zig # Bulk retract assumptions tool handler (pattern matching)
     trace_dependency.zig   # Trace dependency tool handler
+    assume_fact.zig        # TMS: assert fact under named assumption
+    get_belief_status.zig  # TMS: query belief support status and justifications
+    get_justification.zig  # TMS: list facts supported by an assumption
+    list_assumptions.zig   # TMS: list all active assumptions
+    retract_assumption.zig # TMS: retract assumption with propagation
+    retract_assumptions.zig # TMS: bulk retract by glob pattern
     update_fact.zig        # Update fact tool handler (atomic replacement)
     upsert_fact.zig        # Upsert fact tool handler (insert or replace)
     verify_consistency.zig # Knowledge base consistency checker
@@ -125,6 +144,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F006: Knowledge schema discovery (get_knowledge_schema)
 - [x] F007: Fact deletion tools (forget_fact, clear_context)
 - [x] F008: Fact update and upsert tools (update_fact, upsert_fact)
+- [x] F009: Truth Maintenance System (assume_fact, retract_assumption, get_belief_status, get_justification, list_assumptions, retract_assumptions)
 
 ## Documentation
 
