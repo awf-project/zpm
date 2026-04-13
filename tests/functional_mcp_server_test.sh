@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F007
+# Features: F001-F008
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -21,6 +21,18 @@ assert_contains() {
         red "  FAIL: $label — expected to contain: $needle"
         red "  GOT: $haystack"
         FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_not_contains() {
+    local label="$1" haystack="$2" needle="$3"
+    if echo "$haystack" | grep -qF "$needle"; then
+        red "  FAIL: $label — expected NOT to contain: $needle"
+        red "  GOT: $haystack"
+        FAIL=$((FAIL + 1))
+    else
+        green "  PASS: $label"
+        PASS=$((PASS + 1))
     fi
 }
 
@@ -70,6 +82,8 @@ assert_contains "explain_why tool listed" "$TOOLS_LINE" '"name":"explain_why"'
 assert_contains "get_knowledge_schema tool listed" "$TOOLS_LINE" '"name":"get_knowledge_schema"'
 assert_contains "forget_fact tool listed" "$TOOLS_LINE" '"name":"forget_fact"'
 assert_contains "clear_context tool listed" "$TOOLS_LINE" '"name":"clear_context"'
+assert_contains "update_fact tool listed" "$TOOLS_LINE" '"name":"update_fact"'
+assert_contains "upsert_fact tool listed" "$TOOLS_LINE" '"name":"upsert_fact"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -475,6 +489,81 @@ assert_contains "first forget_fact on duplicate returns success" "$FORGET_FIRST_
 assert_contains "one duplicate remains after first retraction" "$QUERY_ONE_LEFT_LINE" '[{}]'
 assert_contains "second forget_fact on duplicate returns success" "$FORGET_SECOND_LINE" '"isError":false'
 assert_contains "zero duplicates remain after second retraction" "$QUERY_ZERO_LEFT_LINE" '[]'
+
+# --- Test 35: update_fact replaces existing fact atomically ---
+echo "Test: update_fact replaces existing fact"
+UPDATE_SUCCESS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":63,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(timeout, 30)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":64,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"config(timeout, 30)\",\"new_fact\":\"config(timeout, 60)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":65,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(timeout, 60)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":66,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(timeout, 30)\"}}}
+"
+RESPONSE=$(send_mcp "$UPDATE_SUCCESS_INPUT")
+UPDATE_LINE=$(echo "$RESPONSE" | grep '"id":64')
+QUERY_NEW_LINE=$(echo "$RESPONSE" | grep '"id":65')
+QUERY_OLD_LINE=$(echo "$RESPONSE" | grep '"id":66')
+
+assert_contains "update_fact returns success" "$UPDATE_LINE" '"isError":false'
+assert_contains "new fact is queryable after update" "$QUERY_NEW_LINE" '[{}]'
+assert_contains "old fact is gone after update" "$QUERY_OLD_LINE" '[]'
+
+# --- Test 36: update_fact returns error when old fact does not exist ---
+echo "Test: update_fact not-found returns error"
+UPDATE_NOTFOUND_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":67,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"nonexistent(ghost, fact)\",\"new_fact\":\"nonexistent(ghost, replaced)\"}}}
+"
+RESPONSE=$(send_mcp "$UPDATE_NOTFOUND_INPUT")
+UPDATE_NOTFOUND_LINE=$(echo "$RESPONSE" | grep '"id":67')
+
+assert_contains "update_fact not-found returns isError true" "$UPDATE_NOTFOUND_LINE" '"isError":true'
+
+# --- Test 37: upsert_fact inserts when no prior fact exists ---
+echo "Test: upsert_fact inserts new fact"
+UPSERT_INSERT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":68,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"service(api, healthy)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":69,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"service(api, healthy)\"}}}
+"
+RESPONSE=$(send_mcp "$UPSERT_INSERT_INPUT")
+UPSERT_INSERT_LINE=$(echo "$RESPONSE" | grep '"id":68')
+QUERY_INSERT_LINE=$(echo "$RESPONSE" | grep '"id":69')
+
+assert_contains "upsert_fact insert returns success" "$UPSERT_INSERT_LINE" '"isError":false'
+assert_contains "upserted fact is queryable" "$QUERY_INSERT_LINE" '[{}]'
+
+# --- Test 38: upsert_fact replaces existing fact with same functor and first arg ---
+echo "Test: upsert_fact replaces existing fact"
+UPSERT_REPLACE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":70,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"deploy(prod, v1)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":71,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"deploy(prod, v2)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":72,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"deploy(prod, X)\"}}}
+"
+RESPONSE=$(send_mcp "$UPSERT_REPLACE_INPUT")
+UPSERT_REPLACE_LINE=$(echo "$RESPONSE" | grep '"id":71')
+QUERY_REPLACE_LINE=$(echo "$RESPONSE" | grep '"id":72')
+
+assert_contains "upsert_fact replace returns success" "$UPSERT_REPLACE_LINE" '"isError":false'
+assert_contains "only new version remains after upsert" "$QUERY_REPLACE_LINE" 'v2'
+assert_not_contains "old version is gone after upsert" "$QUERY_REPLACE_LINE" 'v1'
+
+# --- Test 39: upsert_fact does not affect facts with different first argument ---
+echo "Test: upsert_fact preserves unrelated facts"
+UPSERT_PRESERVE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":73,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"env(prod, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":74,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"env(dev, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":75,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"env(prod, frozen)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":76,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"env(dev, active)\"}}}
+"
+RESPONSE=$(send_mcp "$UPSERT_PRESERVE_INPUT")
+UPSERT_PRESERVE_LINE=$(echo "$RESPONSE" | grep '"id":75')
+QUERY_PRESERVE_LINE=$(echo "$RESPONSE" | grep '"id":76')
+
+assert_contains "upsert_fact preserve returns success" "$UPSERT_PRESERVE_LINE" '"isError":false'
+assert_contains "unrelated fact survives upsert" "$QUERY_PRESERVE_LINE" '[{}]'
 
 # --- Summary ---
 echo ""

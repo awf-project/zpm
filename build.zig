@@ -114,6 +114,36 @@ pub fn build(b: *std.Build) void {
     linkFfi(clear_context_unit_tests, b, &patch_ffi.step);
     const run_clear_context_unit_tests = b.addRunArtifact(clear_context_unit_tests);
     test_step.dependOn(&run_clear_context_unit_tests.step);
+
+    // update_fact tool tests (pre-registration, F008)
+    const update_fact_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/update_fact.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    update_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    update_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const update_fact_unit_tests = b.addTest(.{
+        .root_module = update_fact_test_module,
+    });
+    linkFfi(update_fact_unit_tests, b, &patch_ffi.step);
+    const run_update_fact_unit_tests = b.addRunArtifact(update_fact_unit_tests);
+    test_step.dependOn(&run_update_fact_unit_tests.step);
+
+    // upsert_fact tool tests (pre-registration, F008)
+    const upsert_fact_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/upsert_fact.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    upsert_fact_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    upsert_fact_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    const upsert_fact_unit_tests = b.addTest(.{
+        .root_module = upsert_fact_test_module,
+    });
+    linkFfi(upsert_fact_unit_tests, b, &patch_ffi.step);
+    const run_upsert_fact_unit_tests = b.addRunArtifact(upsert_fact_unit_tests);
+    test_step.dependOn(&run_upsert_fact_unit_tests.step);
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {
