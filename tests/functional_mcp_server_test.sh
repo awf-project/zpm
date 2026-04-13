@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F008
+# Features: F001-F009
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
@@ -84,6 +84,12 @@ assert_contains "forget_fact tool listed" "$TOOLS_LINE" '"name":"forget_fact"'
 assert_contains "clear_context tool listed" "$TOOLS_LINE" '"name":"clear_context"'
 assert_contains "update_fact tool listed" "$TOOLS_LINE" '"name":"update_fact"'
 assert_contains "upsert_fact tool listed" "$TOOLS_LINE" '"name":"upsert_fact"'
+assert_contains "assume_fact tool listed" "$TOOLS_LINE" '"name":"assume_fact"'
+assert_contains "retract_assumption tool listed" "$TOOLS_LINE" '"name":"retract_assumption"'
+assert_contains "get_belief_status tool listed" "$TOOLS_LINE" '"name":"get_belief_status"'
+assert_contains "get_justification tool listed" "$TOOLS_LINE" '"name":"get_justification"'
+assert_contains "list_assumptions tool listed" "$TOOLS_LINE" '"name":"list_assumptions"'
+assert_contains "retract_assumptions tool listed" "$TOOLS_LINE" '"name":"retract_assumptions"'
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -564,6 +570,168 @@ QUERY_PRESERVE_LINE=$(echo "$RESPONSE" | grep '"id":76')
 
 assert_contains "upsert_fact preserve returns success" "$UPSERT_PRESERVE_LINE" '"isError":false'
 assert_contains "unrelated fact survives upsert" "$QUERY_PRESERVE_LINE" '[{}]'
+
+# --- Test 40: assume_fact asserts a fact under a named assumption ---
+echo "Test: assume_fact basic assertion"
+ASSUME_BASIC_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":77,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app, prod)\",\"assumption\":\"baseline\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":78,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"deployed(app, prod)\"}}}
+"
+RESPONSE=$(send_mcp "$ASSUME_BASIC_INPUT")
+ASSUME_LINE=$(echo "$RESPONSE" | grep '"id":77')
+QUERY_LINE=$(echo "$RESPONSE" | grep '"id":78')
+
+assert_contains "assume_fact returns success" "$ASSUME_LINE" '"isError":false'
+assert_contains "assume_fact result contains Assumed" "$ASSUME_LINE" 'Assumed:'
+assert_contains "assumed fact is queryable" "$QUERY_LINE" '[{}]'
+
+# --- Test 41: assume_fact is idempotent for same fact and assumption ---
+echo "Test: assume_fact idempotency"
+ASSUME_IDEM_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":79,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc)\",\"assumption\":\"idem_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":80,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc)\",\"assumption\":\"idem_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":81,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"active(svc)\"}}}
+"
+RESPONSE=$(send_mcp "$ASSUME_IDEM_INPUT")
+ASSUME1_LINE=$(echo "$RESPONSE" | grep '"id":79')
+ASSUME2_LINE=$(echo "$RESPONSE" | grep '"id":80')
+BELIEF_LINE=$(echo "$RESPONSE" | grep '"id":81')
+
+assert_contains "first assume_fact returns success" "$ASSUME1_LINE" '"isError":false'
+assert_contains "second assume_fact returns success (idempotent)" "$ASSUME2_LINE" '"isError":false'
+assert_contains "belief status is in after idempotent assume" "$BELIEF_LINE" '\"status\":\"in\"'
+
+# --- Test 42: retract_assumption removes solely-supported fact ---
+echo "Test: retract_assumption removes fact with single support"
+RETRACT_SOLE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":82,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(worker)\",\"assumption\":\"deploy_a1\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":83,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"deploy_a1\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":84,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"running(worker)\"}}}
+"
+RESPONSE=$(send_mcp "$RETRACT_SOLE_INPUT")
+RETRACT_LINE=$(echo "$RESPONSE" | grep '"id":83')
+QUERY_AFTER_LINE=$(echo "$RESPONSE" | grep '"id":84')
+
+assert_contains "retract_assumption returns success" "$RETRACT_LINE" '"isError":false'
+assert_contains "retract_assumption reports fact removed" "$RETRACT_LINE" '1 fact(s) removed'
+assert_contains "fact is gone after retraction" "$QUERY_AFTER_LINE" '[]'
+
+# --- Test 43: multi-support survival — fact with two assumptions, retract one, fact persists ---
+echo "Test: multi-support fact survives single assumption retraction"
+MULTI_SUPPORT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":85,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"online(db)\",\"assumption\":\"sup_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":86,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"online(db)\",\"assumption\":\"sup_b\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":87,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"sup_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":88,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"online(db)\"}}}
+"
+RESPONSE=$(send_mcp "$MULTI_SUPPORT_INPUT")
+RETRACT_A_LINE=$(echo "$RESPONSE" | grep '"id":87')
+QUERY_SURVIVE_LINE=$(echo "$RESPONSE" | grep '"id":88')
+
+assert_contains "retract sup_a returns success" "$RETRACT_A_LINE" '"isError":false'
+assert_not_contains "multi-support fact was fully removed after partial retraction" "$QUERY_SURVIVE_LINE" '"text":"[]"'
+
+# --- Test 44: non-TMS isolation — remember_fact survives retract_assumption ---
+echo "Test: remember_fact fact survives assumption retraction"
+NON_TMS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":89,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"safe(constant)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":90,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"volatile(temp)\",\"assumption\":\"session_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":91,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"session_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":92,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"safe(constant)\"}}}
+"
+RESPONSE=$(send_mcp "$NON_TMS_INPUT")
+RETRACT_SESSION_LINE=$(echo "$RESPONSE" | grep '"id":91')
+QUERY_SAFE_LINE=$(echo "$RESPONSE" | grep '"id":92')
+
+assert_contains "retract session_a returns success" "$RETRACT_SESSION_LINE" '"isError":false'
+assert_contains "non-TMS fact survives assumption retraction" "$QUERY_SAFE_LINE" '[{}]'
+
+# --- Test 45: get_belief_status returns "in" with justification ---
+echo "Test: get_belief_status returns in with justifications"
+BELIEF_IN_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(system)\",\"assumption\":\"init_check\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"ready(system)\"}}}
+"
+RESPONSE=$(send_mcp "$BELIEF_IN_INPUT")
+BELIEF_IN_LINE=$(echo "$RESPONSE" | grep '"id":94')
+
+assert_contains "get_belief_status returns in for supported fact" "$BELIEF_IN_LINE" '\"status\":\"in\"'
+assert_contains "get_belief_status lists justification" "$BELIEF_IN_LINE" 'init_check'
+
+# --- Test 46: get_belief_status returns "out" for unsupported fact ---
+echo "Test: get_belief_status returns out for unsupported fact"
+BELIEF_OUT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":95,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"absent(ghost)\"}}}
+"
+RESPONSE=$(send_mcp "$BELIEF_OUT_INPUT")
+BELIEF_OUT_LINE=$(echo "$RESPONSE" | grep '"id":95')
+
+assert_contains "get_belief_status returns out for unsupported fact" "$BELIEF_OUT_LINE" '\"status\":\"out\"'
+assert_contains "get_belief_status returns empty justifications" "$BELIEF_OUT_LINE" '\"justifications\":[]'
+
+# --- Test 47: get_justification returns facts for a named assumption ---
+echo "Test: get_justification returns facts supported by assumption"
+GET_JUST_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":96,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"healthy(api)\",\"assumption\":\"probe_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":97,\"method\":\"tools/call\",\"params\":{\"name\":\"get_justification\",\"arguments\":{\"assumption\":\"probe_a\"}}}
+"
+RESPONSE=$(send_mcp "$GET_JUST_INPUT")
+GET_JUST_LINE=$(echo "$RESPONSE" | grep '"id":97')
+
+assert_contains "get_justification returns success" "$GET_JUST_LINE" '"isError":false'
+assert_contains "get_justification lists supported fact" "$GET_JUST_LINE" 'healthy'
+
+# --- Test 48: list_assumptions returns all active assumption names ---
+echo "Test: list_assumptions returns active assumptions"
+LIST_ASSUME_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":98,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"up(node1)\",\"assumption\":\"alpha\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"up(node2)\",\"assumption\":\"beta\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp "$LIST_ASSUME_INPUT")
+LIST_LINE=$(echo "$RESPONSE" | grep '"id":100')
+
+assert_contains "list_assumptions includes alpha" "$LIST_LINE" 'alpha'
+assert_contains "list_assumptions includes beta" "$LIST_LINE" 'beta'
+
+# --- Test 49: retract_assumptions with glob pattern retracts matching assumptions only ---
+echo "Test: retract_assumptions with pattern retracts matching only"
+RETRACT_PATTERN_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod1)\",\"assumption\":\"sess1_x\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":102,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod2)\",\"assumption\":\"sess1_y\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod3)\",\"assumption\":\"sess2_x\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":104,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":105,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"loaded(mod3)\"}}}
+"
+RESPONSE=$(send_mcp "$RETRACT_PATTERN_INPUT")
+RETRACT_PAT_LINE=$(echo "$RESPONSE" | grep '"id":104')
+QUERY_REMAIN_LINE=$(echo "$RESPONSE" | grep '"id":105')
+
+assert_contains "retract_assumptions pattern returns success" "$RETRACT_PAT_LINE" '"isError":false'
+assert_contains "retract_assumptions reports 2 assumptions retracted" "$RETRACT_PAT_LINE" '2 assumption(s) removed'
+assert_contains "non-matching assumption fact survives pattern retraction" "$QUERY_REMAIN_LINE" '[{}]'
+
+# --- Test 50: tools/list returns all 18 registered tools ---
+echo "Test: tools/list returns all 18 tools"
+TOOLSLIST_ALL_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/list\",\"params\":{}}"
+RESPONSE=$(send_mcp "$TOOLSLIST_ALL_INPUT")
+TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":200')
+
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions; do
+    assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
+done
 
 # --- Summary ---
 echo ""

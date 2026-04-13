@@ -12,6 +12,7 @@ Welcome to zpm documentation. Choose your path:
 - **[Fact Update and Upsert](user-guide/fact-update-upsert.md)** — Replace facts atomically or insert if missing
 - **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains
 - **[Fact Deletion](user-guide/fact-deletion.md)** — Remove individual facts or clear entire categories
+- **[Truth Maintenance System](user-guide/truth-maintenance.md)** — Manage assumptions and automatically propagate belief changes
 
 ## For Developers
 
