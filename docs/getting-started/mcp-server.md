@@ -22,13 +22,19 @@ The executable will be created at `zig-out/bin/zpm`.
 
 ## 2. Run the Server
 
-Start the server:
+Start the MCP server:
 
 ```bash
-zig build run
+zig-out/bin/zpm serve
 ```
 
 The server is now listening on stdin/stdout for JSON-RPC 2.0 requests.
+
+Running `zpm` without arguments displays help:
+
+```bash
+zig-out/bin/zpm
+```
 
 ## 3. Test the Server
 
@@ -46,7 +52,7 @@ echo '{
     "capabilities": {},
     "clientInfo": {"name": "test-client"}
   }
-}' | zig-out/bin/zpm
+}' | zig-out/bin/zpm serve
 ```
 
 Expected response includes server name, version, and capabilities.
@@ -59,7 +65,7 @@ echo '{
   "id": 2,
   "method": "tools/list",
   "params": {}
-}' | zig-out/bin/zpm
+}' | zig-out/bin/zpm serve
 ```
 
 This shows the echo tool with its input schema.
@@ -77,7 +83,7 @@ echo '{
     "name": "echo",
     "arguments": {"message": "Hello, zpm!"}
   }
-}' | zig-out/bin/zpm
+}' | zig-out/bin/zpm serve
 ```
 
 The server echoes back your message.
@@ -87,7 +93,7 @@ The server echoes back your message.
 To use zpm with Claude or other MCP-compatible clients, configure your client to:
 
 1. **Transport**: stdio
-2. **Command**: `zig-out/bin/zpm`
+2. **Command**: `zig-out/bin/zpm serve`
 3. **Working Directory**: zpm project root
 
 The server handles the MCP protocol handshake and tool discovery automatically.
@@ -98,7 +104,7 @@ The server handles the MCP protocol handshake and tool discovery automatically.
 
 **Invalid JSON:** Check your JSON format. The MCP protocol is strict about JSON-RPC 2.0 compliance.
 
-**Missing tool error:** Only the `echo` tool is currently available. Prolog query/assert/retract tools will be added in F003.
+**Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm serve`). Run `zpm --help` for a list of available commands.
 
 **Rust build errors:** Ensure `cargo` is in your PATH. The first build compiles scryer-prolog from source, which takes ~60-90 seconds. Subsequent builds use the Cargo cache.
 
