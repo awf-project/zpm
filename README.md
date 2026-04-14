@@ -4,6 +4,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
+- CLI entrypoint with `serve` subcommand, `--help`/`-h` and `--version`/`-v` flags
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
 - Echo tool for health-check and smoke testing
@@ -40,6 +41,19 @@ make functional-test
 
 The built binary is located at `zig-out/bin/zpm`.
 
+### CLI Usage
+
+```bash
+# Display help (also: zpm --help, zpm -h)
+zig-out/bin/zpm
+
+# Show version (also: zpm -v)
+zig-out/bin/zpm --version
+
+# Start the MCP server (STDIO transport)
+zig-out/bin/zpm serve
+```
+
 ### Connect via MCP Client
 
 Add zpm to your MCP client configuration. For example, in Claude Code's `settings.json`:
@@ -48,7 +62,8 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 {
   "mcpServers": {
     "zpm": {
-      "command": "/path/to/zig-out/bin/zpm"
+      "command": "/path/to/zig-out/bin/zpm",
+      "args": ["serve"]
     }
   }
 }
@@ -99,7 +114,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 ```
 src/
-  main.zig          # MCP server entry point (STDIO transport)
+  main.zig          # CLI entrypoint and MCP server (STDIO transport)
   tools/
     assume_fact.zig        # TMS: assert fact under named assumption
     clear_context.zig      # Clear context tool handler (bulk fact deletion)
@@ -154,6 +169,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F008: Fact update and upsert tools (update_fact, upsert_fact)
 - [x] F009: Truth Maintenance System (assume_fact, retract_assumption, get_belief_status, get_justification, list_assumptions, retract_assumptions)
 - [x] F010: Knowledge base persistence via WAL and snapshots (save_snapshot, restore_snapshot, list_snapshots, get_persistence_status)
+- [x] F011: CLI entrypoint with help and serve subcommand
 
 ## Documentation
 

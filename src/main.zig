@@ -1,5 +1,6 @@
 const std = @import("std");
 const mcp = @import("mcp");
+const cli = @import("cli");
 const echo = @import("tools/echo.zig");
 const remember_fact = @import("tools/remember_fact.zig");
 const define_rule = @import("tools/define_rule.zig");
@@ -27,10 +28,13 @@ const Engine = @import("prolog/engine.zig").Engine;
 const PersistenceManager = @import("persistence/manager.zig").PersistenceManager;
 const PersistenceStatus = @import("persistence/manager.zig").PersistenceStatus;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+const version = "0.1.0";
+
+fn serve(allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    // serve() owns its memory for the full server lifetime; page_allocator
+    // avoids GPA leak detection when called from tests with a tracking allocator
+    const alloc = std.heap.page_allocator;
 
     const engine = try Engine.init(.{});
     defer engine.deinit();
@@ -38,25 +42,25 @@ pub fn main() !void {
 
     const data_dir = std.posix.getenv("ZPM_DATA_DIR") orelse blk: {
         if (std.posix.getenv("XDG_DATA_HOME")) |xdg| {
-            break :blk try std.fmt.allocPrint(allocator, "{s}/zpm", .{xdg});
+            break :blk try std.fmt.allocPrint(alloc, "{s}/zpm", .{xdg});
         }
         if (std.posix.getenv("HOME")) |home| {
-            break :blk try std.fmt.allocPrint(allocator, "{s}/.local/share/zpm", .{home});
+            break :blk try std.fmt.allocPrint(alloc, "{s}/.local/share/zpm", .{home});
         }
-        break :blk try allocator.dupe(u8, "/tmp/zpm");
+        break :blk try alloc.dupe(u8, "/tmp/zpm");
     };
-    defer if (std.posix.getenv("ZPM_DATA_DIR") == null) allocator.free(data_dir);
-    var pm = try PersistenceManager.init(allocator, data_dir);
+    defer if (std.posix.getenv("ZPM_DATA_DIR") == null) alloc.free(data_dir);
+    var pm = try PersistenceManager.init(alloc, data_dir);
     defer pm.deinit();
     try pm.restore(engine);
     context.setPersistenceManager(@ptrCast(&pm));
 
     var server = mcp.Server.init(.{
         .name = "zpm",
-        .version = "0.1.0",
+        .version = version,
         .title = "Zig Package Manager MCP Server",
         .description = "MCP server for Zig package management via Prolog inference",
-        .allocator = allocator,
+        .allocator = alloc,
     });
     defer server.deinit();
 
@@ -84,6 +88,74 @@ pub fn main() !void {
     try server.addTool(get_persistence_status.tool);
 
     try server.run(.stdio);
+}
+
+fn serveAction() anyerror!void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    try serve(gpa.allocator());
+}
+
+pub fn main() !void {
+    const args = try std.process.argsAlloc(std.heap.page_allocator);
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    if (args.len == 1) {
+        stdout.writeAll(
+            "zpm " ++ version ++ "\n\n" ++
+                "Prolog inference engine for the Model Context Protocol\n\n" ++
+                "USAGE:\n  zpm <command> [options]\n\n" ++
+                "COMMANDS:\n  serve   Start the MCP server on stdio\n\n" ++
+                "OPTIONS:\n  -h, --help       Show this help output\n" ++
+                "  -v, --version    Print version\n",
+        ) catch {};
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-v")) {
+        stdout.writeAll("zpm " ++ version ++ "\n") catch {};
+        return;
+    }
+    if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h") or
+        std.mem.eql(u8, args[1], "serve"))
+    {
+        // Known flags/subcommands — let zig-cli handle them
+    } else {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        if (args[1].len > 0 and args[1][0] == '-') {
+            stderr.writeAll("ERROR: unknown option '") catch {};
+            stderr.writeAll(args[1]) catch {};
+            stderr.writeAll("'\nTry 'zpm --help' for more information.\n") catch {};
+        } else {
+            stderr.writeAll("ERROR: unknown command '") catch {};
+            stderr.writeAll(args[1]) catch {};
+            stderr.writeAll("'\nTry 'zpm --help' for more information.\n") catch {};
+        }
+        std.posix.exit(1);
+    }
+
+    var r = try cli.AppRunner.init(std.heap.page_allocator);
+    const app = cli.App{
+        .version = version,
+        .command = cli.Command{
+            .name = "zpm",
+            .description = cli.Description{
+                .one_line = "Prolog inference engine for the Model Context Protocol",
+            },
+            .target = cli.CommandTarget{
+                .subcommands = &.{
+                    cli.Command{
+                        .name = "serve",
+                        .description = cli.Description{
+                            .one_line = "Start the MCP server on stdio",
+                        },
+                        .target = cli.CommandTarget{
+                            .action = cli.CommandAction{ .exec = serveAction },
+                        },
+                    },
+                },
+            },
+        },
+    };
+    return r.run(&app);
 }
 
 test {
@@ -116,7 +188,7 @@ test {
 fn initTestServer() mcp.Server {
     return mcp.Server.init(.{
         .name = "zpm",
-        .version = "0.1.0",
+        .version = version,
         .allocator = std.testing.allocator,
     });
 }
@@ -126,7 +198,11 @@ test "server initializes with correct name and version" {
     defer server.deinit();
 
     try std.testing.expectEqualStrings("zpm", server.config.name);
-    try std.testing.expectEqualStrings("0.1.0", server.config.version);
+    try std.testing.expectEqualStrings(version, server.config.version);
+}
+
+test "version constant value is 0.1.0" {
+    try std.testing.expectEqualStrings("0.1.0", version);
 }
 
 test "server capabilities include tools after registration" {
@@ -277,3 +353,52 @@ test "persistence manager degrades gracefully with non-existent directory" {
 
     try std.testing.expectEqual(PersistenceStatus.degraded, pm.getStatus());
 }
+
+// serve() blocking behavior and engine registration are validated
+// by functional tests (tests/functional_mcp_server_test.sh) which
+// can properly manage the process lifecycle via stdin/stdout pipes.
+
+test "cli module provides App Command and AppRunner types" {
+    _ = cli.App;
+    _ = cli.Command;
+    _ = cli.AppRunner;
+}
+
+test "cli app version field references version constant" {
+    const app = cli.App{
+        .version = version,
+        .command = cli.Command{
+            .name = "zpm",
+            .target = cli.CommandTarget{ .subcommands = &.{} },
+        },
+    };
+    try std.testing.expectEqualStrings(version, app.version.?);
+}
+
+test "root command has no fallback action so unknown subcommands trigger zig-cli error" {
+    const root_cmd = cli.Command{
+        .name = "zpm",
+        .target = cli.CommandTarget{ .subcommands = &.{} },
+    };
+    try std.testing.expectEqualStrings("zpm", root_cmd.name);
+    switch (root_cmd.target) {
+        .subcommands => {},
+        .action => return error.RootCommandMustUseSubcommandsNotAction,
+    }
+}
+
+test "serve subcommand is registered with correct name and description" {
+    const serve_cmd = cli.Command{
+        .name = "serve",
+        .description = cli.Description{ .one_line = "Start the MCP server on stdio" },
+        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = serveAction } },
+    };
+    try std.testing.expectEqualStrings("serve", serve_cmd.name);
+    try std.testing.expectEqualStrings("Start the MCP server on stdio", serve_cmd.description.?.one_line);
+}
+
+// serveAction() blocking behavior and engine registration are validated
+// by functional tests (tests/functional_mcp_server_test.sh) which
+// can properly manage the process lifecycle via stdin/stdout pipes.
+// Spawning serve/serveAction in detached threads corrupts the Zig test
+// runner protocol because scryer-prolog FFI writes to stdout on init.

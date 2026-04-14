@@ -51,13 +51,13 @@ send_mcp() {
     local input="$1"
     local tmpdir
     tmpdir=$(mktemp -d)
-    printf '%s' "$input" | ZPM_DATA_DIR="$tmpdir" timeout "$TIMEOUT" "$BINARY" 2>/dev/null || true
+    printf '%s' "$input" | ZPM_DATA_DIR="$tmpdir" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true
     rm -rf "$tmpdir"
 }
 
 send_mcp_persist() {
     local input="$1" dir="$2"
-    printf '%s' "$input" | ZPM_DATA_DIR="$dir" timeout "$TIMEOUT" "$BINARY" 2>/dev/null || true
+    printf '%s' "$input" | ZPM_DATA_DIR="$dir" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true
 }
 
 # --- Test 1: Initialize handshake returns correct server info ---
@@ -122,7 +122,7 @@ assert_contains "missing arg returns isError true" "$ERROR_LINE" '"isError":true
 
 # --- Test 5: Graceful shutdown on EOF ---
 echo "Test: Graceful shutdown on STDIO close"
-printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" >/dev/null 2>&1
+printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve >/dev/null 2>&1
 EXIT_CODE=$?
 assert_exit_code "exits with code 0 on EOF" "$EXIT_CODE" 0
 
@@ -895,6 +895,87 @@ FRESH_LINE=$(echo "$RESPONSE" | grep '"id":131')
 assert_contains "fresh persistence status returns success" "$FRESH_LINE" '"isError":false'
 assert_contains "fresh persistence reports active mode" "$FRESH_LINE" 'active'
 rm -rf "$PERSIST_DIR_58"
+
+# Feature: F011
+# --- F011-T004: Unknown subcommand error handling ---
+echo "Test: Unknown subcommand 'foo' exits 1 and reports error on stderr"
+TMPFILE_T004A=$(mktemp)
+"$BINARY" foo >/dev/null 2>"$TMPFILE_T004A" || UNKNOWN_CMD_EXIT=$?
+UNKNOWN_CMD_STDERR=$(cat "$TMPFILE_T004A")
+rm -f "$TMPFILE_T004A"
+assert_exit_code "zpm foo exits 1" "${UNKNOWN_CMD_EXIT:-0}" 1
+assert_contains "zpm foo stderr mentions unknown command" "$UNKNOWN_CMD_STDERR" "foo"
+
+echo "Test: Unknown flag '--unknown-flag' exits 1 and reports error on stderr"
+TMPFILE_T004B=$(mktemp)
+"$BINARY" --unknown-flag >/dev/null 2>"$TMPFILE_T004B" || UNKNOWN_FLAG_EXIT=$?
+UNKNOWN_FLAG_STDERR=$(cat "$TMPFILE_T004B")
+rm -f "$TMPFILE_T004B"
+assert_exit_code "zpm --unknown-flag exits 1" "${UNKNOWN_FLAG_EXIT:-0}" 1
+assert_contains "zpm --unknown-flag stderr reports error" "$UNKNOWN_FLAG_STDERR" "unknown"
+
+# --- F011-T006: CLI entrypoint functional tests ---
+
+# US1: zpm with no arguments displays help and exits 0
+echo "Test: zpm with no arguments displays help (US1)"
+TMPFILE_T006A=$(mktemp)
+NO_ARGS_EXIT=0
+"$BINARY" >"$TMPFILE_T006A" 2>&1 || NO_ARGS_EXIT=$?
+NO_ARGS_OUTPUT=$(cat "$TMPFILE_T006A")
+rm -f "$TMPFILE_T006A"
+assert_exit_code "zpm no args exits 0" "$NO_ARGS_EXIT" 0
+assert_contains "zpm no-args help contains program name" "$NO_ARGS_OUTPUT" "zpm"
+assert_contains "zpm no-args help mentions serve subcommand" "$NO_ARGS_OUTPUT" "serve"
+
+# US1: zpm --help displays help and exits 0
+echo "Test: zpm --help displays help (US1)"
+TMPFILE_T006B=$(mktemp)
+HELP_FLAG_EXIT=0
+"$BINARY" --help >"$TMPFILE_T006B" 2>&1 || HELP_FLAG_EXIT=$?
+HELP_FLAG_OUTPUT=$(cat "$TMPFILE_T006B")
+rm -f "$TMPFILE_T006B"
+assert_exit_code "zpm --help exits 0" "$HELP_FLAG_EXIT" 0
+assert_contains "zpm --help output contains program name" "$HELP_FLAG_OUTPUT" "zpm"
+assert_contains "zpm --help output mentions serve subcommand" "$HELP_FLAG_OUTPUT" "serve"
+
+# US1: zpm -h displays help and exits 0
+echo "Test: zpm -h displays help (US1)"
+TMPFILE_T006B2=$(mktemp)
+SHORT_HELP_EXIT=0
+"$BINARY" -h >"$TMPFILE_T006B2" 2>&1 || SHORT_HELP_EXIT=$?
+SHORT_HELP_OUTPUT=$(cat "$TMPFILE_T006B2")
+rm -f "$TMPFILE_T006B2"
+assert_exit_code "zpm -h exits 0" "$SHORT_HELP_EXIT" 0
+assert_contains "zpm -h output contains program name" "$SHORT_HELP_OUTPUT" "zpm"
+assert_contains "zpm -h output mentions serve subcommand" "$SHORT_HELP_OUTPUT" "serve"
+
+# US2: zpm serve routes MCP protocol correctly
+echo "Test: zpm serve processes MCP initialize (US2)"
+SERVE_TMPDIR=$(mktemp -d)
+SERVE_RESPONSE=$(printf '%s' "$INIT_REQ" | ZPM_DATA_DIR="$SERVE_TMPDIR" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+rm -rf "$SERVE_TMPDIR"
+assert_contains "zpm serve returns correct server name" "$SERVE_RESPONSE" '"name":"zpm"'
+assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"protocolVersion":"2025-11-25"'
+
+# US3: zpm --version prints version string and exits 0
+echo "Test: zpm --version prints version string (US3)"
+TMPFILE_T006C=$(mktemp)
+VERSION_FLAG_EXIT=0
+"$BINARY" --version >"$TMPFILE_T006C" 2>&1 || VERSION_FLAG_EXIT=$?
+VERSION_FLAG_OUTPUT=$(cat "$TMPFILE_T006C")
+rm -f "$TMPFILE_T006C"
+assert_exit_code "zpm --version exits 0" "$VERSION_FLAG_EXIT" 0
+assert_contains "zpm --version output contains version" "$VERSION_FLAG_OUTPUT" "0.1.0"
+
+# US3: zpm -v prints version string and exits 0
+echo "Test: zpm -v prints version string (US3)"
+TMPFILE_T006D=$(mktemp)
+SHORT_VERSION_EXIT=0
+"$BINARY" -v >"$TMPFILE_T006D" 2>&1 || SHORT_VERSION_EXIT=$?
+SHORT_VERSION_OUTPUT=$(cat "$TMPFILE_T006D")
+rm -f "$TMPFILE_T006D"
+assert_exit_code "zpm -v exits 0" "$SHORT_VERSION_EXIT" 0
+assert_contains "zpm -v output contains version" "$SHORT_VERSION_OUTPUT" "0.1.0"
 
 # --- Summary ---
 echo ""

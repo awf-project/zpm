@@ -5,12 +5,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const mcp_dep = b.dependency("mcp", .{});
+    const cli_dep = b.dependency("cli", .{});
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     exe_module.addImport("mcp", mcp_dep.module("mcp"));
+    exe_module.addImport("cli", cli_dep.module("cli"));
 
     const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
     cargo_build.setCwd(b.path("ffi/zpm-prolog-ffi"));
