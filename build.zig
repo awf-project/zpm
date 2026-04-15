@@ -71,7 +71,11 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_module,
     });
     linkFfi(exe_unit_tests, b, &patch_ffi.step);
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    // scryer-prolog FFI writes to stdout on init, corrupting the zig_test
+    // IPC protocol (--listen=-). Create Run step manually to skip IPC.
+    const run_exe_unit_tests = std.Build.Step.Run.create(b, "run main tests");
+    run_exe_unit_tests.addArtifactArg(exe_unit_tests);
+    run_exe_unit_tests.stdio = .inherit;
     test_step.dependOn(&run_exe_unit_tests.step);
 
     // Engine tests
@@ -385,6 +389,20 @@ pub fn build(b: *std.Build) void {
     linkFfi(get_persistence_status_unit_tests, b, &patch_ffi.step);
     const run_get_persistence_status_unit_tests = b.addRunArtifact(get_persistence_status_unit_tests);
     test_step.dependOn(&run_get_persistence_status_unit_tests.step);
+
+    // project module tests (F012)
+    const project_test_module = b.createModule(.{
+        .root_source_file = b.path("src/project.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    project_test_module.addImport("prolog/engine.zig", engine_test_module);
+    const project_unit_tests = b.addTest(.{
+        .root_module = project_test_module,
+    });
+    linkFfi(project_unit_tests, b, &patch_ffi.step);
+    const run_project_unit_tests = b.addRunArtifact(project_unit_tests);
+    test_step.dependOn(&run_project_unit_tests.step);
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {

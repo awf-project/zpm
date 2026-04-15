@@ -193,7 +193,7 @@ test "handler journals retracted assumption name to WAL" {
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

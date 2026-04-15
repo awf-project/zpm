@@ -159,7 +159,7 @@ test "handler journals old_fact and new_fact as atomic group to WAL" {
 
     try engine.assertFact("server(alpha, v1).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

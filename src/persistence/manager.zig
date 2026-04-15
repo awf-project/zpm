@@ -13,36 +13,49 @@ pub const PersistenceStatus = enum {
 pub const PersistenceManager = struct {
     allocator: std.mem.Allocator,
     dir_path: []const u8,
+    snapshot_dir_path: []const u8,
     wal: ?WriteAheadLog,
     status: PersistenceStatus,
 
-    pub fn init(allocator: std.mem.Allocator, dir_path: []const u8) !PersistenceManager {
+    pub fn init(allocator: std.mem.Allocator, dir_path: []const u8, snapshot_dir_path: []const u8) !PersistenceManager {
         const owned = try allocator.dupe(u8, dir_path);
         errdefer allocator.free(owned);
+        const owned_snap = try allocator.dupe(u8, snapshot_dir_path);
+        errdefer allocator.free(owned_snap);
 
         var dir = std.fs.openDirAbsolute(owned, .{}) catch blk: {
-            // Try to create the directory if it doesn't exist
             std.fs.makeDirAbsolute(owned) catch {
-                return .{ .allocator = allocator, .dir_path = owned, .wal = null, .status = .degraded };
+                return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
             };
             break :blk std.fs.openDirAbsolute(owned, .{}) catch {
-                return .{ .allocator = allocator, .dir_path = owned, .wal = null, .status = .degraded };
+                return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
             };
         };
+        const probe = dir.createFile("journal.wal", .{ .truncate = false }) catch {
+            dir.close();
+            return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
+        };
+        probe.close();
         dir.close();
 
+        if (std.fs.openDirAbsolute(owned_snap, .{})) |snap_dir| {
+            var d = snap_dir;
+            d.close();
+        } else |_| {
+            std.fs.makeDirAbsolute(owned_snap) catch {};
+        }
+
         const wal = WriteAheadLog.init(allocator, owned) catch {
-            return .{ .allocator = allocator, .dir_path = owned, .wal = null, .status = .degraded };
+            return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
         };
 
-        return .{ .allocator = allocator, .dir_path = owned, .wal = wal, .status = .active };
+        return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = wal, .status = .active };
     }
 
     pub fn restore(self: *PersistenceManager, engine: *Engine) !void {
         if (self.status != .active) return;
 
-        // Load latest snapshot if one exists
-        const snaps = snapshot_mod.list(self.allocator, self.dir_path) catch return;
+        const snaps = snapshot_mod.list(self.allocator, self.snapshot_dir_path) catch return;
         defer {
             for (snaps) |s| self.allocator.free(s);
             self.allocator.free(snaps);
@@ -55,18 +68,18 @@ pub const PersistenceManager = struct {
             }.cmp);
             // Take the last (newest by lexicographic/timestamp order)
             const latest = snaps[snaps.len - 1];
-            const snap_path = std.fs.path.join(self.allocator, &.{ self.dir_path, latest }) catch return;
+            const snap_path = std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, latest }) catch return;
             defer self.allocator.free(snap_path);
             engine.loadFile(snap_path) catch {};
         }
 
-        // Replay WAL entries on top
         if (self.wal) |*w| try w.replay(engine);
     }
 
     pub fn deinit(self: *PersistenceManager) void {
         if (self.wal) |*w| w.deinit();
         self.allocator.free(self.dir_path);
+        self.allocator.free(self.snapshot_dir_path);
     }
 
     pub fn journalMutation(self: *PersistenceManager, entry: JournalEntry) !void {
@@ -75,7 +88,7 @@ pub const PersistenceManager = struct {
 
     pub fn saveSnapshot(self: *PersistenceManager, engine: *Engine, name: []const u8) !void {
         if (self.status != .active) return;
-        var snap = try snapshot_mod.Snapshot.generate(self.allocator, engine, self.dir_path, name);
+        var snap = try snapshot_mod.Snapshot.generate(self.allocator, engine, self.snapshot_dir_path, name);
         defer snap.deinit();
         if (self.wal) |*w| {
             try w.rotate();
@@ -103,13 +116,13 @@ pub const PersistenceManager = struct {
         else
             try std.fmt.allocPrint(self.allocator, "{s}.pl", .{name});
         defer self.allocator.free(snap_name);
-        const snap_path = try std.fs.path.join(self.allocator, &.{ self.dir_path, snap_name });
+        const snap_path = try std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, snap_name });
         defer self.allocator.free(snap_path);
         try engine.loadFile(snap_path);
     }
 
     pub fn listSnapshots(self: *PersistenceManager, allocator: std.mem.Allocator) ![][]const u8 {
-        return snapshot_mod.list(allocator, self.dir_path);
+        return snapshot_mod.list(allocator, self.snapshot_dir_path);
     }
 
     pub fn getStatus(self: *const PersistenceManager) PersistenceStatus {
@@ -124,14 +137,14 @@ test "init with valid directory returns active manager" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var manager = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer manager.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.active, manager.getStatus());
 }
 
 test "init with non-writable path returns degraded manager" {
-    var manager = try PersistenceManager.init(std.testing.allocator, "/proc/no_write_access_zpm");
+    var manager = try PersistenceManager.init(std.testing.allocator, "/proc/no_write_access_zpm", "/proc/no_write_access_zpm");
     defer manager.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.degraded, manager.getStatus());
@@ -144,7 +157,7 @@ test "journalMutation records entry when manager is active" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var manager = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer manager.deinit();
 
     const entry = JournalEntry{ .timestamp = 1713000000, .clause = "fact(a)" };
@@ -152,7 +165,7 @@ test "journalMutation records entry when manager is active" {
 }
 
 test "journalMutation is no-op when manager is degraded" {
-    var manager = try PersistenceManager.init(std.testing.allocator, "/proc/no_write_access_zpm");
+    var manager = try PersistenceManager.init(std.testing.allocator, "/proc/no_write_access_zpm", "/proc/no_write_access_zpm");
     defer manager.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.degraded, manager.getStatus());
@@ -171,7 +184,7 @@ test "listSnapshots returns snapshot filenames in persistence directory" {
     (try tmp.dir.createFile("kb2.pl", .{})).close();
     (try tmp.dir.createFile("journal.wal", .{})).close();
 
-    var manager = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer manager.deinit();
 
     const snaps = try manager.listSnapshots(std.testing.allocator);
@@ -190,7 +203,7 @@ test "saveSnapshot creates snapshot file and rotates WAL" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var manager = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer manager.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.active, manager.getStatus());
@@ -204,4 +217,177 @@ test "saveSnapshot creates snapshot file and rotates WAL" {
     try manager.saveSnapshot(engine, "kb_snap");
 
     _ = try tmp.dir.statFile("kb_snap.pl");
+}
+
+test "init with separate data and snapshot directories stores both paths" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    try std.testing.expectEqual(PersistenceStatus.active, manager.getStatus());
+    try std.testing.expectEqualStrings(data_dir, manager.dir_path);
+    try std.testing.expectEqualStrings(kb_dir, manager.snapshot_dir_path);
+}
+
+test "listSnapshots reads from snapshot_dir_path not dir_path" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    (try kb_tmp.dir.createFile("kb1.pl", .{})).close();
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    const snaps = try manager.listSnapshots(std.testing.allocator);
+    defer {
+        for (snaps) |s| std.testing.allocator.free(s);
+        std.testing.allocator.free(snaps);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), snaps.len);
+}
+
+test "saveSnapshot writes to snapshot_dir_path not dir_path" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try manager.saveSnapshot(engine, "test_snap");
+
+    _ = try kb_tmp.dir.statFile("test_snap.pl");
+}
+
+test "getStatus returns active for valid directory and degraded for non-writable path" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    var active = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer active.deinit();
+    try std.testing.expectEqual(PersistenceStatus.active, active.getStatus());
+
+    var degraded = try PersistenceManager.init(std.testing.allocator, "/nonexistent/path/zpm_test", kb_dir);
+    defer degraded.deinit();
+    try std.testing.expectEqual(PersistenceStatus.degraded, degraded.getStatus());
+}
+
+test "restore loads latest snapshot from snapshot_dir_path and replays WAL" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    // Place a snapshot .pl file in the snapshot dir (kb_dir)
+    try kb_tmp.dir.writeFile(.{ .sub_path = "backup.pl", .data = "restored_fact(hello).\n" });
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    try manager.restore(engine);
+
+    // Verify the snapshot was loaded into the engine
+    var result = try engine.query("restored_fact(X)");
+    defer result.deinit();
+    try std.testing.expect(result.solutions.len > 0);
+}
+
+test "restore is no-op when manager is degraded" {
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf);
+
+    var manager = try PersistenceManager.init(std.testing.allocator, "/nonexistent/path/zpm_test", kb_dir);
+    defer manager.deinit();
+    try std.testing.expectEqual(PersistenceStatus.degraded, manager.getStatus());
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    // Should return without error (no-op)
+    try manager.restore(engine);
+}
+
+test "restoreSnapshot loads snapshot from snapshot_dir_path" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    try kb_tmp.dir.writeFile(.{ .sub_path = "mysnap.pl", .data = "snap_loaded(yes).\n" });
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    try manager.restoreSnapshot(engine, "mysnap");
+
+    var result = try engine.query("snap_loaded(X)");
+    defer result.deinit();
+    try std.testing.expect(result.solutions.len > 0);
+}
+
+test "deinit frees dir_path and snapshot_dir_path without leak" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    // std.testing.allocator detects leaks automatically
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    manager.deinit();
 }

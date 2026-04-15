@@ -4,7 +4,8 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `serve` subcommand, `--help`/`-h` and `--version`/`-v` flags
+- CLI entrypoint with `init` and `serve` subcommands, `--help`/`-h` and `--version`/`-v` flags
+- Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
 - Echo tool for health-check and smoke testing
@@ -49,6 +50,9 @@ zig-out/bin/zpm
 
 # Show version (also: zpm -v)
 zig-out/bin/zpm --version
+
+# Initialize a project directory
+zig-out/bin/zpm init
 
 # Start the MCP server (STDIO transport)
 zig-out/bin/zpm serve
@@ -115,6 +119,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 ```
 src/
   main.zig          # CLI entrypoint and MCP server (STDIO transport)
+  project.zig       # Project directory discovery (.zpm/) and initialization
   tools/
     assume_fact.zig        # TMS: assert fact under named assumption
     clear_context.zig      # Clear context tool handler (bulk fact deletion)
@@ -170,6 +175,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F009: Truth Maintenance System (assume_fact, retract_assumption, get_belief_status, get_justification, list_assumptions, retract_assumptions)
 - [x] F010: Knowledge base persistence via WAL and snapshots (save_snapshot, restore_snapshot, list_snapshots, get_persistence_status)
 - [x] F011: CLI entrypoint with help and serve subcommand
+- [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
 
 ## Documentation
 

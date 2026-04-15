@@ -10,6 +10,39 @@ zpm [COMMAND] [FLAGS] [OPTIONS]
 
 ## Commands
 
+### `init`
+
+Initializes a new zpm project directory in the current working directory.
+
+```bash
+zpm init
+```
+
+Creates the `.zpm/` directory structure:
+- `.zpm/` — Project root for configuration and persistence
+- `.zpm/kb/` — Knowledge base directory for Prolog files and snapshots
+- `.zpm/data/` — Ephemeral data directory for write-ahead journal and locks
+- `.zpm/.gitignore` — Git ignore rules (excludes `data/`)
+
+This command is idempotent. Running it on an already-initialized project prints a success message and exits without modifying existing content.
+
+**Example:**
+```bash
+# Initialize a new project
+zig-out/bin/zpm init
+
+# Verify the directory structure
+ls -la .zpm/
+# Output:
+# drwxr-xr-x  kb/
+# drwxr-xr-x  data/
+# -rw-r--r--  .gitignore
+```
+
+**Exit Codes:**
+- `0` — Success (directory created or already initialized)
+- `1` — Error (permission denied, filesystem error)
+
 ### `serve`
 
 Starts the zpm MCP server, listening on stdin/stdout for JSON-RPC 2.0 requests.
@@ -17,6 +50,14 @@ Starts the zpm MCP server, listening on stdin/stdout for JSON-RPC 2.0 requests.
 ```bash
 zpm serve
 ```
+
+On startup, the server:
+1. Discovers the nearest `.zpm/` directory by walking up from the current working directory
+2. Loads all `.pl` files from `.zpm/kb/` into the Prolog engine
+3. Initializes persistence (WAL journal in `.zpm/data/`, snapshots in `.zpm/kb/`)
+4. Begins accepting MCP messages on STDIO
+
+If no `.zpm/` directory is found in the directory ancestry, the server exits with an error suggesting `zpm init`. If `.zpm/` exists but is not writable, the server enters degraded mode (in-memory only).
 
 The server implements the full MCP protocol, including:
 - Tool discovery (`tools/list`)
@@ -70,7 +111,7 @@ zpm 0.1.0
 | Code | Meaning |
 |------|---------|
 | 0 | Success (help, version, serve running normally) |
-| 1 | Error (unknown subcommand, invalid flags, serve crashed) |
+| 1 | Error (unknown subcommand, invalid flags, serve crashed, no `.zpm/` found) |
 
 ## Common Usage Patterns
 
@@ -120,7 +161,7 @@ This design ensures:
 - Check that you're sending valid JSON-RPC 2.0 requests
 
 **"Unknown subcommand" error**
-- Only `serve` is a valid subcommand
+- Valid subcommands are: `init`, `serve`
 - Use `zpm --help` to see available options
 - Note: `zpm query` and `zpm snapshot` are not implemented (see roadmap)
 
@@ -135,6 +176,7 @@ The following CLI features are deferred and not currently implemented:
 
 - `zpm query` — Direct Prolog queries without MCP protocol
 - `zpm snapshot` — Offline snapshot management
+- `.zpm/config.toml` — Project-level configuration file
 - `--transport` flag — TCP/HTTP server modes (currently STDIO only)
 - `--log-level` flag — Debug logging control
 - Shell completion scripts

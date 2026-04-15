@@ -72,7 +72,7 @@ test "handler journals cleared category to WAL when persistence manager is activ
     defer context.clearEngine();
     try engine.assertFact("color(red).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

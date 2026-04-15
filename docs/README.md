@@ -5,6 +5,7 @@ Welcome to zpm documentation. Choose your path:
 ## For New Users
 
 - **[Getting Started with MCP Server](getting-started/mcp-server.md)** — Set up and run the zpm MCP server in 5 minutes
+- **[Project Initialization](user-guide/project-init.md)** — Initialize a `.zpm/` project directory
 
 ## For Users
 
