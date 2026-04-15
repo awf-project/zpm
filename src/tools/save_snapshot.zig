@@ -74,7 +74,7 @@ test "handler saves snapshot and returns confirmation when engine and persistenc
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -103,7 +103,7 @@ test "handler creates snapshot file on disk" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

@@ -72,3 +72,29 @@ docs/
 ## Review Standards
 
 - Never mark spec requirements complete without verifying actual implementation; requirement validation must check enforcement, not just partial satisfaction
+
+## ZPM Knowledge Base Usage
+
+The ZPM MCP server is available as a Prolog-backed knowledge base. Use it proactively to store and reason about project knowledge.
+
+### When to store facts
+- Project decisions and their rationale: `decision(topic, choice, reason)`
+- Task/feature statuses: `task_status(id, status)` via `upsert_fact`
+- Architecture relationships: `depends_on(a, b)`, `module_role(name, role)`
+- Bug findings and code review results: `finding(component, severity, description)`
+
+### When NOT to store
+- Ephemeral data from `git status`, `ls`, or file contents
+- Anything already in CLAUDE.md or derivable from code
+
+### Tool selection
+- `remember_fact` for permanent ground truth
+- `upsert_fact` for mutable state (replaces by functor+arg1)
+- `assume_fact` for hypotheticals and temporary exploration
+- `clear_context` for bulk cleanup by predicate name
+
+### Commands
+- `/zpm-capture <topic>` — Extract and store structured facts (git-state, architecture, tasks, decisions)
+- `/zpm-query <question>` — Natural language query translated to Prolog
+- `/zpm-cleanup [category|all|stale]` — Remove stale facts and assumptions
+- `/zpm-snapshot <save|restore|list>` — Manage persistence snapshots

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Features: F001-F010
+# Features: F001-F012
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 set -euo pipefail
 
-BINARY="${1:-zig-out/bin/zpm}"
+BINARY="$(cd "$(dirname "${1:-zig-out/bin/zpm}")" && pwd)/$(basename "${1:-zig-out/bin/zpm}")"
 PASS=0
 FAIL=0
 TIMEOUT=5
@@ -51,13 +51,15 @@ send_mcp() {
     local input="$1"
     local tmpdir
     tmpdir=$(mktemp -d)
-    printf '%s' "$input" | ZPM_DATA_DIR="$tmpdir" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true
+    mkdir -p "$tmpdir/.zpm/data" "$tmpdir/.zpm/kb"
+    (cd "$tmpdir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
     rm -rf "$tmpdir"
 }
 
 send_mcp_persist() {
     local input="$1" dir="$2"
-    printf '%s' "$input" | ZPM_DATA_DIR="$dir" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true
+    mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb"
+    (cd "$dir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 }
 
 # --- Test 1: Initialize handshake returns correct server info ---
@@ -122,8 +124,11 @@ assert_contains "missing arg returns isError true" "$ERROR_LINE" '"isError":true
 
 # --- Test 5: Graceful shutdown on EOF ---
 echo "Test: Graceful shutdown on STDIO close"
-printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve >/dev/null 2>&1
+SHUTDOWN_TMPDIR=$(mktemp -d)
+mkdir -p "$SHUTDOWN_TMPDIR/.zpm/data" "$SHUTDOWN_TMPDIR/.zpm/kb"
+(cd "$SHUTDOWN_TMPDIR" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve >/dev/null 2>&1)
 EXIT_CODE=$?
+rm -rf "$SHUTDOWN_TMPDIR"
 assert_exit_code "exits with code 0 on EOF" "$EXIT_CODE" 0
 
 # --- Test 6: remember_fact asserts a fact and returns success ---
@@ -952,7 +957,8 @@ assert_contains "zpm -h output mentions serve subcommand" "$SHORT_HELP_OUTPUT" "
 # US2: zpm serve routes MCP protocol correctly
 echo "Test: zpm serve processes MCP initialize (US2)"
 SERVE_TMPDIR=$(mktemp -d)
-SERVE_RESPONSE=$(printf '%s' "$INIT_REQ" | ZPM_DATA_DIR="$SERVE_TMPDIR" timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+mkdir -p "$SERVE_TMPDIR/.zpm/data" "$SERVE_TMPDIR/.zpm/kb"
+SERVE_RESPONSE=$(cd "$SERVE_TMPDIR" && printf '%s' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 rm -rf "$SERVE_TMPDIR"
 assert_contains "zpm serve returns correct server name" "$SERVE_RESPONSE" '"name":"zpm"'
 assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"protocolVersion":"2025-11-25"'
@@ -976,6 +982,167 @@ SHORT_VERSION_OUTPUT=$(cat "$TMPFILE_T006D")
 rm -f "$TMPFILE_T006D"
 assert_exit_code "zpm -v exits 0" "$SHORT_VERSION_EXIT" 0
 assert_contains "zpm -v output contains version" "$SHORT_VERSION_OUTPUT" "0.1.0"
+
+# --- Test: zpm init creates .zpm/ directory structure (T009/US1) ---
+echo "Test: zpm init creates .zpm/ directory structure (US1)"
+INIT_TMPDIR=$(mktemp -d)
+
+INIT_EXIT=0
+(cd "$INIT_TMPDIR" && "$BINARY" init 2>/dev/null >/dev/null) || INIT_EXIT=$?
+assert_exit_code "zpm init exits 0" "$INIT_EXIT" 0
+
+INIT_DIRS_EXIST=0
+[ -d "$INIT_TMPDIR/.zpm" ] || INIT_DIRS_EXIST=1
+[ -d "$INIT_TMPDIR/.zpm/kb" ] || INIT_DIRS_EXIST=1
+[ -d "$INIT_TMPDIR/.zpm/data" ] || INIT_DIRS_EXIST=1
+[ -f "$INIT_TMPDIR/.zpm/.gitignore" ] || INIT_DIRS_EXIST=1
+assert_exit_code "zpm init creates .zpm/ kb/ data/ and .gitignore" "$INIT_DIRS_EXIST" 0
+
+GITIGNORE_CONTENT=$(cat "$INIT_TMPDIR/.zpm/.gitignore" 2>/dev/null || echo "")
+assert_contains ".zpm/.gitignore contains data/" "$GITIGNORE_CONTENT" "data/"
+
+echo "Test: zpm init output confirms initialization (US1)"
+INIT_TMPDIR2=$(mktemp -d)
+INIT_OUTPUT=$(cd "$INIT_TMPDIR2" && "$BINARY" init 2>&1 || true)
+assert_contains "zpm init prints success message" "$INIT_OUTPUT" "Initialized"
+
+echo "Test: zpm init is idempotent (US1)"
+IDEMPOTENT_EXIT=0
+(cd "$INIT_TMPDIR" && "$BINARY" init 2>/dev/null >/dev/null) || IDEMPOTENT_EXIT=$?
+assert_exit_code "zpm init re-run exits 0" "$IDEMPOTENT_EXIT" 0
+
+IDEMPOTENT_GITIGNORE=$(cat "$INIT_TMPDIR/.zpm/.gitignore" 2>/dev/null || echo "")
+assert_contains "zpm init re-run preserves .gitignore content" "$IDEMPOTENT_GITIGNORE" "data/"
+
+IDEMPOTENT_OUTPUT=$(cd "$INIT_TMPDIR" && "$BINARY" init 2>&1 || true)
+assert_contains "zpm init re-run prints already-initialized message" "$IDEMPOTENT_OUTPUT" "already"
+
+rm -rf "$INIT_TMPDIR" "$INIT_TMPDIR2"
+
+# --- Test: zpm serve from subdirectory finds parent .zpm/ (T010/US4) ---
+echo "Test: zpm serve from subdirectory finds parent .zpm/ (US4)"
+UPWARD_ROOT=$(mktemp -d)
+mkdir -p "$UPWARD_ROOT/.zpm/data" "$UPWARD_ROOT/.zpm/kb"
+mkdir -p "$UPWARD_ROOT/src/subpkg"
+UPWARD_RESPONSE=$(cd "$UPWARD_ROOT/src/subpkg" && printf '%s' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+assert_contains "zpm serve from nested subdir returns server name" "$UPWARD_RESPONSE" '"name":"zpm"'
+assert_contains "zpm serve from nested subdir returns protocol version" "$UPWARD_RESPONSE" '"protocolVersion":"2025-11-25"'
+rm -rf "$UPWARD_ROOT"
+
+# --- Test: zpm serve without .zpm/ exits with error (T011/US2) ---
+echo "Test: zpm serve without .zpm/ exits with error (US2)"
+NO_ZPM_DIR=$(mktemp -d)
+NO_ZPM_EXIT=0
+NO_ZPM_OUTPUT=$(cd "$NO_ZPM_DIR" && "$BINARY" serve 2>&1) || NO_ZPM_EXIT=$?
+assert_exit_code "zpm serve without .zpm/ exits non-zero" "$NO_ZPM_EXIT" 1
+assert_contains "zpm serve without .zpm/ suggests zpm init" "$NO_ZPM_OUTPUT" "zpm init"
+rm -rf "$NO_ZPM_DIR"
+
+# --- Test: snapshot lands in .zpm/kb/, WAL stays in .zpm/data/ (T012/US3) ---
+echo "Test: snapshot/WAL path split - snapshot in kb/, WAL in data/ (US3)"
+SPLIT_DIR=$(mktemp -d)
+SPLIT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path_split(verified)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"split_test\"}}}
+"
+send_mcp_persist "$SPLIT_INPUT" "$SPLIT_DIR" > /dev/null
+
+SNAP_IN_KB=0
+[ -f "$SPLIT_DIR/.zpm/kb/split_test.pl" ] || SNAP_IN_KB=1
+assert_exit_code "snapshot .pl file lands in .zpm/kb/" "$SNAP_IN_KB" 0
+
+SNAP_NOT_IN_DATA=0
+[ -f "$SPLIT_DIR/.zpm/data/split_test.pl" ] && SNAP_NOT_IN_DATA=1
+assert_exit_code "snapshot .pl file absent from .zpm/data/" "$SNAP_NOT_IN_DATA" 0
+
+WAL_IN_DATA=0
+ls "$SPLIT_DIR/.zpm/data/"*.wal 2>/dev/null | grep -q . || WAL_IN_DATA=1
+assert_exit_code "WAL journal file exists in .zpm/data/" "$WAL_IN_DATA" 0
+
+WAL_NOT_IN_KB=0
+ls "$SPLIT_DIR/.zpm/kb/"*.wal 2>/dev/null | grep -q . && WAL_NOT_IN_KB=1
+assert_exit_code "WAL journal file absent from .zpm/kb/" "$WAL_NOT_IN_KB" 0
+
+rm -rf "$SPLIT_DIR"
+
+# --- Test: .pl file pre-placed in .zpm/kb/ is auto-loaded on serve startup (T013/US5) ---
+echo "Test: .pl file in .zpm/kb/ is auto-loaded on zpm serve startup (US5)"
+AUTOLOAD_DIR=$(mktemp -d)
+mkdir -p "$AUTOLOAD_DIR/.zpm/data" "$AUTOLOAD_DIR/.zpm/kb"
+echo 'autoloaded(hello).' > "$AUTOLOAD_DIR/.zpm/kb/preload.pl"
+AUTOLOAD_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":300,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(hello)\"}}}"
+AUTOLOAD_RESPONSE=$(send_mcp_persist "$AUTOLOAD_INPUT" "$AUTOLOAD_DIR")
+AUTOLOAD_LINE=$(echo "$AUTOLOAD_RESPONSE" | grep '"id":300')
+assert_contains ".pl auto-load: explain_why is not an error" "$AUTOLOAD_LINE" '"isError":false'
+assert_contains ".pl auto-load: fact is proven from preloaded file" "$AUTOLOAD_LINE" '\"proven\":true'
+rm -rf "$AUTOLOAD_DIR"
+
+# --- Test: non-.pl files in .zpm/kb/ are silently ignored on startup (T013/US5) ---
+echo "Test: non-.pl files in .zpm/kb/ are silently ignored on startup (US5)"
+NON_PL_DIR=$(mktemp -d)
+mkdir -p "$NON_PL_DIR/.zpm/data" "$NON_PL_DIR/.zpm/kb"
+echo 'this is not prolog' > "$NON_PL_DIR/.zpm/kb/readme.txt"
+echo 'autoloaded(world).' > "$NON_PL_DIR/.zpm/kb/facts.pl"
+NON_PL_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":301,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(world)\"}}}"
+NON_PL_RESPONSE=$(send_mcp_persist "$NON_PL_INPUT" "$NON_PL_DIR")
+NON_PL_LINE=$(echo "$NON_PL_RESPONSE" | grep '"id":301')
+assert_contains "non-.pl ignored: server still starts and responds" "$NON_PL_LINE" '"isError":false'
+assert_contains "non-.pl ignored: .pl file still loaded" "$NON_PL_LINE" '\"proven\":true'
+rm -rf "$NON_PL_DIR"
+
+# --- Test: .pl file with syntax error in .zpm/kb/ is skipped, server still starts (T013/US5) ---
+echo "Test: syntax-error .pl in .zpm/kb/ is skipped, server still starts (US5)"
+SYNERR_DIR=$(mktemp -d)
+mkdir -p "$SYNERR_DIR/.zpm/data" "$SYNERR_DIR/.zpm/kb"
+echo 'this is not valid prolog !!!' > "$SYNERR_DIR/.zpm/kb/broken.pl"
+echo 'valid_fact(ok).' > "$SYNERR_DIR/.zpm/kb/valid.pl"
+SYNERR_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"valid_fact(ok)\"}}}"
+SYNERR_RESPONSE=$(send_mcp_persist "$SYNERR_INPUT" "$SYNERR_DIR")
+SYNERR_LINE=$(echo "$SYNERR_RESPONSE" | grep '"id":302')
+assert_contains "syntax-error .pl skipped: server still responds" "$SYNERR_LINE" '"isError":false'
+assert_contains "syntax-error .pl skipped: valid .pl still loaded" "$SYNERR_LINE" '\"proven\":true'
+rm -rf "$SYNERR_DIR"
+
+# --- Test: zpm serve with read-only .zpm/data/ runs in degraded mode (T015/US2) ---
+echo "Test: zpm serve with read-only .zpm/data/ runs in degraded mode (US2)"
+DEGRADED_DIR=$(mktemp -d)
+mkdir -p "$DEGRADED_DIR/.zpm/data" "$DEGRADED_DIR/.zpm/kb"
+chmod -w "$DEGRADED_DIR/.zpm/data"
+DEGRADED_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":400,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
+"
+DEGRADED_RESPONSE=$(send_mcp_persist "$DEGRADED_INPUT" "$DEGRADED_DIR")
+DEGRADED_INIT_LINE=$(echo "$DEGRADED_RESPONSE" | grep '"id":1')
+DEGRADED_STATUS_LINE=$(echo "$DEGRADED_RESPONSE" | grep '"id":400')
+assert_contains "degraded mode: MCP handshake succeeds" "$DEGRADED_INIT_LINE" '"name":"zpm"'
+assert_contains "degraded mode: get_persistence_status returns success" "$DEGRADED_STATUS_LINE" '"isError":false'
+assert_contains "degraded mode: persistence status is degraded" "$DEGRADED_STATUS_LINE" 'degraded'
+chmod +w "$DEGRADED_DIR/.zpm/data"
+rm -rf "$DEGRADED_DIR"
+
+# --- Test: missing .zpm/data/ and .zpm/kb/ are auto-created on serve startup (T016/US3) ---
+echo "Test: missing .zpm/ subdirectories are auto-created on serve startup (US3)"
+SUBDIRS_DIR=$(mktemp -d)
+mkdir -p "$SUBDIRS_DIR/.zpm"
+SUBDIRS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":500,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
+SUBDIRS_RESPONSE=$(cd "$SUBDIRS_DIR" && printf '%s' "$SUBDIRS_INPUT" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+SUBDIRS_INIT_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":1')
+SUBDIRS_STATUS_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":500')
+assert_contains "auto-create subdirs: MCP handshake succeeds" "$SUBDIRS_INIT_LINE" '"name":"zpm"'
+assert_contains "auto-create subdirs: get_persistence_status returns success" "$SUBDIRS_STATUS_LINE" '"isError":false'
+[ -d "$SUBDIRS_DIR/.zpm/data" ] && green "PASS: auto-create subdirs: .zpm/data/ was created" && PASS=$((PASS + 1)) || { red "FAIL: auto-create subdirs: .zpm/data/ was not created"; FAIL=$((FAIL + 1)); }
+[ -d "$SUBDIRS_DIR/.zpm/kb" ] && green "PASS: auto-create subdirs: .zpm/kb/ was created" && PASS=$((PASS + 1)) || { red "FAIL: auto-create subdirs: .zpm/kb/ was not created"; FAIL=$((FAIL + 1)); }
+rm -rf "$SUBDIRS_DIR"
 
 # --- Summary ---
 echo ""

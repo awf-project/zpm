@@ -53,7 +53,7 @@ test "handler returns empty snapshot list when no snapshots exist" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -73,7 +73,7 @@ test "handler lists saved snapshots by name" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

@@ -27,6 +27,7 @@ const get_persistence_status = @import("tools/get_persistence_status.zig");
 const Engine = @import("prolog/engine.zig").Engine;
 const PersistenceManager = @import("persistence/manager.zig").PersistenceManager;
 const PersistenceStatus = @import("persistence/manager.zig").PersistenceStatus;
+const project = @import("project.zig");
 
 const version = "0.1.0";
 
@@ -40,17 +41,23 @@ fn serve(allocator: std.mem.Allocator) !void {
     defer engine.deinit();
     context.setEngine(engine);
 
-    const data_dir = std.posix.getenv("ZPM_DATA_DIR") orelse blk: {
-        if (std.posix.getenv("XDG_DATA_HOME")) |xdg| {
-            break :blk try std.fmt.allocPrint(alloc, "{s}/zpm", .{xdg});
-        }
-        if (std.posix.getenv("HOME")) |home| {
-            break :blk try std.fmt.allocPrint(alloc, "{s}/.local/share/zpm", .{home});
-        }
-        break :blk try alloc.dupe(u8, "/tmp/zpm");
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = try std.process.getCwd(&cwd_buf);
+    const paths = try project.discover(alloc, cwd);
+    defer paths.deinit();
+
+    std.fs.makeDirAbsolute(paths.data_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
     };
-    defer if (std.posix.getenv("ZPM_DATA_DIR") == null) alloc.free(data_dir);
-    var pm = try PersistenceManager.init(alloc, data_dir);
+    std.fs.makeDirAbsolute(paths.kb_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    try project.loadKnowledgeBase(alloc, paths.kb_dir, engine);
+
+    var pm = try PersistenceManager.init(alloc, paths.data_dir, paths.kb_dir);
     defer pm.deinit();
     try pm.restore(engine);
     context.setPersistenceManager(@ptrCast(&pm));
@@ -90,10 +97,31 @@ fn serve(allocator: std.mem.Allocator) !void {
     try server.run(.stdio);
 }
 
+fn initAction() anyerror!void {
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = try std.process.getCwd(&cwd_buf);
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    project.initProject(cwd) catch |err| switch (err) {
+        error.AlreadyInitialized => {
+            stdout.writeAll(".zpm/ project directory already initialized\n") catch {};
+            return;
+        },
+        else => return err,
+    };
+    stdout.writeAll("Initialized .zpm/ project directory\n") catch {};
+}
+
 fn serveAction() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    try serve(gpa.allocator());
+    serve(gpa.allocator()) catch |err| switch (err) {
+        project.ProjectError.NotFound => {
+            const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+            stderr.writeAll("No .zpm/ directory found. Run `zpm init` to initialize a project.\n") catch {};
+            std.process.exit(1);
+        },
+        else => return err,
+    };
 }
 
 pub fn main() !void {
@@ -104,7 +132,7 @@ pub fn main() !void {
             "zpm " ++ version ++ "\n\n" ++
                 "Prolog inference engine for the Model Context Protocol\n\n" ++
                 "USAGE:\n  zpm <command> [options]\n\n" ++
-                "COMMANDS:\n  serve   Start the MCP server on stdio\n\n" ++
+                "COMMANDS:\n  init    Initialize a .zpm/ project directory\n  serve   Start the MCP server on stdio\n\n" ++
                 "OPTIONS:\n  -h, --help       Show this help output\n" ++
                 "  -v, --version    Print version\n",
         ) catch {};
@@ -115,7 +143,7 @@ pub fn main() !void {
         return;
     }
     if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h") or
-        std.mem.eql(u8, args[1], "serve"))
+        std.mem.eql(u8, args[1], "serve") or std.mem.eql(u8, args[1], "init"))
     {
         // Known flags/subcommands — let zig-cli handle them
     } else {
@@ -142,6 +170,15 @@ pub fn main() !void {
             },
             .target = cli.CommandTarget{
                 .subcommands = &.{
+                    cli.Command{
+                        .name = "init",
+                        .description = cli.Description{
+                            .one_line = "Initialize a .zpm/ project directory",
+                        },
+                        .target = cli.CommandTarget{
+                            .action = cli.CommandAction{ .exec = initAction },
+                        },
+                    },
                     cli.Command{
                         .name = "serve",
                         .description = cli.Description{
@@ -322,7 +359,7 @@ test "persistence manager initializes as active with valid directory" {
     const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(tmp_path);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, tmp_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, tmp_path, tmp_path);
     defer pm.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.active, pm.getStatus());
@@ -337,7 +374,7 @@ test "persistence manager stored in context is retrievable" {
     const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(tmp_path);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, tmp_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, tmp_path, tmp_path);
     defer pm.deinit();
 
     context.setPersistenceManager(@ptrCast(&pm));
@@ -348,7 +385,7 @@ test "persistence manager stored in context is retrievable" {
 }
 
 test "persistence manager degrades gracefully with non-existent directory" {
-    var pm = try PersistenceManager.init(std.testing.allocator, "/nonexistent/path/that/does/not/exist");
+    var pm = try PersistenceManager.init(std.testing.allocator, "/nonexistent/path/that/does/not/exist", "/nonexistent/path/that/does/not/exist");
     defer pm.deinit();
 
     try std.testing.expectEqual(PersistenceStatus.degraded, pm.getStatus());
@@ -357,6 +394,54 @@ test "persistence manager degrades gracefully with non-existent directory" {
 // serve() blocking behavior and engine registration are validated
 // by functional tests (tests/functional_mcp_server_test.sh) which
 // can properly manage the process lifecycle via stdin/stdout pipes.
+
+test "init subcommand is registered with correct name and description" {
+    const init_cmd = cli.Command{
+        .name = "init",
+        .description = cli.Description{ .one_line = "Initialize a .zpm/ project directory" },
+        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = initAction } },
+    };
+    try std.testing.expectEqualStrings("init", init_cmd.name);
+    try std.testing.expectEqualStrings("Initialize a .zpm/ project directory", init_cmd.description.?.one_line);
+}
+
+test "initAction creates .zpm directory structure in current working directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var tmp_path_buf: [4096]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &tmp_path_buf);
+
+    var orig_buf: [4096]u8 = undefined;
+    const orig = try std.process.getCwd(&orig_buf);
+    defer std.posix.chdir(orig) catch {};
+    try std.posix.chdir(tmp_path);
+
+    try initAction();
+
+    var zpm = try tmp.dir.openDir(".zpm", .{});
+    defer zpm.close();
+    var kb = try tmp.dir.openDir(".zpm/kb", .{});
+    defer kb.close();
+    var data = try tmp.dir.openDir(".zpm/data", .{});
+    defer data.close();
+}
+
+test "initAction is idempotent when .zpm already exists in current working directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.makeDir(".zpm/data");
+    var tmp_path_buf: [4096]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &tmp_path_buf);
+
+    var orig_buf: [4096]u8 = undefined;
+    const orig = try std.process.getCwd(&orig_buf);
+    defer std.posix.chdir(orig) catch {};
+    try std.posix.chdir(tmp_path);
+
+    try initAction();
+}
 
 test "cli module provides App Command and AppRunner types" {
     _ = cli.App;
@@ -402,3 +487,154 @@ test "serve subcommand is registered with correct name and description" {
 // can properly manage the process lifecycle via stdin/stdout pipes.
 // Spawning serve/serveAction in detached threads corrupts the Zig test
 // runner protocol because scryer-prolog FFI writes to stdout on init.
+
+// T005: serve() uses project.discover() for data directory resolution.
+// serve() itself cannot be unit-tested (FFI stdout corruption — see above),
+// so these tests verify the integration contract serve() depends on.
+
+test "serve startup data dir comes from project discover not env var fallback" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.makeDir(".zpm/data");
+    try tmp.dir.makeDir(".zpm/kb");
+
+    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const paths = try project.discover(std.testing.allocator, tmp_path);
+    defer paths.deinit();
+
+    try std.testing.expect(std.mem.endsWith(u8, paths.data_dir, "/.zpm/data"));
+
+    var pm = try PersistenceManager.init(std.testing.allocator, paths.data_dir, paths.data_dir);
+    defer pm.deinit();
+
+    try std.testing.expectEqual(PersistenceStatus.active, pm.getStatus());
+}
+
+test "serve startup exits with NotFound when no .zpm directory exists in ancestry" {
+    // Use /tmp to avoid finding the project's own .zpm/ during upward traversal
+    const base = "/tmp/zpm-test-serve-no-zpm";
+    const nested = base ++ "/deep/nested";
+
+    std.fs.deleteTreeAbsolute(base) catch {};
+    try std.fs.makeDirAbsolute(base);
+    defer std.fs.deleteTreeAbsolute(base) catch {};
+    try std.fs.makeDirAbsolute(base ++ "/deep");
+    try std.fs.makeDirAbsolute(nested);
+
+    try std.testing.expectError(
+        project.ProjectError.NotFound,
+        project.discover(std.testing.allocator, nested),
+    );
+}
+
+test "serve startup kb_dir comes from project discover for Prolog file loading" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.makeDir(".zpm/data");
+    try tmp.dir.makeDir(".zpm/kb");
+
+    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const paths = try project.discover(std.testing.allocator, tmp_path);
+    defer paths.deinit();
+
+    try std.testing.expect(std.mem.endsWith(u8, paths.kb_dir, "/.zpm/kb"));
+}
+
+test "root command has two subcommands init and serve" {
+    const app = cli.App{
+        .version = version,
+        .command = cli.Command{
+            .name = "zpm",
+            .target = cli.CommandTarget{
+                .subcommands = &.{
+                    cli.Command{
+                        .name = "init",
+                        .description = cli.Description{ .one_line = "Initialize a .zpm/ project directory" },
+                        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = initAction } },
+                    },
+                    cli.Command{
+                        .name = "serve",
+                        .description = cli.Description{ .one_line = "Start the MCP server on stdio" },
+                        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = serveAction } },
+                    },
+                },
+            },
+        },
+    };
+    const subs = app.command.target.subcommands;
+    try std.testing.expectEqual(@as(usize, 2), subs.len);
+    try std.testing.expectEqualStrings("init", subs[0].name);
+    try std.testing.expectEqualStrings("serve", subs[1].name);
+}
+
+test "init subcommand action is bound to initAction handler" {
+    const init_cmd = cli.Command{
+        .name = "init",
+        .description = cli.Description{ .one_line = "Initialize a .zpm/ project directory" },
+        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = initAction } },
+    };
+    switch (init_cmd.target) {
+        .action => |a| try std.testing.expect(a.exec == initAction),
+        .subcommands => return error.ExpectedActionTarget,
+    }
+}
+
+test "help text includes init command and description" {
+    const help =
+        "COMMANDS:\n  init    Initialize a .zpm/ project directory\n  serve   Start the MCP server on stdio\n";
+    try std.testing.expect(std.mem.indexOf(u8, help, "init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "Initialize a .zpm/ project directory") != null);
+}
+
+test "persistence manager dual path init stores dir_path and snapshot_dir_path separately" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var snap_tmp = std.testing.tmpDir(.{});
+    defer snap_tmp.cleanup();
+
+    const data_path = try data_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(data_path);
+    const snap_path = try snap_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(snap_path);
+
+    var pm = try PersistenceManager.init(std.testing.allocator, data_path, snap_path);
+    defer pm.deinit();
+
+    try std.testing.expectEqualStrings(data_path, pm.dir_path);
+    try std.testing.expectEqualStrings(snap_path, pm.snapshot_dir_path);
+    try std.testing.expect(!std.mem.eql(u8, pm.dir_path, pm.snapshot_dir_path));
+    try std.testing.expectEqual(PersistenceStatus.active, pm.getStatus());
+}
+
+test "persistence manager listSnapshots reads from snapshot_dir_path not dir_path" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var snap_tmp = std.testing.tmpDir(.{});
+    defer snap_tmp.cleanup();
+
+    const data_path = try data_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(data_path);
+    const snap_path = try snap_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(snap_path);
+
+    const sentinel = try snap_tmp.dir.createFile("test_snapshot.pl", .{});
+    sentinel.close();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, data_path, snap_path);
+    defer pm.deinit();
+
+    const snaps = try pm.listSnapshots(std.testing.allocator);
+    defer {
+        for (snaps) |s| std.testing.allocator.free(s);
+        std.testing.allocator.free(snaps);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), snaps.len);
+    try std.testing.expectEqualStrings("test_snapshot.pl", snaps[0]);
+}

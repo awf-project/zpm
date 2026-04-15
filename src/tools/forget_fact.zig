@@ -103,7 +103,7 @@ test "handler journals retraction to WAL when persistence manager is active" {
     defer context.clearEngine();
     try engine.assertFact("session(active).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

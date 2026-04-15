@@ -26,3 +26,5 @@ engine.o
 .grepai/
 .specify/
 .awf/
+
+.zpm

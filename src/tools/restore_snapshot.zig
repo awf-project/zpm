@@ -74,7 +74,7 @@ test "handler restores snapshot and returns confirmation when snapshot exists" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -120,7 +120,7 @@ test "handler returns ExecutionFailed when snapshot file does not exist" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();

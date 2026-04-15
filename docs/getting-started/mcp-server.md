@@ -20,7 +20,17 @@ make build
 
 The executable will be created at `zig-out/bin/zpm`.
 
-## 2. Run the Server
+## 2. Initialize a Project
+
+Create a `.zpm/` project directory:
+
+```bash
+zig-out/bin/zpm init
+```
+
+This creates the `.zpm/` directory with `kb/` (for Prolog source files) and `data/` (for runtime persistence). You can place `.pl` files in `.zpm/kb/` to have them loaded automatically on server startup.
+
+## 3. Run the Server
 
 Start the MCP server:
 
@@ -28,7 +38,7 @@ Start the MCP server:
 zig-out/bin/zpm serve
 ```
 
-The server is now listening on stdin/stdout for JSON-RPC 2.0 requests.
+The server discovers the nearest `.zpm/` directory, loads any `.pl` files from `.zpm/kb/`, and begins listening on stdin/stdout for JSON-RPC 2.0 requests.
 
 Running `zpm` without arguments displays help:
 
@@ -36,7 +46,7 @@ Running `zpm` without arguments displays help:
 zig-out/bin/zpm
 ```
 
-## 3. Test the Server
+## 4. Test the Server
 
 In another terminal, you can send MCP protocol requests. The server implements three core methods:
 
@@ -88,7 +98,7 @@ echo '{
 
 The server echoes back your message.
 
-## 4. Integration with Claude or Other MCP Clients
+## 5. Integration with Claude or Other MCP Clients
 
 To use zpm with Claude or other MCP-compatible clients, configure your client to:
 
@@ -104,7 +114,9 @@ The server handles the MCP protocol handshake and tool discovery automatically.
 
 **Invalid JSON:** Check your JSON format. The MCP protocol is strict about JSON-RPC 2.0 compliance.
 
-**Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm serve`). Run `zpm --help` for a list of available commands.
+**"No project directory found" error:** Run `zpm init` in your project root to create a `.zpm/` directory. The server requires this directory to start. If you're in a subdirectory, the server walks up the tree automatically — make sure `.zpm/` exists somewhere in the ancestry.
+
+**Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm init`, `zpm serve`). Run `zpm --help` for a list of available commands.
 
 **Rust build errors:** Ensure `cargo` is in your PATH. The first build compiles scryer-prolog from source, which takes ~60-90 seconds. Subsequent builds use the Cargo cache.
 

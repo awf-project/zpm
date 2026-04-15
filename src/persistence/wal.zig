@@ -99,6 +99,8 @@ pub const WriteAheadLog = struct {
         var buf: [64]u8 = undefined;
         const archived = try std.fmt.bufPrint(&buf, "journal.{d}.wal", .{ts});
         dir.rename("journal.wal", archived) catch {};
+        const fresh = dir.createFile("journal.wal", .{ .truncate = false }) catch return;
+        fresh.close();
     }
 };
 

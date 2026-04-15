@@ -61,7 +61,7 @@ test "handler returns status report with key fields when persistence manager is 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -85,7 +85,7 @@ test "handler reports non-zero journal size after entries are written" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
 
     try pm.journalMutation(JournalEntry{ .timestamp = 1713000000, .clause = "fact(status_test)" });

@@ -254,7 +254,7 @@ test "handler journals each retracted assumption to WAL" {
     try engine.assertFact("running(service).");
     try engine.assertFact("tms_justification(running(service), session1_a2).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
