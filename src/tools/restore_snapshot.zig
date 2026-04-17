@@ -3,16 +3,27 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 
-pub const tool = mcp.tools.Tool{
-    .name = "restore_snapshot",
-    .description = "Restore the Prolog knowledge base from a named snapshot file",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = true,
-        .idempotentHint = false,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("name", "The name of the snapshot to restore", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "restore_snapshot",
+        .description = "Restore the Prolog knowledge base from a named snapshot file",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"name"},
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = true,
+            .idempotentHint = false,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const obj = if (args) |a| switch (a) {

@@ -5,6 +5,7 @@ const context = @import("context.zig");
 pub const tool = mcp.tools.Tool{
     .name = "list_assumptions",
     .description = "Return all named assumptions currently registered in the truth maintenance system",
+    .inputSchema = .{},
     .annotations = .{
         .readOnlyHint = true,
         .destructiveHint = false,

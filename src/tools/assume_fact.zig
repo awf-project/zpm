@@ -4,16 +4,28 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "assume_fact",
-    .description = "Assert a Prolog fact under a named assumption for truth maintenance tracking",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("fact", "The Prolog fact to assert under the assumption", true);
+    _ = try schema.addString("assumption", "The assumption name (lowercase, alphanumeric with underscores)", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "assume_fact",
+        .description = "Assert a Prolog fact under a named assumption for truth maintenance tracking",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{ "fact", "assumption" },
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;

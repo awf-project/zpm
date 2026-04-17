@@ -25,6 +25,6 @@ engine.o
 *.bak
 .grepai/
 .specify/
-.awf/
 
 .zpm
+npm-cache/

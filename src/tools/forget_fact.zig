@@ -5,16 +5,27 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "forget_fact",
-    .description = "Retract a Prolog fact from the knowledge base",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = true,
-        .idempotentHint = false,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("fact", "The Prolog fact to retract (e.g. 'parent(tom, bob)')", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "forget_fact",
+        .description = "Retract a Prolog fact from the knowledge base",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"fact"},
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = true,
+            .idempotentHint = false,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;

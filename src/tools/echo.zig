@@ -1,16 +1,27 @@
 const std = @import("std");
 const mcp = @import("mcp");
 
-pub const tool = mcp.tools.Tool{
-    .name = "echo",
-    .description = "Echo back the input message",
-    .annotations = .{
-        .readOnlyHint = true,
-        .idempotentHint = true,
-        .destructiveHint = false,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("message", "The message to echo back", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "echo",
+        .description = "Echo back the input message",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"message"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .idempotentHint = true,
+            .destructiveHint = false,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const message = mcp.tools.getString(args, "message") orelse return mcp.tools.ToolError.InvalidArguments;

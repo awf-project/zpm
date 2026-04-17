@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version must match across all jobs — update together
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check Zig formatting
+        run: zig fmt --check .
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+        working-directory: ffi/zpm-prolog-ffi
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+        working-directory: ffi/zpm-prolog-ffi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version must match across all jobs — update together
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: zig build test
+
+  release:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Version must match across all jobs — update together
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES="$(git tag -l --format='%(contents)' "$TAG")"
+          if [ -n "$NOTES" ]; then
+            gh release create "$TAG" --title "$TAG" --notes "$NOTES" zig-out/bin/zpm
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes zig-out/bin/zpm
+          fi
+
+  dev-release:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Version must match across all jobs — update together
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Create dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="dev-${GITHUB_SHA::7}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --prerelease \
+            --notes "Dev build from commit ${GITHUB_SHA}" \
+            zig-out/bin/zpm
+
+      - name: Cleanup old dev releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --json tagName,isPrerelease,createdAt \
+            | python3 -c "
+          import json, sys
+          releases = json.load(sys.stdin)
+          dev = sorted(
+              [r for r in releases if r['isPrerelease'] and r['tagName'].startswith('dev-')],
+              key=lambda r: r['createdAt'],
+              reverse=True
+          )
+          for r in dev[3:]:
+              print(r['tagName'])
+          " | while read -r tag; do
+            gh release delete "$tag" --yes --cleanup-tag || true
+          done

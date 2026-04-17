@@ -3,16 +3,26 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 
-pub const tool = mcp.tools.Tool{
-    .name = "verify_consistency",
-    .description = "Check the knowledge base for integrity violations by querying integrity_violation/N predicates",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("scope", "Optional scope pattern for filtering violation predicates", false);
+    const built = try schema.build();
+
+    return .{
+        .name = "verify_consistency",
+        .description = "Check the knowledge base for integrity violations by querying integrity_violation/N predicates",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;

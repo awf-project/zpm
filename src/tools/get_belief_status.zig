@@ -2,16 +2,27 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 
-pub const tool = mcp.tools.Tool{
-    .name = "get_belief_status",
-    .description = "Query whether a belief is currently supported and which assumptions justify it",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("fact", "The Prolog fact to check belief status for", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "get_belief_status",
+        .description = "Query whether a belief is currently supported and which assumptions justify it",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"fact"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;

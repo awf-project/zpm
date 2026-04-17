@@ -4,16 +4,28 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "define_rule",
-    .description = "Assert a Prolog rule into the knowledge base",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = false,
-        .idempotentHint = false,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("head", "The head of the Prolog rule (e.g. 'grandparent(X, Z)')", true);
+    _ = try schema.addString("body", "The body of the Prolog rule (e.g. 'parent(X, Y), parent(Y, Z)')", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "define_rule",
+        .description = "Assert a Prolog rule into the knowledge base",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{ "head", "body" },
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = false,
+            .idempotentHint = false,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const head = mcp.tools.getString(args, "head") orelse return mcp.tools.ToolError.InvalidArguments;

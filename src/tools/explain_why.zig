@@ -4,16 +4,28 @@ const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
 
-pub const tool = mcp.tools.Tool{
-    .name = "explain_why",
-    .description = "Trace the proof tree for a given fact and return a structured JSON explanation of how it was derived",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("fact", "The Prolog fact to explain (e.g. 'grandparent(tom, jim)')", true);
+    _ = try schema.addInteger("max_depth", "Maximum proof tree depth (default: unlimited)", false);
+    const built = try schema.build();
+
+    return .{
+        .name = "explain_why",
+        .description = "Trace the proof tree for a given fact and return a structured JSON explanation of how it was derived",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"fact"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 const Engine = engine_mod.Engine;
 

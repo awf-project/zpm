@@ -7,16 +7,27 @@ const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
 const Term = engine_mod.Term;
 
-pub const tool = mcp.tools.Tool{
-    .name = "retract_assumptions",
-    .description = "Retract all assumptions matching a glob-style pattern with full propagation semantics",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = true,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("pattern", "Glob-style pattern to match assumption names (e.g. 'hyp_*')", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "retract_assumptions",
+        .description = "Retract all assumptions matching a glob-style pattern with full propagation semantics",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"pattern"},
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = true,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 fn globMatch(pattern: []const u8, str: []const u8) bool {
     if (pattern.len == 0) return str.len == 0;

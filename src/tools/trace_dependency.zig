@@ -3,16 +3,27 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 
-pub const tool = mcp.tools.Tool{
-    .name = "trace_dependency",
-    .description = "Trace transitive dependencies from a start node using path/2 rules",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("start_node", "The starting Prolog atom for dependency tracing", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "trace_dependency",
+        .description = "Trace transitive dependencies from a start node using path/2 rules",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"start_node"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const start_node = mcp.tools.getString(args, "start_node") orelse return mcp.tools.ToolError.InvalidArguments;

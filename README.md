@@ -176,6 +176,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F010: Knowledge base persistence via WAL and snapshots (save_snapshot, restore_snapshot, list_snapshots, get_persistence_status)
 - [x] F011: CLI entrypoint with help and serve subcommand
 - [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
+- [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
 
 ## Documentation
 

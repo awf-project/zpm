@@ -5,16 +5,28 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "update_fact",
-    .description = "Atomically replace an existing Prolog fact in the knowledge base (retract old_fact, assert new_fact). Returns an error if old_fact is not found, leaving the knowledge base unchanged.",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = true,
-        .idempotentHint = false,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("old_fact", "The existing Prolog fact to retract", true);
+    _ = try schema.addString("new_fact", "The new Prolog fact to assert in its place", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "update_fact",
+        .description = "Atomically replace an existing Prolog fact in the knowledge base (retract old_fact, assert new_fact). Returns an error if old_fact is not found, leaving the knowledge base unchanged.",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{ "old_fact", "new_fact" },
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = true,
+            .idempotentHint = false,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const old_fact = mcp.tools.getString(args, "old_fact") orelse return mcp.tools.ToolError.InvalidArguments;
