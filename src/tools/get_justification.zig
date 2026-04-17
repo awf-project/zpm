@@ -5,16 +5,27 @@ const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
 const Term = engine_mod.Term;
 
-pub const tool = mcp.tools.Tool{
-    .name = "get_justification",
-    .description = "Return all facts currently supported by a given assumption",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("assumption", "The assumption name to get justifications for", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "get_justification",
+        .description = "Return all facts currently supported by a given assumption",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"assumption"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;

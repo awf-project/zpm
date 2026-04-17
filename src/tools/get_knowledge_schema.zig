@@ -6,6 +6,7 @@ const engine_mod = @import("../prolog/engine.zig");
 pub const tool = mcp.tools.Tool{
     .name = "get_knowledge_schema",
     .description = "Introspect the knowledge base to discover all defined predicates, their arities, and whether they are facts, rules, or both",
+    .inputSchema = .{},
     .annotations = .{
         .readOnlyHint = true,
         .destructiveHint = false,

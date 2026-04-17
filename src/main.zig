@@ -71,26 +71,26 @@ fn serve(allocator: std.mem.Allocator) !void {
     });
     defer server.deinit();
 
-    try server.addTool(echo.tool);
-    try server.addTool(remember_fact.tool);
-    try server.addTool(define_rule.tool);
-    try server.addTool(query_logic.tool);
-    try server.addTool(trace_dependency.tool);
-    try server.addTool(verify_consistency.tool);
-    try server.addTool(explain_why.tool);
+    try server.addTool(try echo.tool(alloc));
+    try server.addTool(try remember_fact.tool(alloc));
+    try server.addTool(try define_rule.tool(alloc));
+    try server.addTool(try query_logic.tool(alloc));
+    try server.addTool(try trace_dependency.tool(alloc));
+    try server.addTool(try verify_consistency.tool(alloc));
+    try server.addTool(try explain_why.tool(alloc));
     try server.addTool(get_knowledge_schema.tool);
-    try server.addTool(forget_fact.tool);
-    try server.addTool(clear_context.tool);
-    try server.addTool(update_fact.tool);
-    try server.addTool(upsert_fact.tool);
-    try server.addTool(assume_fact.tool);
-    try server.addTool(retract_assumption.tool);
-    try server.addTool(get_belief_status.tool);
-    try server.addTool(get_justification.tool);
+    try server.addTool(try forget_fact.tool(alloc));
+    try server.addTool(try clear_context.tool(alloc));
+    try server.addTool(try update_fact.tool(alloc));
+    try server.addTool(try upsert_fact.tool(alloc));
+    try server.addTool(try assume_fact.tool(alloc));
+    try server.addTool(try retract_assumption.tool(alloc));
+    try server.addTool(try get_belief_status.tool(alloc));
+    try server.addTool(try get_justification.tool(alloc));
     try server.addTool(list_assumptions.tool);
-    try server.addTool(retract_assumptions.tool);
-    try server.addTool(save_snapshot.tool);
-    try server.addTool(restore_snapshot.tool);
+    try server.addTool(try retract_assumptions.tool(alloc));
+    try server.addTool(try save_snapshot.tool(alloc));
+    try server.addTool(try restore_snapshot.tool(alloc));
     try server.addTool(list_snapshots.tool);
     try server.addTool(get_persistence_status.tool);
 
@@ -243,36 +243,41 @@ test "version constant value is 0.1.0" {
 }
 
 test "server capabilities include tools after registration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var server = initTestServer();
     defer server.deinit();
 
     try std.testing.expect(server.capabilities.tools == null);
-    try server.addTool(echo.tool);
+    try server.addTool(try echo.tool(arena.allocator()));
     try std.testing.expect(server.capabilities.tools != null);
 }
 
 test "server registers all eighteen tools" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var server = initTestServer();
     defer server.deinit();
 
-    try server.addTool(echo.tool);
-    try server.addTool(remember_fact.tool);
-    try server.addTool(define_rule.tool);
-    try server.addTool(query_logic.tool);
-    try server.addTool(trace_dependency.tool);
-    try server.addTool(verify_consistency.tool);
-    try server.addTool(explain_why.tool);
+    try server.addTool(try echo.tool(alloc));
+    try server.addTool(try remember_fact.tool(alloc));
+    try server.addTool(try define_rule.tool(alloc));
+    try server.addTool(try query_logic.tool(alloc));
+    try server.addTool(try trace_dependency.tool(alloc));
+    try server.addTool(try verify_consistency.tool(alloc));
+    try server.addTool(try explain_why.tool(alloc));
     try server.addTool(get_knowledge_schema.tool);
-    try server.addTool(forget_fact.tool);
-    try server.addTool(clear_context.tool);
-    try server.addTool(update_fact.tool);
-    try server.addTool(upsert_fact.tool);
-    try server.addTool(assume_fact.tool);
-    try server.addTool(retract_assumption.tool);
-    try server.addTool(get_belief_status.tool);
-    try server.addTool(get_justification.tool);
+    try server.addTool(try forget_fact.tool(alloc));
+    try server.addTool(try clear_context.tool(alloc));
+    try server.addTool(try update_fact.tool(alloc));
+    try server.addTool(try upsert_fact.tool(alloc));
+    try server.addTool(try assume_fact.tool(alloc));
+    try server.addTool(try retract_assumption.tool(alloc));
+    try server.addTool(try get_belief_status.tool(alloc));
+    try server.addTool(try get_justification.tool(alloc));
     try server.addTool(list_assumptions.tool);
-    try server.addTool(retract_assumptions.tool);
+    try server.addTool(try retract_assumptions.tool(alloc));
 
     try std.testing.expectEqual(@as(usize, 18), server.tools.count());
 }
@@ -288,29 +293,32 @@ test "server registers get_knowledge_schema tool" {
 }
 
 test "server registers all twenty-two tools" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var server = initTestServer();
     defer server.deinit();
 
-    try server.addTool(echo.tool);
-    try server.addTool(remember_fact.tool);
-    try server.addTool(define_rule.tool);
-    try server.addTool(query_logic.tool);
-    try server.addTool(trace_dependency.tool);
-    try server.addTool(verify_consistency.tool);
-    try server.addTool(explain_why.tool);
+    try server.addTool(try echo.tool(alloc));
+    try server.addTool(try remember_fact.tool(alloc));
+    try server.addTool(try define_rule.tool(alloc));
+    try server.addTool(try query_logic.tool(alloc));
+    try server.addTool(try trace_dependency.tool(alloc));
+    try server.addTool(try verify_consistency.tool(alloc));
+    try server.addTool(try explain_why.tool(alloc));
     try server.addTool(get_knowledge_schema.tool);
-    try server.addTool(forget_fact.tool);
-    try server.addTool(clear_context.tool);
-    try server.addTool(update_fact.tool);
-    try server.addTool(upsert_fact.tool);
-    try server.addTool(assume_fact.tool);
-    try server.addTool(retract_assumption.tool);
-    try server.addTool(get_belief_status.tool);
-    try server.addTool(get_justification.tool);
+    try server.addTool(try forget_fact.tool(alloc));
+    try server.addTool(try clear_context.tool(alloc));
+    try server.addTool(try update_fact.tool(alloc));
+    try server.addTool(try upsert_fact.tool(alloc));
+    try server.addTool(try assume_fact.tool(alloc));
+    try server.addTool(try retract_assumption.tool(alloc));
+    try server.addTool(try get_belief_status.tool(alloc));
+    try server.addTool(try get_justification.tool(alloc));
     try server.addTool(list_assumptions.tool);
-    try server.addTool(retract_assumptions.tool);
-    try server.addTool(save_snapshot.tool);
-    try server.addTool(restore_snapshot.tool);
+    try server.addTool(try retract_assumptions.tool(alloc));
+    try server.addTool(try save_snapshot.tool(alloc));
+    try server.addTool(try restore_snapshot.tool(alloc));
     try server.addTool(list_snapshots.tool);
     try server.addTool(get_persistence_status.tool);
 
@@ -318,19 +326,23 @@ test "server registers all twenty-two tools" {
 }
 
 test "server registers save_snapshot tool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var server = initTestServer();
     defer server.deinit();
 
-    try server.addTool(save_snapshot.tool);
+    try server.addTool(try save_snapshot.tool(arena.allocator()));
 
     try std.testing.expect(server.tools.contains("save_snapshot"));
 }
 
 test "server registers restore_snapshot tool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var server = initTestServer();
     defer server.deinit();
 
-    try server.addTool(restore_snapshot.tool);
+    try server.addTool(try restore_snapshot.tool(arena.allocator()));
 
     try std.testing.expect(server.tools.contains("restore_snapshot"));
 }

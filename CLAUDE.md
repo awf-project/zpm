@@ -50,7 +50,8 @@ docs/
 - Use `mcp.zig` types directly in handlers — no wrapper abstractions
 - Initialize `Server` with STDIO transport for CLI integration
 - Place tool handlers in `src/tools/` with signatures matching `mcp.tools.Tool` handler interface
-- Each tool file exports a `pub const tool` of type `mcp.tools.Tool`
+- Tools with parameters export `pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool` — builds `inputSchema` at runtime using `mcp.schema.InputSchemaBuilder`
+- Tools with no parameters export `pub const tool` of type `mcp.tools.Tool` with `.inputSchema = .{}`
 - Handler signature: `fn(std.mem.Allocator, ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult`
 
 ## Test Conventions
@@ -98,3 +99,6 @@ The ZPM MCP server is available as a Prolog-backed knowledge base. Use it proact
 - `/zpm-query <question>` — Natural language query translated to Prolog
 - `/zpm-cleanup [category|all|stale]` — Remove stale facts and assumptions
 - `/zpm-snapshot <save|restore|list>` — Manage persistence snapshots
+
+### Session end
+Before ending a non-trivial session, propose to the user to save a ZPM snapshot if meaningful content was added to the KB during the session. Do not save automatically — ask first. Skip for purely diagnostic or exploratory sessions.

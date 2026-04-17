@@ -6,6 +6,7 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 pub const tool = mcp.tools.Tool{
     .name = "get_persistence_status",
     .description = "Query the health and status of the persistence subsystem",
+    .inputSchema = .{},
     .annotations = .{
         .readOnlyHint = true,
         .destructiveHint = false,

@@ -6,6 +6,7 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 pub const tool = mcp.tools.Tool{
     .name = "list_snapshots",
     .description = "List all available Prolog knowledge base snapshots",
+    .inputSchema = .{},
     .annotations = .{
         .readOnlyHint = true,
         .destructiveHint = false,

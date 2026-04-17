@@ -5,16 +5,27 @@ const engine_mod = @import("../prolog/engine.zig");
 const Term = engine_mod.Term;
 const Solution = engine_mod.Solution;
 
-pub const tool = mcp.tools.Tool{
-    .name = "query_logic",
-    .description = "Execute a Prolog goal and return all variable bindings as JSON",
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("goal", "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "query_logic",
+        .description = "Execute a Prolog goal and return all variable bindings as JSON",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"goal"},
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const goal = mcp.tools.getString(args, "goal") orelse return mcp.tools.ToolError.InvalidArguments;

@@ -5,16 +5,27 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "clear_context",
-    .description = "Retract all Prolog facts matching a given category pattern",
-    .annotations = .{
-        .readOnlyHint = false,
-        .destructiveHint = true,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit();
+    _ = try schema.addString("category", "The predicate category pattern to retract (e.g. 'task_status')", true);
+    const built = try schema.build();
+
+    return .{
+        .name = "clear_context",
+        .description = "Retract all Prolog facts matching a given category pattern",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+            .required = &.{"category"},
+        },
+        .annotations = .{
+            .readOnlyHint = false,
+            .destructiveHint = true,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const category = mcp.tools.getString(args, "category") orelse return mcp.tools.ToolError.InvalidArguments;
