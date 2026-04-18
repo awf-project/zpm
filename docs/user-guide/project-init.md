@@ -1,4 +1,7 @@
-# Project Initialization
+---
+title: "Project Initialization"
+---
+
 
 Before using `zpm serve`, you must initialize a project directory with the `.zpm/` structure.
 

@@ -1,4 +1,7 @@
-# Quality Checks: Verify Consistency and Explain Reasoning
+---
+title: "Quality Checks: Verify Consistency and Explain Reasoning"
+---
+
 
 This guide shows how to detect knowledge base contradictions and justify conclusions using the supervision tools.
 

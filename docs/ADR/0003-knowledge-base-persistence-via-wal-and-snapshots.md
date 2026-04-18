@@ -1,4 +1,7 @@
-# 0003: Knowledge Base Persistence via Write-Ahead Journal and Snapshots
+---
+title: "0003: Knowledge Base Persistence via Write-Ahead Journal and Snapshots"
+---
+
 
 ## Status
 

@@ -1,9 +1,13 @@
-# Architecture Decision Records
+---
+title: "Architecture Decision Records"
+---
+
 
 | ADR | Decision | Status | Date |
 |-----|----------|--------|------|
 | [0001](0001-mcp-server-with-stdio-transport.md) | MCP Server with STDIO Transport via mcp.zig | Accepted | 2026-04-09 |
 | [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Accepted | 2026-04-10 |
+| [0003](0003-knowledge-base-persistence-via-wal-and-snapshots.md) | Knowledge Base Persistence via Write-Ahead Journal and Snapshots | Accepted | 2026-04-13 |
 
 This directory contains the Architecture Decision Records (ADRs) for this project.
 
@@ -35,6 +39,7 @@ Numbers are never reused. If a decision is reversed, the original ADR is marked 
 |-----|-------|--------|
 | [0001](0001-mcp-server-with-stdio-transport.md) | MCP Server with STDIO Transport via mcp.zig | Accepted |
 | [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Accepted |
+| [0003](0003-knowledge-base-persistence-via-wal-and-snapshots.md) | Knowledge Base Persistence via Write-Ahead Journal and Snapshots | Accepted |
 
 <!--
   Update this table as ADRs are added. Format:

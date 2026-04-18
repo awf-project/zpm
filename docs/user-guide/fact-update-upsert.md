@@ -1,4 +1,7 @@
-# Fact Update and Upsert: Modify Knowledge
+---
+title: "Fact Update and Upsert: Modify Knowledge"
+---
+
 
 This guide shows how to replace facts and upsert facts into the knowledge base using atomic update operations.
 

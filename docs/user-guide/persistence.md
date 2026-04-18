@@ -1,4 +1,7 @@
-# Knowledge Base Persistence
+---
+title: "Knowledge Base Persistence"
+---
+
 
 Learn how to save and restore your knowledge base across server restarts using snapshots and automatic journal recovery.
 

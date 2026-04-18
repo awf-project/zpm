@@ -1,4 +1,7 @@
-# 0001: MCP Server with STDIO Transport via mcp.zig
+---
+title: "0001: MCP Server with STDIO Transport via mcp.zig"
+---
+
 
 ## Status
 

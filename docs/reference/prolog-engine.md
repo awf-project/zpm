@@ -1,4 +1,7 @@
-# Prolog Engine Reference
+---
+title: "Prolog Engine Reference"
+---
+
 
 The Prolog inference engine in zpm wraps [scryer-prolog](https://github.com/mthom/scryer-prolog) via a Rust FFI staticlib, exposing a memory-safe Zig API for querying, asserting facts, and loading programs.
 
