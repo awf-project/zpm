@@ -1,4 +1,7 @@
-# Truth Maintenance System: Manage Assumptions and Beliefs
+---
+title: "Truth Maintenance System: Manage Assumptions and Beliefs"
+---
+
 
 The Truth Maintenance System (TMS) in zpm enables you to assert facts as named assumptions and automatically manage dependencies when assumptions change. This is essential for non-monotonic reasoning where beliefs must be retracted or updated based on changing assumptions.
 

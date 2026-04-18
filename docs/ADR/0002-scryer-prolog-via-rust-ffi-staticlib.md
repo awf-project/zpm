@@ -1,4 +1,7 @@
-# 0002: Scryer-Prolog Integration via Rust FFI Static Library
+---
+title: "0002: Scryer-Prolog Integration via Rust FFI Static Library"
+---
+
 
 ## Status
 

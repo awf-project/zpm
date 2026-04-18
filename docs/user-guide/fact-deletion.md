@@ -1,4 +1,7 @@
-# Fact Deletion: Remove and Clean Up Knowledge
+---
+title: "Fact Deletion: Remove and Clean Up Knowledge"
+---
+
 
 This guide shows how to retract individual facts and clear entire categories from the knowledge base using the deletion tools.
 

@@ -1,4 +1,7 @@
-# Schema Discovery: Explore the Knowledge Base
+---
+title: "Schema Discovery: Explore the Knowledge Base"
+---
+
 
 This guide shows how to discover what predicates exist in the knowledge base using the `get_knowledge_schema` tool.
 

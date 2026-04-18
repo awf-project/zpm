@@ -1,4 +1,7 @@
-# Getting Started with zpm MCP Server
+---
+title: "Getting Started with zpm MCP Server"
+---
+
 
 This guide walks you through building and running the zpm Model Context Protocol server.
 
@@ -13,7 +16,7 @@ This guide walks you through building and running the zpm Model Context Protocol
 Clone and build the project:
 
 ```bash
-git clone https://github.com/YOUR_ORG/zpm.git
+git clone https://github.com/awf-project/zpm.git
 cd zpm
 make build
 ```

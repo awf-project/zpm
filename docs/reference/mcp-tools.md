@@ -1,4 +1,7 @@
-# MCP Tools Reference
+---
+title: "MCP Tools Reference"
+---
+
 
 ## Protocol
 

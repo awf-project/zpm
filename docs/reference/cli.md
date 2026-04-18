@@ -1,4 +1,7 @@
-# CLI Reference
+---
+title: "CLI Reference"
+---
+
 
 The zpm command-line interface provides a structured way to interact with the Prolog inference engine via the Model Context Protocol (MCP).
 

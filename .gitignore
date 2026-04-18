@@ -28,3 +28,9 @@ engine.o
 
 .zpm
 npm-cache/
+
+# Hugo static site
+site/public/
+site/node_modules/
+site/resources/
+hugo_stats.json

@@ -18,6 +18,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
 - Knowledge base persistence: durable storage via write-ahead journal and snapshots with automatic recovery
+- Documentation site with Hugo/Thulite (Doks) and GitHub Pages auto-deployment
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
 ## Quick Start
@@ -155,6 +156,15 @@ src/
 ffi/
   zpm-prolog-ffi/   # Rust staticlib wrapping scryer-prolog
     src/lib.rs
+site/
+  config/              # Hugo configuration (params, menus, modules, production)
+  content/             # Homepage, blog, and docs section index pages
+  layouts/             # Custom Hugo templates (home.html, redirect)
+  assets/              # Custom JS/CSS assets
+  package.json         # Thulite/Doks theme dependencies
+.github/
+  workflows/
+    hugo.yml           # GitHub Pages build and deploy workflow
 tests/
   functional_mcp_server_test.sh    # End-to-end MCP protocol tests
   functional_prolog_engine_test.sh # End-to-end Prolog engine tests
@@ -177,15 +187,22 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F011: CLI entrypoint with help and serve subcommand
 - [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
 - [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
+- [x] F014: Hugo static site with GitHub Pages auto-deployment
 
 ## Documentation
 
-See the [`docs/`](docs/) directory:
+Browse the documentation online at **https://awf-project.github.io/zpm/** or in the [`docs/`](docs/) directory:
 
 - [Project Brief](docs/project-brief.md) -- Vision and objectives
 - [Getting Started](docs/getting-started/) -- Build, install, and first steps
 - [Reference](docs/reference/) -- MCP tools and protocol details
 - [ADR](docs/ADR/) -- Architecture Decision Records
+
+To preview the documentation site locally:
+
+```bash
+cd site && npm ci && npm run dev
+```
 
 ## License
 
