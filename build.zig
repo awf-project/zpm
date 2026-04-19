@@ -17,27 +17,30 @@ pub fn build(b: *std.Build) void {
     const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
     cargo_build.setCwd(b.path("ffi/zpm-prolog-ffi"));
 
-    const patch_ffi = b.addSystemCommand(&.{
-        "objcopy",
-        "--redefine-sym",
-        "cfgetospeed@GLIBC_2.2.5=cfgetospeed",
-        "--redefine-sym",
-        "cfgetispeed@GLIBC_2.2.5=cfgetispeed",
-        "--redefine-sym",
-        "cfsetospeed@GLIBC_2.2.5=cfsetospeed",
-        "--redefine-sym",
-        "cfsetispeed@GLIBC_2.2.5=cfsetispeed",
-        "--redefine-sym",
-        "cfsetspeed@GLIBC_2.2.5=cfsetspeed",
-        "ffi/zpm-prolog-ffi/target/release/libzpm_prolog_ffi.a",
-    });
-    patch_ffi.step.dependOn(&cargo_build.step);
+    const patch_step: ?*std.Build.Step = if (target.result.os.tag == .linux) blk: {
+        const patch_ffi = b.addSystemCommand(&.{
+            "objcopy",
+            "--redefine-sym",
+            "cfgetospeed@GLIBC_2.2.5=cfgetospeed",
+            "--redefine-sym",
+            "cfgetispeed@GLIBC_2.2.5=cfgetispeed",
+            "--redefine-sym",
+            "cfsetospeed@GLIBC_2.2.5=cfsetospeed",
+            "--redefine-sym",
+            "cfsetispeed@GLIBC_2.2.5=cfsetispeed",
+            "--redefine-sym",
+            "cfsetspeed@GLIBC_2.2.5=cfsetspeed",
+            "ffi/zpm-prolog-ffi/target/release/libzpm_prolog_ffi.a",
+        });
+        patch_ffi.step.dependOn(&cargo_build.step);
+        break :blk &patch_ffi.step;
+    } else null;
 
     const exe = b.addExecutable(.{
         .name = "zpm",
         .root_module = exe_module,
     });
-    linkFfi(exe, b, &patch_ffi.step);
+    linkFfi(exe, b, patch_step);
     b.installArtifact(exe);
 
     const run_exe = b.addRunArtifact(exe);
@@ -59,7 +62,7 @@ pub fn build(b: *std.Build) void {
         .name = "roundtrip",
         .root_module = roundtrip_module,
     });
-    linkFfi(roundtrip_exe, b, &patch_ffi.step);
+    linkFfi(roundtrip_exe, b, patch_step);
     const run_roundtrip = b.addRunArtifact(roundtrip_exe);
     const roundtrip_step = b.step("roundtrip", "Run Prolog roundtrip example");
     roundtrip_step.dependOn(&run_roundtrip.step);
@@ -70,7 +73,7 @@ pub fn build(b: *std.Build) void {
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_module,
     });
-    linkFfi(exe_unit_tests, b, &patch_ffi.step);
+    linkFfi(exe_unit_tests, b, patch_step);
     // scryer-prolog FFI writes to stdout on init, corrupting the zig_test
     // IPC protocol (--listen=-). Create Run step manually to skip IPC.
     const run_exe_unit_tests = std.Build.Step.Run.create(b, "run main tests");
@@ -89,7 +92,7 @@ pub fn build(b: *std.Build) void {
     const engine_unit_tests = b.addTest(.{
         .root_module = engine_test_module,
     });
-    linkFfi(engine_unit_tests, b, &patch_ffi.step);
+    linkFfi(engine_unit_tests, b, patch_step);
     const run_engine_unit_tests = b.addRunArtifact(engine_unit_tests);
     test_step.dependOn(&run_engine_unit_tests.step);
 
@@ -103,7 +106,7 @@ pub fn build(b: *std.Build) void {
     const wal_unit_tests = b.addTest(.{
         .root_module = wal_test_module,
     });
-    linkFfi(wal_unit_tests, b, &patch_ffi.step);
+    linkFfi(wal_unit_tests, b, patch_step);
     const run_wal_unit_tests = b.addRunArtifact(wal_unit_tests);
     test_step.dependOn(&run_wal_unit_tests.step);
 
@@ -133,7 +136,7 @@ pub fn build(b: *std.Build) void {
     const snapshot_unit_tests = b.addTest(.{
         .root_module = snapshot_test_module,
     });
-    linkFfi(snapshot_unit_tests, b, &patch_ffi.step);
+    linkFfi(snapshot_unit_tests, b, patch_step);
     const run_snapshot_unit_tests = b.addRunArtifact(snapshot_unit_tests);
     test_step.dependOn(&run_snapshot_unit_tests.step);
 
@@ -150,7 +153,7 @@ pub fn build(b: *std.Build) void {
     const manager_unit_tests = b.addTest(.{
         .root_module = manager_test_module,
     });
-    linkFfi(manager_unit_tests, b, &patch_ffi.step);
+    linkFfi(manager_unit_tests, b, patch_step);
     const run_manager_unit_tests = b.addRunArtifact(manager_unit_tests);
     test_step.dependOn(&run_manager_unit_tests.step);
 
@@ -167,7 +170,7 @@ pub fn build(b: *std.Build) void {
     const forget_fact_unit_tests = b.addTest(.{
         .root_module = forget_fact_test_module,
     });
-    linkFfi(forget_fact_unit_tests, b, &patch_ffi.step);
+    linkFfi(forget_fact_unit_tests, b, patch_step);
     const run_forget_fact_unit_tests = b.addRunArtifact(forget_fact_unit_tests);
     test_step.dependOn(&run_forget_fact_unit_tests.step);
 
@@ -184,7 +187,7 @@ pub fn build(b: *std.Build) void {
     const clear_context_unit_tests = b.addTest(.{
         .root_module = clear_context_test_module,
     });
-    linkFfi(clear_context_unit_tests, b, &patch_ffi.step);
+    linkFfi(clear_context_unit_tests, b, patch_step);
     const run_clear_context_unit_tests = b.addRunArtifact(clear_context_unit_tests);
     test_step.dependOn(&run_clear_context_unit_tests.step);
 
@@ -201,7 +204,7 @@ pub fn build(b: *std.Build) void {
     const update_fact_unit_tests = b.addTest(.{
         .root_module = update_fact_test_module,
     });
-    linkFfi(update_fact_unit_tests, b, &patch_ffi.step);
+    linkFfi(update_fact_unit_tests, b, patch_step);
     const run_update_fact_unit_tests = b.addRunArtifact(update_fact_unit_tests);
     test_step.dependOn(&run_update_fact_unit_tests.step);
 
@@ -218,7 +221,7 @@ pub fn build(b: *std.Build) void {
     const upsert_fact_unit_tests = b.addTest(.{
         .root_module = upsert_fact_test_module,
     });
-    linkFfi(upsert_fact_unit_tests, b, &patch_ffi.step);
+    linkFfi(upsert_fact_unit_tests, b, patch_step);
     const run_upsert_fact_unit_tests = b.addRunArtifact(upsert_fact_unit_tests);
     test_step.dependOn(&run_upsert_fact_unit_tests.step);
 
@@ -235,7 +238,7 @@ pub fn build(b: *std.Build) void {
     const assume_fact_unit_tests = b.addTest(.{
         .root_module = assume_fact_test_module,
     });
-    linkFfi(assume_fact_unit_tests, b, &patch_ffi.step);
+    linkFfi(assume_fact_unit_tests, b, patch_step);
     const run_assume_fact_unit_tests = b.addRunArtifact(assume_fact_unit_tests);
     test_step.dependOn(&run_assume_fact_unit_tests.step);
 
@@ -252,7 +255,7 @@ pub fn build(b: *std.Build) void {
     const retract_assumption_unit_tests = b.addTest(.{
         .root_module = retract_assumption_test_module,
     });
-    linkFfi(retract_assumption_unit_tests, b, &patch_ffi.step);
+    linkFfi(retract_assumption_unit_tests, b, patch_step);
     const run_retract_assumption_unit_tests = b.addRunArtifact(retract_assumption_unit_tests);
     test_step.dependOn(&run_retract_assumption_unit_tests.step);
 
@@ -267,7 +270,7 @@ pub fn build(b: *std.Build) void {
     const get_belief_status_unit_tests = b.addTest(.{
         .root_module = get_belief_status_test_module,
     });
-    linkFfi(get_belief_status_unit_tests, b, &patch_ffi.step);
+    linkFfi(get_belief_status_unit_tests, b, patch_step);
     const run_get_belief_status_unit_tests = b.addRunArtifact(get_belief_status_unit_tests);
     test_step.dependOn(&run_get_belief_status_unit_tests.step);
 
@@ -282,7 +285,7 @@ pub fn build(b: *std.Build) void {
     const get_justification_unit_tests = b.addTest(.{
         .root_module = get_justification_test_module,
     });
-    linkFfi(get_justification_unit_tests, b, &patch_ffi.step);
+    linkFfi(get_justification_unit_tests, b, patch_step);
     const run_get_justification_unit_tests = b.addRunArtifact(get_justification_unit_tests);
     test_step.dependOn(&run_get_justification_unit_tests.step);
 
@@ -297,7 +300,7 @@ pub fn build(b: *std.Build) void {
     const list_assumptions_unit_tests = b.addTest(.{
         .root_module = list_assumptions_test_module,
     });
-    linkFfi(list_assumptions_unit_tests, b, &patch_ffi.step);
+    linkFfi(list_assumptions_unit_tests, b, patch_step);
     const run_list_assumptions_unit_tests = b.addRunArtifact(list_assumptions_unit_tests);
     test_step.dependOn(&run_list_assumptions_unit_tests.step);
 
@@ -314,7 +317,7 @@ pub fn build(b: *std.Build) void {
     const retract_assumptions_unit_tests = b.addTest(.{
         .root_module = retract_assumptions_test_module,
     });
-    linkFfi(retract_assumptions_unit_tests, b, &patch_ffi.step);
+    linkFfi(retract_assumptions_unit_tests, b, patch_step);
     const run_retract_assumptions_unit_tests = b.addRunArtifact(retract_assumptions_unit_tests);
     test_step.dependOn(&run_retract_assumptions_unit_tests.step);
 
@@ -335,7 +338,7 @@ pub fn build(b: *std.Build) void {
     const restore_snapshot_unit_tests = b.addTest(.{
         .root_module = restore_snapshot_test_module,
     });
-    linkFfi(restore_snapshot_unit_tests, b, &patch_ffi.step);
+    linkFfi(restore_snapshot_unit_tests, b, patch_step);
     const run_restore_snapshot_unit_tests = b.addRunArtifact(restore_snapshot_unit_tests);
     test_step.dependOn(&run_restore_snapshot_unit_tests.step);
 
@@ -352,7 +355,7 @@ pub fn build(b: *std.Build) void {
     const save_snapshot_unit_tests = b.addTest(.{
         .root_module = save_snapshot_test_module,
     });
-    linkFfi(save_snapshot_unit_tests, b, &patch_ffi.step);
+    linkFfi(save_snapshot_unit_tests, b, patch_step);
     const run_save_snapshot_unit_tests = b.addRunArtifact(save_snapshot_unit_tests);
     test_step.dependOn(&run_save_snapshot_unit_tests.step);
 
@@ -369,7 +372,7 @@ pub fn build(b: *std.Build) void {
     const list_snapshots_unit_tests = b.addTest(.{
         .root_module = list_snapshots_test_module,
     });
-    linkFfi(list_snapshots_unit_tests, b, &patch_ffi.step);
+    linkFfi(list_snapshots_unit_tests, b, patch_step);
     const run_list_snapshots_unit_tests = b.addRunArtifact(list_snapshots_unit_tests);
     test_step.dependOn(&run_list_snapshots_unit_tests.step);
 
@@ -386,7 +389,7 @@ pub fn build(b: *std.Build) void {
     const get_persistence_status_unit_tests = b.addTest(.{
         .root_module = get_persistence_status_test_module,
     });
-    linkFfi(get_persistence_status_unit_tests, b, &patch_ffi.step);
+    linkFfi(get_persistence_status_unit_tests, b, patch_step);
     const run_get_persistence_status_unit_tests = b.addRunArtifact(get_persistence_status_unit_tests);
     test_step.dependOn(&run_get_persistence_status_unit_tests.step);
 
@@ -400,17 +403,19 @@ pub fn build(b: *std.Build) void {
     const project_unit_tests = b.addTest(.{
         .root_module = project_test_module,
     });
-    linkFfi(project_unit_tests, b, &patch_ffi.step);
+    linkFfi(project_unit_tests, b, patch_step);
     const run_project_unit_tests = b.addRunArtifact(project_unit_tests);
     test_step.dependOn(&run_project_unit_tests.step);
 }
 
-fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: *std.Build.Step) void {
+fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: ?*std.Build.Step) void {
     compile.addLibraryPath(b.path("ffi/zpm-prolog-ffi/target/release"));
     compile.linkSystemLibrary("zpm_prolog_ffi");
     compile.linkSystemLibrary("ssl");
     compile.linkSystemLibrary("crypto");
-    compile.linkSystemLibrary("gcc_s");
+    if (compile.rootModuleTarget().os.tag == .linux) {
+        compile.linkSystemLibrary("gcc_s");
+    }
     compile.linkLibC();
-    compile.step.dependOn(patch_step);
+    if (patch_step) |step| compile.step.dependOn(step);
 }

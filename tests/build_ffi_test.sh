@@ -1,25 +1,9 @@
 #!/usr/bin/env bash
-# Feature: F002 / T004
+# Feature: F002 / T004 + F015 / T003
 # Verifies that build.zig invokes `cargo build --release` and links libzpm_prolog_ffi into
 # the Zig executable. Run after `zig build` to assert the complete build chain.
-set -euo pipefail
-
-PASS=0
-FAIL=0
-
-red()   { printf '\033[31m%s\033[0m\n' "$1"; }
-green() { printf '\033[32m%s\033[0m\n' "$1"; }
-
-assert_true() {
-    local label="$1"; shift
-    if "$@" 2>/dev/null; then
-        green "  PASS: $label"
-        PASS=$((PASS + 1))
-    else
-        red "  FAIL: $label"
-        FAIL=$((FAIL + 1))
-    fi
-}
+# F015/T003 regression: validates cross-platform conditionals preserve FFI on Linux.
+. "$(dirname "$0")/test_helpers.sh"
 
 lib_has_symbol() {
     ( set +o pipefail; nm "$1" 2>/dev/null | grep -qF " T $2" )
@@ -53,12 +37,42 @@ fi
 echo "Test: zpm binary is executable"
 assert_true "binary has execute permission" test -x "zig-out/bin/zpm"
 
-# --- Summary ---
-echo ""
-TOTAL=$((PASS + FAIL))
-if [ "$FAIL" -eq 0 ]; then
-    green "All $TOTAL assertions passed."
+# --- F015 Regression: cross-platform conditionals preserve Linux FFI build ---
+
+# --- Test 5: linkFfi with conditional patch_step still produces working binary ---
+echo "Regression F015: linkFfi patch_step conditional does not break Linux build"
+assert_true "zpm binary exists after linkFfi refactor" test -f "zig-out/bin/zpm"
+assert_true "binary is not zero bytes after linkFfi refactor" test -s "zig-out/bin/zpm"
+
+# --- Test 6: on Linux, gcc_s is resolved (binary links successfully) ---
+echo "Regression F015: binary resolves gcc_s on Linux"
+if command -v ldd >/dev/null 2>&1; then
+    LDD_OUT=$(ldd zig-out/bin/zpm 2>/dev/null) || LDD_OUT=""
+    assert_true "ldd reports no unresolved symbols for zpm binary" \
+        bash -c '! echo "$1" | grep -qF "not found"' -- "$LDD_OUT"
 else
-    red "$FAIL of $TOTAL assertions failed."
-    exit 1
+    green "  SKIP: ldd not available on this platform"
 fi
+
+# --- Test 7: on Linux, patch_ffi objcopy step ran (GLIBC max version is patched) ---
+echo "Regression F015: objcopy patch ran — GLIBC_2.38 symbol version is absent"
+if command -v nm >/dev/null 2>&1; then
+    NM_OUT=$(nm -D zig-out/bin/zpm 2>/dev/null) || NM_OUT=""
+    assert_true "GLIBC_2.38 is not referenced in binary (objcopy patch applied)" \
+        bash -c '! echo "$1" | grep -qF "GLIBC_2.38"' -- "$NM_OUT"
+else
+    green "  SKIP: nm not available on this platform"
+fi
+
+# --- Test 8: FFI C-ABI symbols are reachable from the binary ---
+echo "Regression F015: binary-level FFI symbols survive cross-platform linkFfi refactor"
+BIN="zig-out/bin/zpm"
+if test -f "$BIN" && command -v nm >/dev/null 2>&1; then
+    ( set +o pipefail; nm "$BIN" 2>/dev/null | grep -qF "prolog_init" ) \
+        && { green "  PASS: prolog_init reachable from binary"; PASS=$((PASS + 1)); } \
+        || { red "  FAIL: prolog_init not found in binary"; FAIL=$((FAIL + 1)); }
+else
+    green "  SKIP: binary or nm not available"
+fi
+
+test_summary

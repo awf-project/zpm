@@ -28,7 +28,17 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - [Zig](https://ziglang.org/download/) >= 0.15.2
 - [Rust](https://www.rust-lang.org/tools/install) stable (for scryer-prolog FFI compilation)
 
-### Build and Run
+### Install
+
+Install the latest pre-built binary with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/awf-project/zpm/main/scripts/install.sh | sh
+```
+
+Supported platforms: Linux (x86_64, arm64), macOS (x86_64, arm64).
+
+### Build from Source
 
 ```bash
 # Build the server binary
@@ -188,6 +198,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
 - [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
 - [x] F014: Hugo static site with GitHub Pages auto-deployment
+- [x] F015: Binary installation & multi-platform release (4 platforms: linux-x86_64, linux-arm64, darwin-x86_64, darwin-arm64)
 
 ## Documentation
 

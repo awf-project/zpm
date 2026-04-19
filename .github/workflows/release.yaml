@@ -1,5 +1,8 @@
 name: Release
 
+env:
+  ZIG_VERSION: "0.15.2"
+
 on:
   push:
     branches: [main]
@@ -14,10 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Version must match across all jobs — update together
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,18 +41,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Version must match across all jobs — update together
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Run tests
         run: zig build test
 
-  release:
+  build:
     needs: [lint, test]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            zig_target: x86_64-linux-gnu
+            rust_target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: linux-arm64
+            zig_target: aarch64-linux-gnu
+            rust_target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: darwin-x86_64
+            zig_target: x86_64-macos
+            rust_target: x86_64-apple-darwin
+          - os: macos-latest
+            target: darwin-arm64
+            zig_target: aarch64-macos
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install ARM64 cross-compilation toolchain
+        if: matrix.target == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release binary
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=$ZIG_TARGET
+
+      - name: Stage artifact
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mv zig-out/bin/zpm "zig-out/bin/zpm-$TARGET"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpm-${{ matrix.target }}
+          path: zig-out/bin/zpm-${{ matrix.target }}
+
+  release:
+    needs: [build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -58,73 +115,61 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Version must match across all jobs — update together
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/download-artifact@v4
         with:
-          version: 0.15.2
+          pattern: zpm-*
+          merge-multiple: true
+          path: artifacts
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binary
-        run: zig build -Doptimize=ReleaseSafe
+      - name: Generate SHA256SUMS
+        run: sha256sum artifacts/zpm-* > artifacts/SHA256SUMS
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
           NOTES="$(git tag -l --format='%(contents)' "$TAG")"
           if [ -n "$NOTES" ]; then
-            gh release create "$TAG" --title "$TAG" --notes "$NOTES" zig-out/bin/zpm
+            gh release create "$TAG" --title "$TAG" --notes "$NOTES" artifacts/*
           else
-            gh release create "$TAG" --title "$TAG" --generate-notes zig-out/bin/zpm
+            gh release create "$TAG" --title "$TAG" --generate-notes artifacts/*
           fi
 
   dev-release:
-    needs: [lint, test]
+    needs: [build]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
+          pattern: zpm-*
+          merge-multiple: true
+          path: artifacts
 
-      # Version must match across all jobs — update together
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binary
-        run: zig build -Doptimize=ReleaseSafe
+      - name: Generate SHA256SUMS
+        run: sha256sum artifacts/zpm-* > artifacts/SHA256SUMS
 
       - name: Create dev pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
         run: |
-          TAG="dev-${GITHUB_SHA::7}"
+          TAG="dev-${SHA::7}"
           gh release create "$TAG" \
             --title "$TAG" \
             --prerelease \
-            --notes "Dev build from commit ${GITHUB_SHA}" \
-            zig-out/bin/zpm
+            --notes "Dev build from commit $SHA" \
+            artifacts/*
 
       - name: Cleanup old dev releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release list --json tagName,isPrerelease,createdAt \
-            | python3 -c "
-          import json, sys
-          releases = json.load(sys.stdin)
-          dev = sorted(
-              [r for r in releases if r['isPrerelease'] and r['tagName'].startswith('dev-')],
-              key=lambda r: r['createdAt'],
-              reverse=True
-          )
-          for r in dev[3:]:
-              print(r['tagName'])
-          " | while read -r tag; do
-            gh release delete "$tag" --yes --cleanup-tag || true
-          done
+            --jq '[.[] | select(.isPrerelease and (.tagName | startswith("dev-")))] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' \
+            | while read -r tag; do
+              gh release delete "$tag" --yes --cleanup-tag || true
+            done

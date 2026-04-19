@@ -5,13 +5,35 @@ title: "Getting Started with zpm MCP Server"
 
 This guide walks you through building and running the zpm Model Context Protocol server.
 
-## Prerequisites
+## Quick Install
+
+Install a pre-built binary with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/awf-project/zpm/main/scripts/install.sh | sh
+```
+
+Supported platforms: Linux (x86_64, arm64) and macOS (x86_64, arm64).
+
+After installation, verify it works:
+
+```bash
+zpm --version
+```
+
+Once installed, skip ahead to [Initialize a Project](#2-initialize-a-project).
+
+## Build from Source
+
+If you prefer to build from source, or your platform is not supported by the pre-built binaries, follow the steps below.
+
+### Prerequisites
 
 - [Zig](https://ziglang.org/download/) 0.15.2 or later
 - [Rust](https://www.rust-lang.org/tools/install) stable toolchain (for scryer-prolog FFI compilation)
 - A terminal or command prompt
 
-## 1. Build the Server
+### 1. Build the Server
 
 Clone and build the project:
 
@@ -106,7 +128,7 @@ The server echoes back your message.
 To use zpm with Claude or other MCP-compatible clients, configure your client to:
 
 1. **Transport**: stdio
-2. **Command**: `zig-out/bin/zpm serve`
+2. **Command**: `zpm serve` (or `zig-out/bin/zpm serve` if built from source)
 3. **Working Directory**: zpm project root
 
 The server handles the MCP protocol handshake and tool discovery automatically.
