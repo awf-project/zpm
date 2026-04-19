@@ -2,50 +2,10 @@
 # Features: F001-F012
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
-set -euo pipefail
+. "$(dirname "$0")/test_helpers.sh"
 
 BINARY="$(cd "$(dirname "${1:-zig-out/bin/zpm}")" && pwd)/$(basename "${1:-zig-out/bin/zpm}")"
-PASS=0
-FAIL=0
 TIMEOUT=5
-
-red() { printf '\033[31m%s\033[0m\n' "$1"; }
-green() { printf '\033[32m%s\033[0m\n' "$1"; }
-
-assert_contains() {
-    local label="$1" haystack="$2" needle="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
-        green "  PASS: $label"
-        PASS=$((PASS + 1))
-    else
-        red "  FAIL: $label — expected to contain: $needle"
-        red "  GOT: $haystack"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    local label="$1" haystack="$2" needle="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
-        red "  FAIL: $label — expected NOT to contain: $needle"
-        red "  GOT: $haystack"
-        FAIL=$((FAIL + 1))
-    else
-        green "  PASS: $label"
-        PASS=$((PASS + 1))
-    fi
-}
-
-assert_exit_code() {
-    local label="$1" actual="$2" expected="$3"
-    if [ "$actual" -eq "$expected" ]; then
-        green "  PASS: $label"
-        PASS=$((PASS + 1))
-    else
-        red "  FAIL: $label — expected exit code $expected, got $actual"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 send_mcp() {
     local input="$1"
@@ -1144,12 +1104,4 @@ assert_contains "auto-create subdirs: get_persistence_status returns success" "$
 [ -d "$SUBDIRS_DIR/.zpm/kb" ] && green "PASS: auto-create subdirs: .zpm/kb/ was created" && PASS=$((PASS + 1)) || { red "FAIL: auto-create subdirs: .zpm/kb/ was not created"; FAIL=$((FAIL + 1)); }
 rm -rf "$SUBDIRS_DIR"
 
-# --- Summary ---
-echo ""
-TOTAL=$((PASS + FAIL))
-if [ "$FAIL" -eq 0 ]; then
-    green "All $TOTAL assertions passed."
-else
-    red "$FAIL of $TOTAL assertions failed."
-    exit 1
-fi
+test_summary

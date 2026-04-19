@@ -33,7 +33,7 @@ Add ZPM to your MCP client configuration:
   "mcpServers": {
     "zpm": {
       "command": "zpm",
-      "args": []
+      "args": ["serve"]
     }
   }
 }

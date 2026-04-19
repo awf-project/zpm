@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build test ffi-test functional-test functional-test-engine fmt lint clean check ffi-build roundtrip docs docs-serve docs-clean site-test
+.PHONY: help build test ffi-test functional-test functional-test-engine install-test fmt lint clean check ffi-build roundtrip docs docs-serve docs-clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -15,6 +15,9 @@ test: ## Run unit tests (Zig + Rust)
 
 ffi-test: ## Run Rust FFI tests only
 	cd ffi/zpm-prolog-ffi && cargo test
+
+install-test: ## Verify install.sh behavior and release infrastructure (F015)
+	bash tests/functional_install_release_test.sh
 
 functional-test: build ## Run end-to-end MCP protocol tests
 	bash tests/functional_mcp_server_test.sh
@@ -34,7 +37,7 @@ lint: ## Check formatting
 roundtrip: ## Run Prolog roundtrip example (Zig -> Rust FFI -> scryer-prolog)
 	zig build roundtrip
 
-check: lint test functional-test functional-test-engine ## Run all checks (lint + test + e2e)
+check: lint test functional-test functional-test-engine install-test ## Run all checks (lint + test + e2e + F015)
 
 clean: ## Remove build artifacts
 	rm -rf zig-out .zig-cache
