@@ -1,4 +1,4 @@
-# GitHub Actions CI for Zig + Rust FFI project
+# GitHub Actions CI for Zig + Trealla Prolog project
 
 name: CI
 
@@ -12,36 +12,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
       - name: Check Zig formatting
         run: zig fmt --check .
-
-      - name: Check Rust formatting
-        run: cargo fmt --check
-        working-directory: ffi/zpm-prolog-ffi
-
-      - name: Clippy
-        run: cargo clippy -- -D warnings
-        working-directory: ffi/zpm-prolog-ffi
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-
-      - uses: dtolnay/rust-toolchain@stable
 
       - name: Run tests
         run: zig build test
@@ -51,12 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-
-      - uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe

@@ -39,14 +39,14 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const pattern = buildUpsertPattern(allocator, fact) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(pattern);
 
-    engine.retractAll(pattern) catch return mcp.tools.ToolError.ExecutionFailed;
-    engine.assertFact(fact) catch return mcp.tools.ToolError.ExecutionFailed;
-
     if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
         const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = pattern }) catch {};
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch {};
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
+
+    engine.retractAll(pattern) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.assertFact(fact) catch return mcp.tools.ToolError.ExecutionFailed;
 
     const msg = std.fmt.allocPrint(allocator, "Upserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);

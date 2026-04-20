@@ -31,11 +31,6 @@ pub const PersistenceManager = struct {
                 return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
             };
         };
-        const probe = dir.createFile("journal.wal", .{ .truncate = false }) catch {
-            dir.close();
-            return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
-        };
-        probe.close();
         dir.close();
 
         if (std.fs.openDirAbsolute(owned_snap, .{})) |snap_dir| {
@@ -45,8 +40,12 @@ pub const PersistenceManager = struct {
             std.fs.makeDirAbsolute(owned_snap) catch {};
         }
 
-        const wal = WriteAheadLog.init(allocator, owned) catch {
-            return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
+        const wal_or_err = WriteAheadLog.init(allocator, owned);
+        const wal = wal_or_err catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied => {
+                return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = null, .status = .degraded };
+            },
+            else => return err,
         };
 
         return .{ .allocator = allocator, .dir_path = owned, .snapshot_dir_path = owned_snap, .wal = wal, .status = .active };
@@ -55,7 +54,7 @@ pub const PersistenceManager = struct {
     pub fn restore(self: *PersistenceManager, engine: *Engine) !void {
         if (self.status != .active) return;
 
-        const snaps = snapshot_mod.list(self.allocator, self.snapshot_dir_path) catch return;
+        const snaps = try snapshot_mod.list(self.allocator, self.snapshot_dir_path);
         defer {
             for (snaps) |s| self.allocator.free(s);
             self.allocator.free(snaps);
@@ -68,9 +67,10 @@ pub const PersistenceManager = struct {
             }.cmp);
             // Take the last (newest by lexicographic/timestamp order)
             const latest = snaps[snaps.len - 1];
-            const snap_path = std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, latest }) catch return;
+            const snap_path = try std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, latest });
             defer self.allocator.free(snap_path);
-            engine.loadFile(snap_path) catch {};
+            // Corrupt snapshot fails boot; recovery is `rm -rf .zpm/kb/`.
+            try engine.loadFile(snap_path);
         }
 
         if (self.wal) |*w| try w.replay(engine);
@@ -118,6 +118,8 @@ pub const PersistenceManager = struct {
         defer self.allocator.free(snap_name);
         const snap_path = try std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, snap_name });
         defer self.allocator.free(snap_path);
+        // Mirrors Snapshot.restore: pl_consult is additive, so wipe first.
+        try engine.resetUserKnowledge();
         try engine.loadFile(snap_path);
     }
 
@@ -390,4 +392,33 @@ test "deinit frees dir_path and snapshot_dir_path without leak" {
     // std.testing.allocator detects leaks automatically
     var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
     manager.deinit();
+}
+
+test "restore propagates loadFile error for corrupt snapshot" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var kb_tmp = std.testing.tmpDir(.{});
+    defer kb_tmp.cleanup();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir = try data_tmp.dir.realpath(".", &path_buf1);
+    const kb_dir = try kb_tmp.dir.realpath(".", &path_buf2);
+
+    // Corrupt snapshot — unterminated quoted atom triggers Trealla parse error.
+    try kb_tmp.dir.writeFile(.{ .sub_path = "broken.pl", .data = "bad(unclosed\n" });
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, kb_dir);
+    defer manager.deinit();
+
+    // With the fix, restore must bubble the load error rather than silently
+    // leaving an empty KB. The previous `engine.loadFile(...) catch {}` made
+    // boot succeed against a corrupt snapshot.
+    try std.testing.expectError(
+        @import("../prolog/engine.zig").EngineError.LoadFailed,
+        manager.restore(engine),
+    );
 }

@@ -34,13 +34,13 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     if (body.len == 0) return mcp.tools.errorResult(allocator, "Body must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
     const rule = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = rule }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
     engine.assert(rule) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = rule }) catch {};
-    }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;

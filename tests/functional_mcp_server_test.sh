@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Features: F001-F012
+# Features: F001-F012, F016
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 . "$(dirname "$0")/test_helpers.sh"
@@ -7,19 +7,37 @@
 BINARY="$(cd "$(dirname "${1:-zig-out/bin/zpm}")" && pwd)/$(basename "${1:-zig-out/bin/zpm}")"
 TIMEOUT=5
 
-send_mcp() {
-    local input="$1"
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    mkdir -p "$tmpdir/.zpm/data" "$tmpdir/.zpm/kb"
-    (cd "$tmpdir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
-    rm -rf "$tmpdir"
-}
-
 send_mcp_persist() {
     local input="$1" dir="$2"
     mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb"
     (cd "$dir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+}
+
+send_mcp() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    send_mcp_persist "$1" "$tmpdir"
+    rm -rf "$tmpdir"
+}
+
+# Run `$BINARY $@`, capture combined stdout+stderr into $CLI_OUTPUT, exit code into $CLI_EXIT.
+capture_cli() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    CLI_EXIT=0
+    "$BINARY" "$@" >"$tmpfile" 2>&1 || CLI_EXIT=$?
+    CLI_OUTPUT=$(cat "$tmpfile")
+    rm -f "$tmpfile"
+}
+
+# Same as capture_cli, but splits stdout (discarded) from stderr into $CLI_STDERR.
+capture_cli_stderr() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    CLI_EXIT=0
+    "$BINARY" "$@" >/dev/null 2>"$tmpfile" || CLI_EXIT=$?
+    CLI_STDERR=$(cat "$tmpfile")
+    rm -f "$tmpfile"
 }
 
 # --- Test 1: Initialize handshake returns correct server info ---
@@ -40,26 +58,11 @@ TOOLSLIST_INPUT="${INIT_REQ}
 RESPONSE=$(send_mcp "$TOOLSLIST_INPUT")
 TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 
-assert_contains "echo tool listed" "$TOOLS_LINE" '"name":"echo"'
 assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo back the input message"'
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
-assert_contains "remember_fact tool listed" "$TOOLS_LINE" '"name":"remember_fact"'
-assert_contains "define_rule tool listed" "$TOOLS_LINE" '"name":"define_rule"'
-assert_contains "query_logic tool listed" "$TOOLS_LINE" '"name":"query_logic"'
-assert_contains "trace_dependency tool listed" "$TOOLS_LINE" '"name":"trace_dependency"'
-assert_contains "verify_consistency tool listed" "$TOOLS_LINE" '"name":"verify_consistency"'
-assert_contains "explain_why tool listed" "$TOOLS_LINE" '"name":"explain_why"'
-assert_contains "get_knowledge_schema tool listed" "$TOOLS_LINE" '"name":"get_knowledge_schema"'
-assert_contains "forget_fact tool listed" "$TOOLS_LINE" '"name":"forget_fact"'
-assert_contains "clear_context tool listed" "$TOOLS_LINE" '"name":"clear_context"'
-assert_contains "update_fact tool listed" "$TOOLS_LINE" '"name":"update_fact"'
-assert_contains "upsert_fact tool listed" "$TOOLS_LINE" '"name":"upsert_fact"'
-assert_contains "assume_fact tool listed" "$TOOLS_LINE" '"name":"assume_fact"'
-assert_contains "retract_assumption tool listed" "$TOOLS_LINE" '"name":"retract_assumption"'
-assert_contains "get_belief_status tool listed" "$TOOLS_LINE" '"name":"get_belief_status"'
-assert_contains "get_justification tool listed" "$TOOLS_LINE" '"name":"get_justification"'
-assert_contains "list_assumptions tool listed" "$TOOLS_LINE" '"name":"list_assumptions"'
-assert_contains "retract_assumptions tool listed" "$TOOLS_LINE" '"name":"retract_assumptions"'
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status; do
+    assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
+done
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
@@ -169,17 +172,14 @@ QUERY_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":14')
 assert_contains "missing goal returns isError true" "$QUERY_MISSING_LINE" '"isError":true'
 
 # --- Test 12b: query_logic with syntactically invalid goal returns empty result ---
-# NOTE: scryer-prolog silently returns 0 solutions for malformed goals instead of
-# raising a parse error. This test documents current behavior; SC-003 "invalid syntax
-# returns error" cannot be enforced at the Zig layer without duplicating Prolog's parser.
-echo "Test: query_logic with invalid syntax returns empty result (scryer-prolog limitation)"
+echo "Test: query_logic with invalid syntax returns empty result"
 QUERY_INVALID_INPUT="${INIT_REQ}
 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
 {\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contributor(X,\"}}}"
 RESPONSE=$(send_mcp "$QUERY_INVALID_INPUT")
 QUERY_INVALID_LINE=$(echo "$RESPONSE" | grep '"id":22')
 
-assert_contains "invalid syntax returns empty array (scryer-prolog limitation)" "$QUERY_INVALID_LINE" '"isError":false'
+assert_contains "invalid syntax returns empty array" "$QUERY_INVALID_LINE" '"isError":false'
 
 # --- Test 13: trace_dependency returns reachable nodes for transitive dependency chain ---
 echo "Test: trace_dependency tool invocation with transitive dependencies"
@@ -695,18 +695,6 @@ assert_contains "retract_assumptions reports 2 assumptions retracted" "$RETRACT_
 assert_contains "non-matching assumption fact survives pattern retraction" "$QUERY_REMAIN_LINE" '[{}]'
 
 # Feature: F010
-# --- Test 50: tools/list returns all 22 registered tools ---
-echo "Test: tools/list returns all 22 tools"
-TOOLSLIST_ALL_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/list\",\"params\":{}}"
-RESPONSE=$(send_mcp "$TOOLSLIST_ALL_INPUT")
-TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":200')
-
-for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status; do
-    assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
-done
-
 # --- Test 51: save_snapshot persists current knowledge base to disk (US3) ---
 echo "Test: save_snapshot creates a named snapshot file"
 PERSIST_DIR_51=$(mktemp -d)
@@ -864,55 +852,26 @@ rm -rf "$PERSIST_DIR_58"
 # Feature: F011
 # --- F011-T004: Unknown subcommand error handling ---
 echo "Test: Unknown subcommand 'foo' exits 1 and reports error on stderr"
-TMPFILE_T004A=$(mktemp)
-"$BINARY" foo >/dev/null 2>"$TMPFILE_T004A" || UNKNOWN_CMD_EXIT=$?
-UNKNOWN_CMD_STDERR=$(cat "$TMPFILE_T004A")
-rm -f "$TMPFILE_T004A"
-assert_exit_code "zpm foo exits 1" "${UNKNOWN_CMD_EXIT:-0}" 1
-assert_contains "zpm foo stderr mentions unknown command" "$UNKNOWN_CMD_STDERR" "foo"
+capture_cli_stderr foo
+assert_exit_code "zpm foo exits 1" "$CLI_EXIT" 1
+assert_contains "zpm foo stderr mentions unknown command" "$CLI_STDERR" "foo"
 
 echo "Test: Unknown flag '--unknown-flag' exits 1 and reports error on stderr"
-TMPFILE_T004B=$(mktemp)
-"$BINARY" --unknown-flag >/dev/null 2>"$TMPFILE_T004B" || UNKNOWN_FLAG_EXIT=$?
-UNKNOWN_FLAG_STDERR=$(cat "$TMPFILE_T004B")
-rm -f "$TMPFILE_T004B"
-assert_exit_code "zpm --unknown-flag exits 1" "${UNKNOWN_FLAG_EXIT:-0}" 1
-assert_contains "zpm --unknown-flag stderr reports error" "$UNKNOWN_FLAG_STDERR" "unknown"
+capture_cli_stderr --unknown-flag
+assert_exit_code "zpm --unknown-flag exits 1" "$CLI_EXIT" 1
+assert_contains "zpm --unknown-flag stderr reports error" "$CLI_STDERR" "unknown"
 
 # --- F011-T006: CLI entrypoint functional tests ---
 
-# US1: zpm with no arguments displays help and exits 0
-echo "Test: zpm with no arguments displays help (US1)"
-TMPFILE_T006A=$(mktemp)
-NO_ARGS_EXIT=0
-"$BINARY" >"$TMPFILE_T006A" 2>&1 || NO_ARGS_EXIT=$?
-NO_ARGS_OUTPUT=$(cat "$TMPFILE_T006A")
-rm -f "$TMPFILE_T006A"
-assert_exit_code "zpm no args exits 0" "$NO_ARGS_EXIT" 0
-assert_contains "zpm no-args help contains program name" "$NO_ARGS_OUTPUT" "zpm"
-assert_contains "zpm no-args help mentions serve subcommand" "$NO_ARGS_OUTPUT" "serve"
-
-# US1: zpm --help displays help and exits 0
-echo "Test: zpm --help displays help (US1)"
-TMPFILE_T006B=$(mktemp)
-HELP_FLAG_EXIT=0
-"$BINARY" --help >"$TMPFILE_T006B" 2>&1 || HELP_FLAG_EXIT=$?
-HELP_FLAG_OUTPUT=$(cat "$TMPFILE_T006B")
-rm -f "$TMPFILE_T006B"
-assert_exit_code "zpm --help exits 0" "$HELP_FLAG_EXIT" 0
-assert_contains "zpm --help output contains program name" "$HELP_FLAG_OUTPUT" "zpm"
-assert_contains "zpm --help output mentions serve subcommand" "$HELP_FLAG_OUTPUT" "serve"
-
-# US1: zpm -h displays help and exits 0
-echo "Test: zpm -h displays help (US1)"
-TMPFILE_T006B2=$(mktemp)
-SHORT_HELP_EXIT=0
-"$BINARY" -h >"$TMPFILE_T006B2" 2>&1 || SHORT_HELP_EXIT=$?
-SHORT_HELP_OUTPUT=$(cat "$TMPFILE_T006B2")
-rm -f "$TMPFILE_T006B2"
-assert_exit_code "zpm -h exits 0" "$SHORT_HELP_EXIT" 0
-assert_contains "zpm -h output contains program name" "$SHORT_HELP_OUTPUT" "zpm"
-assert_contains "zpm -h output mentions serve subcommand" "$SHORT_HELP_OUTPUT" "serve"
+# US1: each help invocation displays help and exits 0
+for HELP_INVOCATION in "" "--help" "-h"; do
+    echo "Test: zpm ${HELP_INVOCATION:-<no args>} displays help (US1)"
+    # shellcheck disable=SC2086
+    capture_cli $HELP_INVOCATION
+    assert_exit_code "zpm ${HELP_INVOCATION:-<no args>} exits 0" "$CLI_EXIT" 0
+    assert_contains "zpm ${HELP_INVOCATION:-<no args>} output contains program name" "$CLI_OUTPUT" "zpm"
+    assert_contains "zpm ${HELP_INVOCATION:-<no args>} mentions serve subcommand" "$CLI_OUTPUT" "serve"
+done
 
 # US2: zpm serve routes MCP protocol correctly
 echo "Test: zpm serve processes MCP initialize (US2)"
@@ -923,25 +882,13 @@ rm -rf "$SERVE_TMPDIR"
 assert_contains "zpm serve returns correct server name" "$SERVE_RESPONSE" '"name":"zpm"'
 assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"protocolVersion":"2025-11-25"'
 
-# US3: zpm --version prints version string and exits 0
-echo "Test: zpm --version prints version string (US3)"
-TMPFILE_T006C=$(mktemp)
-VERSION_FLAG_EXIT=0
-"$BINARY" --version >"$TMPFILE_T006C" 2>&1 || VERSION_FLAG_EXIT=$?
-VERSION_FLAG_OUTPUT=$(cat "$TMPFILE_T006C")
-rm -f "$TMPFILE_T006C"
-assert_exit_code "zpm --version exits 0" "$VERSION_FLAG_EXIT" 0
-assert_contains "zpm --version output contains version" "$VERSION_FLAG_OUTPUT" "0.1.0"
-
-# US3: zpm -v prints version string and exits 0
-echo "Test: zpm -v prints version string (US3)"
-TMPFILE_T006D=$(mktemp)
-SHORT_VERSION_EXIT=0
-"$BINARY" -v >"$TMPFILE_T006D" 2>&1 || SHORT_VERSION_EXIT=$?
-SHORT_VERSION_OUTPUT=$(cat "$TMPFILE_T006D")
-rm -f "$TMPFILE_T006D"
-assert_exit_code "zpm -v exits 0" "$SHORT_VERSION_EXIT" 0
-assert_contains "zpm -v output contains version" "$SHORT_VERSION_OUTPUT" "0.1.0"
+# US3: each version invocation prints version string and exits 0
+for VERSION_FLAG in "--version" "-v"; do
+    echo "Test: zpm $VERSION_FLAG prints version string (US3)"
+    capture_cli "$VERSION_FLAG"
+    assert_exit_code "zpm $VERSION_FLAG exits 0" "$CLI_EXIT" 0
+    assert_contains "zpm $VERSION_FLAG output contains version" "$CLI_OUTPUT" "0.1.0"
+done
 
 # --- Test: zpm init creates .zpm/ directory structure (T009/US1) ---
 echo "Test: zpm init creates .zpm/ directory structure (US1)"
@@ -1100,8 +1047,8 @@ SUBDIRS_INIT_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":1')
 SUBDIRS_STATUS_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":500')
 assert_contains "auto-create subdirs: MCP handshake succeeds" "$SUBDIRS_INIT_LINE" '"name":"zpm"'
 assert_contains "auto-create subdirs: get_persistence_status returns success" "$SUBDIRS_STATUS_LINE" '"isError":false'
-[ -d "$SUBDIRS_DIR/.zpm/data" ] && green "PASS: auto-create subdirs: .zpm/data/ was created" && PASS=$((PASS + 1)) || { red "FAIL: auto-create subdirs: .zpm/data/ was not created"; FAIL=$((FAIL + 1)); }
-[ -d "$SUBDIRS_DIR/.zpm/kb" ] && green "PASS: auto-create subdirs: .zpm/kb/ was created" && PASS=$((PASS + 1)) || { red "FAIL: auto-create subdirs: .zpm/kb/ was not created"; FAIL=$((FAIL + 1)); }
+assert_true "auto-create subdirs: .zpm/data/ was created" test -d "$SUBDIRS_DIR/.zpm/data"
+assert_true "auto-create subdirs: .zpm/kb/ was created" test -d "$SUBDIRS_DIR/.zpm/kb"
 rm -rf "$SUBDIRS_DIR"
 
 test_summary

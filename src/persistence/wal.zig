@@ -28,79 +28,96 @@ pub const JournalEntry = struct {
     clause: []const u8,
 };
 
+const JournalEntryJson = struct {
+    ts: i64,
+    op: []const u8,
+    clause: []const u8,
+};
+
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
     dir_path: []const u8,
+    file: std.fs.File,
 
     pub fn init(allocator: std.mem.Allocator, dir_path: []const u8) !WriteAheadLog {
-        const owned = try allocator.dupe(u8, dir_path);
-        return WriteAheadLog{ .allocator = allocator, .dir_path = owned };
+        var dir = try std.fs.openDirAbsolute(dir_path, .{});
+        defer dir.close();
+        const file = try dir.createFile("journal.wal", .{ .truncate = false });
+        try file.seekFromEnd(0);
+        return .{
+            .allocator = allocator,
+            .dir_path = try allocator.dupe(u8, dir_path),
+            .file = file,
+        };
     }
 
     pub fn deinit(self: *WriteAheadLog) void {
+        self.file.close();
         self.allocator.free(self.dir_path);
     }
 
     pub fn append(self: *WriteAheadLog, entry: JournalEntry) !void {
-        var dir = try std.fs.openDirAbsolute(self.dir_path, .{});
-        defer dir.close();
-        const file = try dir.createFile("journal.wal", .{ .truncate = false });
-        defer file.close();
-        try file.seekFromEnd(0);
-        var line_buf: [4096]u8 = undefined;
-        const line = try std.fmt.bufPrint(&line_buf, "%% {d} {s} {s}.\n", .{ entry.timestamp, entry.op.tag(), entry.clause });
-        try file.writeAll(line);
+        var aw: std.io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+        try std.json.Stringify.value(
+            JournalEntryJson{
+                .ts = entry.timestamp,
+                .op = entry.op.tag(),
+                .clause = entry.clause,
+            },
+            .{},
+            &aw.writer,
+        );
+        try aw.writer.writeByte('\n');
+        const json_line = try aw.toOwnedSlice();
+        defer self.allocator.free(json_line);
+        try self.file.writeAll(json_line);
+        try self.file.sync();
     }
 
     pub fn replay(self: *WriteAheadLog, engine: *Engine) !void {
         var dir = std.fs.openDirAbsolute(self.dir_path, .{}) catch return;
         defer dir.close();
-        const file = dir.openFile("journal.wal", .{}) catch return;
-        defer file.close();
-        var buf: [65536]u8 = undefined;
-        const n = try file.readAll(&buf);
-        var iter = std.mem.splitScalar(u8, buf[0..n], '\n');
+        const ro = dir.openFile("journal.wal", .{}) catch return;
+        defer ro.close();
+
+        const buf = try ro.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+        defer self.allocator.free(buf);
+        var iter = std.mem.splitScalar(u8, buf, '\n');
         while (iter.next()) |line| {
-            const entry = parseEntry(line) orelse continue;
-            switch (entry.op) {
-                .assert => engine.assertFact(entry.clause) catch {},
-                .retract => engine.retractFact(entry.clause) catch {},
-                .retractall => engine.retractAll(entry.clause) catch {},
+            if (line.len == 0) continue;
+
+            // Corrupt entries fail boot — partial replay would leave the KB
+            // in an observable state that does not match the journal.
+            const parsed = try std.json.parseFromSlice(
+                JournalEntryJson,
+                self.allocator,
+                line,
+                .{},
+            );
+            defer parsed.deinit();
+
+            const op = Operation.parse(parsed.value.op) orelse return error.CorruptWalEntry;
+            switch (op) {
+                .assert => try engine.assertFact(parsed.value.clause),
+                .retract => try engine.retractFact(parsed.value.clause),
+                .retractall => try engine.retractAll(parsed.value.clause),
             }
         }
     }
 
-    pub fn parseEntry(line: []const u8) ?JournalEntry {
-        if (!std.mem.startsWith(u8, line, "%% ")) return null;
-        const rest = line[3..];
-        // Parse timestamp
-        const sp1 = std.mem.indexOfScalar(u8, rest, ' ') orelse return null;
-        const ts_str = rest[0..sp1];
-        const timestamp = std.fmt.parseInt(i64, ts_str, 10) catch return null;
-        const after_ts = rest[sp1 + 1 ..];
-        // Parse operation
-        const sp2 = std.mem.indexOfScalar(u8, after_ts, ' ') orelse return null;
-        const op_str = after_ts[0..sp2];
-        const op = Operation.parse(op_str) orelse return null;
-        // Parse clause
-        const clause_with_dot = after_ts[sp2 + 1 ..];
-        if (clause_with_dot.len == 0) return null;
-        const clause = if (std.mem.endsWith(u8, clause_with_dot, "."))
-            clause_with_dot[0 .. clause_with_dot.len - 1]
-        else
-            clause_with_dot;
-        return JournalEntry{ .timestamp = timestamp, .op = op, .clause = clause };
-    }
-
     pub fn rotate(self: *WriteAheadLog) !void {
-        var dir = std.fs.openDirAbsolute(self.dir_path, .{}) catch return;
+        self.file.close();
+
+        var dir = try std.fs.openDirAbsolute(self.dir_path, .{});
         defer dir.close();
+
+        var name_buf: [64]u8 = undefined;
         const ts = std.time.timestamp();
-        var buf: [64]u8 = undefined;
-        const archived = try std.fmt.bufPrint(&buf, "journal.{d}.wal", .{ts});
-        dir.rename("journal.wal", archived) catch {};
-        const fresh = dir.createFile("journal.wal", .{ .truncate = false }) catch return;
-        fresh.close();
+        const archive = try std.fmt.bufPrint(&name_buf, "journal-{d}.wal", .{ts});
+        try dir.rename("journal.wal", archive);
+
+        self.file = try dir.createFile("journal.wal", .{ .truncate = true });
     }
 };
 
@@ -131,22 +148,28 @@ test "append records a journal entry without error" {
     try wal.append(entry);
 }
 
-test "append writes entry in prolog comment format" {
+test "append writes one JSON line per entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
 
     var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
     defer wal.deinit();
 
-    const entry = JournalEntry{ .timestamp = 1713000000, .clause = "fact(a)" };
-    try wal.append(entry);
+    try wal.append(.{ .timestamp = 1714000000, .op = .assert, .clause = "parent(alice, bob)" });
 
-    var content_buf: [256]u8 = undefined;
-    const n = try tmp.dir.readFile("journal.wal", &content_buf);
-    try std.testing.expectEqualStrings("%% 1713000000 assert fact(a).\n", n);
+    const f = try tmp.dir.openFile("journal.wal", .{});
+    defer f.close();
+    var buf: [256]u8 = undefined;
+    const n = try f.readAll(&buf);
+    const line = std.mem.trim(u8, buf[0..n], "\n");
+
+    const parsed = try std.json.parseFromSlice(JournalEntryJson, std.testing.allocator, line, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 1714000000), parsed.value.ts);
+    try std.testing.expectEqualStrings("assert", parsed.value.op);
+    try std.testing.expectEqualStrings("parent(alice, bob)", parsed.value.clause);
 }
 
 test "replay asserts journal entries into engine" {
@@ -172,21 +195,6 @@ test "replay asserts journal entries into engine" {
     try std.testing.expectEqual(@as(usize, 2), result.solutions.len);
 }
 
-test "parseEntry parses valid journal line into JournalEntry" {
-    const entry = WriteAheadLog.parseEntry("%% 1713000000 assert fact(a).") orelse
-        return error.TestUnexpectedNull;
-    try std.testing.expectEqual(@as(i64, 1713000000), entry.timestamp);
-    try std.testing.expectEqual(Operation.assert, entry.op);
-    try std.testing.expectEqualStrings("fact(a)", entry.clause);
-}
-
-test "parseEntry returns null for lines not in journal format" {
-    try std.testing.expect(WriteAheadLog.parseEntry("fact(a).") == null);
-    try std.testing.expect(WriteAheadLog.parseEntry("") == null);
-    try std.testing.expect(WriteAheadLog.parseEntry("%% 1713000000") == null);
-    try std.testing.expect(WriteAheadLog.parseEntry("%% 1713000000 badop fact(a).") == null);
-}
-
 test "replay is no-op when journal file does not exist" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -201,4 +209,139 @@ test "replay is no-op when journal file does not exist" {
     defer engine.deinit();
 
     try wal.replay(engine);
+}
+
+test "replay parses JSON Lines and asserts entries" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+    try wal.append(.{ .timestamp = 1714000000, .op = .assert, .clause = "color(red)" });
+    try wal.append(.{ .timestamp = 1714000001, .op = .assert, .clause = "color(blue)" });
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try wal.replay(engine);
+
+    var result = try engine.query("color(C)");
+    defer result.deinit();
+    try std.testing.expect(result.solutions.len == 2);
+}
+
+test "init opens journal.wal for append" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    const stat = try wal.file.stat();
+    try std.testing.expect(stat.size == 0);
+}
+
+test "append handles clause larger than 4KB (no hardcoded limit)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    const big = try std.testing.allocator.alloc(u8, 8192);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'a');
+    const clause = try std.fmt.allocPrint(std.testing.allocator, "data('{s}')", .{big});
+    defer std.testing.allocator.free(clause);
+
+    try wal.append(.{ .timestamp = 1, .op = .assert, .clause = clause });
+}
+
+test "append handles clause containing newline (JSON-escaped)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    try wal.append(.{ .timestamp = 1, .op = .assert, .clause = "rule(a) :-\n    ok(a)" });
+
+    const f = try tmp.dir.openFile("journal.wal", .{});
+    defer f.close();
+    var buf: [512]u8 = undefined;
+    const n = try f.readAll(&buf);
+    const newline_count = std.mem.count(u8, buf[0..n], "\n");
+    try std.testing.expectEqual(@as(usize, 1), newline_count);
+}
+
+test "replay propagates error on corrupt (non-JSON) journal entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "journal.wal",
+        .data = "{\"ts\":1,\"op\":\"assert\",\"clause\":\"fact(a)\"}\nnot-valid-json\n",
+    });
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try std.testing.expectError(error.SyntaxError, wal.replay(engine));
+}
+
+test "replay propagates error on unknown op in journal entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "journal.wal",
+        .data = "{\"ts\":1,\"op\":\"bogus\",\"clause\":\"fact(a)\"}\n",
+    });
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try std.testing.expectError(error.CorruptWalEntry, wal.replay(engine));
+}
+
+test "replay handles journal larger than 64KB (no hardcoded limit)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    var i: usize = 0;
+    while (i < 2000) : (i += 1) {
+        const clause = try std.fmt.allocPrint(std.testing.allocator, "fact({d})", .{i});
+        defer std.testing.allocator.free(clause);
+        try wal.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = clause });
+    }
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try wal.replay(engine);
+
+    var result = try engine.query("fact(N)");
+    defer result.deinit();
+    try std.testing.expect(result.solutions.len >= 100);
 }

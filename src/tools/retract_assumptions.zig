@@ -133,11 +133,18 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
     }
 
+    // Two-phase for atomicity: journal every entry before any engine
+    // mutation, so a partial WAL never corresponds to a partial in-memory
+    // state. retractall replay is idempotent — retry-safe.
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        const ts = std.time.timestamp();
+        for (matching.items) |assumption| {
+            pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.ExecutionFailed;
+        }
+    }
+
     for (matching.items) |assumption| {
         retractAssumption(allocator, engine, assumption) catch {};
-        if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-            pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = assumption }) catch {};
-        }
     }
 
     const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;

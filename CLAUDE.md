@@ -1,11 +1,11 @@
 ## Project
 
-zpm is a Prolog inference engine for the Model Context Protocol (MCP), written in Zig. It enables deterministic logical reasoning for AI agents via STDIO JSON-RPC transport. F001 (MCP server) and F002 (Prolog engine with scryer-prolog integration) are complete; F003 (fact/rule/query tools) is next.
+zpm is a Prolog inference engine for the Model Context Protocol (MCP), written in Zig. It enables deterministic logical reasoning for AI agents via STDIO JSON-RPC transport. F001–F015 are complete (MCP server, Trealla-based Prolog engine, knowledge/supervision tools, persistence, multi-platform releases, docs site); F016 migrates the backend from scryer-prolog to Trealla.
 
 ## Build & Run
 
-- **Zig >= 0.15.2** and **Rust stable** required (Rust needed for scryer-prolog FFI compilation)
-- **mcp.zig** library dependency (fetched via `build.zig.zon`); **scryer-prolog** linked as Rust staticlib
+- **Zig >= 0.15.2** and a C compiler (gcc or clang) required
+- **mcp.zig** library dependency (fetched via `build.zig.zon`); **Trealla Prolog** vendored as a git submodule at `ffi/trealla/` and compiled via Zig's C toolchain
 - Binary output: `zig-out/bin/zpm`
 
 | Command | Purpose |
@@ -15,8 +15,7 @@ zpm is a Prolog inference engine for the Model Context Protocol (MCP), written i
 | `make functional-test` | End-to-end MCP protocol tests (bash) |
 | `make fmt` | Format source |
 | `make lint` | Check formatting |
-| `make clean` | Remove `zig-out/`, `.zig-cache/`, and Rust artifacts |
-| `make ffi-build` | Build Rust FFI staticlib only (called by `build`) |
+| `make clean` | Remove `zig-out/` and `.zig-cache/` |
 
 ## Architecture
 
@@ -27,10 +26,10 @@ src/
     echo.zig      # Tool handler + inline tests
   prolog/
     engine.zig    # Prolog engine: init/deinit, query, assert/retract, load
-    ffi.zig       # C-ABI extern declarations for scryer-prolog FFI
+    ffi.zig       # C-ABI extern declarations for Trealla's pl_* API
+    capture.zig   # stdout redirection for query output parsing
 ffi/
-  zpm-prolog-ffi/ # Rust staticlib wrapping scryer-prolog with extern "C" API
-    src/lib.rs
+  trealla/        # Trealla Prolog C source (git submodule, compiled by build.zig)
 tests/
   functional_mcp_server_test.sh
 docs/
@@ -41,8 +40,8 @@ docs/
 ```
 
 - Executable-only project (no library module); `src/main.zig` is the single root
-- Flat module structure; hexagonal architecture deferred until domain complexity justifies it (see [ADR-0002](docs/ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md))
-- Engine module (`src/prolog/engine.zig`) wraps Rust FFI staticlib (`ffi/zpm-prolog-ffi/src/lib.rs`) exposing scryer-prolog via C-ABI
+- Flat module structure; hexagonal architecture deferred until domain complexity justifies it (see [ADR-0004](docs/ADR/0004-trealla-prolog-via-c-ffi-replacing-scryer.md) for the current Prolog backend rationale)
+- Engine module (`src/prolog/engine.zig`) calls Trealla's `pl_*` C API directly via extern declarations in `ffi.zig`; glue logic (stdout capture, output parsing, assertz wrapping) lives in `capture.zig` + `engine.zig`
 - MCP protocol version `2025-11-25`, server capabilities: tools only (`listChanged: true`)
 
 ## Architecture Rules

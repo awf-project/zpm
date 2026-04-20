@@ -2,6 +2,7 @@
 zig-out/
 zig-cache/
 .zig-cache/
+*.o
 
 # IDE
 *.swp
@@ -15,10 +16,6 @@ zig-cache/
 # AWF runtime data
 .awf/storage/states/
 .awf/storage/logs/
-
-# Rust
-ffi/zpm-prolog-ffi/target/
-engine.o
 
 # Temporary files
 *.tmp
@@ -34,3 +31,6 @@ site/public/
 site/node_modules/
 site/resources/
 hugo_stats.json
+
+# Git worktrees
+.worktrees/

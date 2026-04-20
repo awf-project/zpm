@@ -8,7 +8,7 @@ draft: false
 
 ## What is ZPM?
 
-ZPM is a [Model Context Protocol](https://modelcontextprotocol.io/) server written in Zig that embeds a Scryer Prolog engine. It lets AI agents store facts, define rules, and run logical queries — bringing deterministic Prolog reasoning into MCP-compatible workflows.
+ZPM is a [Model Context Protocol](https://modelcontextprotocol.io/) server written in Zig that embeds a Trealla Prolog engine. It lets AI agents store facts, define rules, and run logical queries — bringing deterministic Prolog reasoning into MCP-compatible workflows.
 
 ## Install
 
@@ -43,7 +43,7 @@ Then assert facts and run queries through your AI agent:
 
 ```prolog
 % Store a fact
-depends_on(zpm, scryer_prolog).
+depends_on(zpm, trealla_prolog).
 
 % Query relationships
 ?- depends_on(zpm, X).

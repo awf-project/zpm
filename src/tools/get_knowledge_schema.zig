@@ -58,8 +58,10 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         const name = allocator.dupe(u8, name_raw) catch return mcp.tools.ToolError.OutOfMemory;
         errdefer allocator.free(name);
 
-        const fact_count = countClauses(engine, allocator, name, arity, "true");
-        const all_count = countClauses(engine, allocator, name, arity, "_");
+        const fact_count = countClauses(engine, allocator, name, arity, "true") catch
+            return mcp.tools.ToolError.ExecutionFailed;
+        const all_count = countClauses(engine, allocator, name, arity, "_") catch
+            return mcp.tools.ToolError.ExecutionFailed;
         const rule_count = if (all_count > fact_count) all_count - fact_count else 0;
 
         entries.append(allocator, .{
@@ -81,6 +83,8 @@ fn isBuiltin(name: []const u8) bool {
     if (std.mem.indexOf(u8, name, ":") != null) return true;
     if (std.mem.eql(u8, name, "tms_justification")) return true;
     if (std.mem.eql(u8, name, "zpm_source")) return true;
+    // Trealla declares portray/1 dynamic at engine init; hide it from schema.
+    if (std.mem.eql(u8, name, "portray")) return true;
     return false;
 }
 
@@ -119,10 +123,10 @@ fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i64, 
     return aw.toOwnedSlice();
 }
 
-fn countClauses(engine: *engine_mod.Engine, allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) usize {
-    const query_str = buildClauseQuery(allocator, name, arity, body) catch return 0;
+fn countClauses(engine: *engine_mod.Engine, allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) !usize {
+    const query_str = try buildClauseQuery(allocator, name, arity, body);
     defer allocator.free(query_str);
-    var result = engine.query(query_str) catch return 0;
+    var result = try engine.query(query_str);
     defer result.deinit();
     return result.solutions.len;
 }
@@ -321,4 +325,20 @@ test "handler reports arity 0 for zero-argument predicate" {
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"name\":\"is_ready\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"arity\":0") != null);
+}
+
+test "handler returns ExecutionFailed when countClauses allocation fails" {
+    // A sentinel predicate forces the iteration path that calls countClauses.
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    try engine.assertFact("sentinel_pred(x)");
+
+    // fail_index=2 lets `entries` storage + name dupe succeed, then trips
+    // the first allocation inside buildClauseQuery.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
+    const allocator = failing.allocator();
+
+    const result = handler(allocator, null);
+    try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

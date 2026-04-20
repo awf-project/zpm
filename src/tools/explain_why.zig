@@ -214,6 +214,8 @@ test "handler returns full proof tree for multi-level deduction chain" {
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "children") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "ancestor(a,c)") != null);
+    // Deduction chain must show actual proof steps — children must be non-empty
+    try std.testing.expect(std.mem.indexOf(u8, text, "parent") != null);
 }
 
 test "handler returns InvalidArguments when fact arg is missing" {
@@ -315,4 +317,6 @@ test "handler returns full tree when max_depth exceeds actual depth" {
     try std.testing.expect(std.mem.indexOf(u8, text, "proven") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "children") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "truncated") == null);
+    // When depth limit is not reached, actual proof steps must be visible
+    try std.testing.expect(std.mem.indexOf(u8, text, "parent") != null);
 }

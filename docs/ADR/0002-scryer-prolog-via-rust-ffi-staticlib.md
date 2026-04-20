@@ -5,7 +5,7 @@ title: "0002: Scryer-Prolog Integration via Rust FFI Static Library"
 
 ## Status
 
-Accepted
+Superseded by [ADR-0004](0004-trealla-prolog-via-c-ffi-replacing-scryer.md)
 
 ## Date
 

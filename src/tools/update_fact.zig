@@ -38,18 +38,18 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        const ts = std.time.timestamp();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retract, .clause = old_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = new_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+
     engine.retractFact(old_fact) catch {
         const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{old_fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     engine.assertFact(new_fact) catch return mcp.tools.ToolError.ExecutionFailed;
-
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retract, .clause = old_fact }) catch {};
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = new_fact }) catch {};
-    }
 
     const msg = std.fmt.allocPrint(allocator, "Updated: {s}", .{new_fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -68,18 +68,18 @@ test "handler atomically retracts old fact and asserts new fact" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    try engine.assertFact("server(alpha, v1).");
+    try engine.assertFact("node(alpha, v1).");
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
-    try obj.put("new_fact", .{ .string = "server(alpha, v2)" });
+    try obj.put("old_fact", .{ .string = "node(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "node(alpha, v2)" });
     const args = std.json.Value{ .object = obj };
 
     const result = try handler(allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
-    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "server(alpha, v2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "node(alpha, v2)") != null);
 }
 
 test "handler returns InvalidArguments when args are null" {
@@ -93,7 +93,7 @@ test "handler returns InvalidArguments when new_fact key is missing" {
     const allocator = arena.allocator();
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
+    try obj.put("old_fact", .{ .string = "node(alpha, v1)" });
     const args = std.json.Value{ .object = obj };
 
     const result = handler(allocator, args);
@@ -111,15 +111,15 @@ test "handler returns error result when old_fact does not exist and does not ass
     defer context.clearEngine();
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(ghost, v0)" });
-    try obj.put("new_fact", .{ .string = "server(ghost, v1)" });
+    try obj.put("old_fact", .{ .string = "node(ghost, v0)" });
+    try obj.put("new_fact", .{ .string = "node(ghost, v1)" });
     const args = std.json.Value{ .object = obj };
 
     const result = try handler(allocator, args);
     try std.testing.expect(result.is_error);
 
     // new_fact must NOT have been asserted
-    var qr = try engine.query("server(ghost, _).");
+    var qr = try engine.query("node(ghost, _).");
     defer qr.deinit();
     try std.testing.expectEqual(@as(usize, 0), qr.solutions.len);
 }
@@ -132,8 +132,8 @@ test "handler returns ExecutionFailed when engine is unavailable" {
     context.clearEngine();
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
-    try obj.put("new_fact", .{ .string = "server(alpha, v2)" });
+    try obj.put("old_fact", .{ .string = "node(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "node(alpha, v2)" });
     const args = std.json.Value{ .object = obj };
 
     const result = handler(allocator, args);
@@ -146,12 +146,55 @@ test "handler returns error result when new_fact contains rule syntax" {
     const allocator = arena.allocator();
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
-    try obj.put("new_fact", .{ .string = "server(X, v2) :- active(X)" });
+    try obj.put("old_fact", .{ .string = "node(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "node(X, v2) :- active(X)" });
     const args = std.json.Value{ .object = obj };
 
     const result = try handler(allocator, args);
     try std.testing.expect(result.is_error);
+}
+
+test "handler returns ExecutionFailed when journal write fails on double-op" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+    try engine.assertFact("journal_fail_update(alpha, v1).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    // Swap the WAL fd for a read-only /dev/null so writeAll fails.
+    if (pm.wal) |*w| {
+        w.file.close();
+        w.file = try std.fs.openFileAbsolute("/dev/null", .{ .mode = .read_only });
+    }
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("old_fact", .{ .string = "journal_fail_update(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "journal_fail_update(alpha, v2)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = handler(allocator, args);
+    try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+
+    var qr_old = try engine.query("journal_fail_update(alpha, v1).");
+    defer qr_old.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr_old.solutions.len);
+    var qr_new = try engine.query("journal_fail_update(alpha, v2).");
+    defer qr_new.deinit();
+    try std.testing.expectEqual(@as(usize, 0), qr_new.solutions.len);
 }
 
 test "handler journals old_fact and new_fact as atomic group to WAL" {
@@ -169,7 +212,7 @@ test "handler journals old_fact and new_fact as atomic group to WAL" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    try engine.assertFact("server(alpha, v1).");
+    try engine.assertFact("node(alpha, v1).");
 
     var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
     defer pm.deinit();
@@ -177,8 +220,8 @@ test "handler journals old_fact and new_fact as atomic group to WAL" {
     defer context.clearPersistenceManager();
 
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_fact", .{ .string = "server(alpha, v1)" });
-    try obj.put("new_fact", .{ .string = "server(alpha, v2)" });
+    try obj.put("old_fact", .{ .string = "node(alpha, v1)" });
+    try obj.put("new_fact", .{ .string = "node(alpha, v2)" });
     const args = std.json.Value{ .object = obj };
 
     const result = try handler(allocator, args);
@@ -186,6 +229,6 @@ test "handler journals old_fact and new_fact as atomic group to WAL" {
 
     var content_buf: [2048]u8 = undefined;
     const content = try tmp.dir.readFile("journal.wal", &content_buf);
-    try std.testing.expect(std.mem.indexOf(u8, content, "server(alpha, v1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "server(alpha, v2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "node(alpha, v1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "node(alpha, v2)") != null);
 }

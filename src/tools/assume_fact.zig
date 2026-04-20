@@ -45,28 +45,33 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    engine.assertFact(fact) catch {
-        const msg = std.fmt.allocPrint(allocator, "assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
-        return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
-    };
-
     const justification = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(justification);
 
+    // Check idempotency first so the journal mirrors the engine ops —
+    // assertz appends, so journaling unconditionally would double the
+    // justification at replay time.
     const already_justified = blk: {
         var qr = engine.query(justification) catch break :blk false;
         defer qr.deinit();
         break :blk qr.solutions.len > 0;
     };
 
-    if (!already_justified) {
-        engine.assertFact(justification) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-
     if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
         const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch {};
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = justification }) catch {};
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+        if (!already_justified) {
+            pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = justification }) catch return mcp.tools.ToolError.ExecutionFailed;
+        }
+    }
+
+    engine.assertFact(fact) catch {
+        const msg = std.fmt.allocPrint(allocator, "assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+        return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+    };
+
+    if (!already_justified) {
+        engine.assertFact(justification) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
     const msg = std.fmt.allocPrint(allocator, "Assumed: {s} under assumption '{s}'", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;

@@ -3,7 +3,7 @@ title: "Prolog Engine Reference"
 ---
 
 
-The Prolog inference engine in zpm wraps [scryer-prolog](https://github.com/mthom/scryer-prolog) via a Rust FFI staticlib, exposing a memory-safe Zig API for querying, asserting facts, and loading programs.
+The Prolog inference engine in zpm uses [Trealla Prolog](https://github.com/infradig/trealla) via a C99 API, exposing a memory-safe Zig API for querying, asserting facts, and loading programs.
 
 ## Engine Lifecycle
 
@@ -28,7 +28,7 @@ The engine creates its own `GeneralPurposeAllocator` internally.
 **Errors:**
 
 - `OutOfMemory` — Allocator exhausted
-- `InitFailed` — scryer-prolog runtime initialization failed
+- `InitFailed` — Trealla Prolog runtime initialization failed
 
 ### Deinitialize
 
@@ -240,7 +240,7 @@ The engine creates and owns its own `GeneralPurposeAllocator`:
 - **Ownership:** The engine allocates itself via `page_allocator`, then uses its internal GPA for all subsequent allocations
 - **Lifetime:** `QueryResult` and `Solution` own their allocations; free via `.deinit()`
 - **Leaks:** GPA reports Zig-side leaks on `engine.deinit()` in debug mode
-- **FFI boundary:** Rust-side strings are freed via `prolog_free_string`; each language owns its own memory
+- **FFI boundary:** C-side strings returned by Trealla are freed via `prolog_free_string`; each language owns its own memory
 
 ```zig
 var engine = try Engine.init(.{});
@@ -260,7 +260,7 @@ The engine is intentionally independent of MCP:
 - MCP tool handlers (F003) will wrap engine methods and convert results to JSON-RPC responses
 - This separation allows testing and reuse without MCP protocol overhead
 
-See [ADR-0002](../ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md) for the rationale.
+See [ADR-0002](../ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md) for the original rationale. F016 migrated from Rust FFI to Trealla's C99 API to eliminate Rust toolchain dependencies.
 
 ---
 

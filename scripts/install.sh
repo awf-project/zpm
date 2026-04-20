@@ -108,6 +108,6 @@ main() {
     echo "zpm installed to ${INSTALL_DIR}/zpm"
 }
 
-case "$0" in
-    *install.sh) main "$@" ;;
-esac
+if [ -z "${ZPM_INSTALL_SKIP_MAIN:-}" ]; then
+    main "$@"
+fi

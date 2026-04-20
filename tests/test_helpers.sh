@@ -22,17 +22,6 @@ assert_true() {
     fi
 }
 
-assert_false() {
-    local label="$1"; shift
-    if "$@" 2>/dev/null; then
-        red "  FAIL: $label — expected false but got true"
-        FAIL=$((FAIL + 1))
-    else
-        green "  PASS: $label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 assert_equals() {
     local label="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then

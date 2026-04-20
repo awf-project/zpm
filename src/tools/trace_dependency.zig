@@ -6,12 +6,12 @@ const engine_mod = @import("../prolog/engine.zig");
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
-    _ = try schema.addString("start_node", "The starting Prolog atom for dependency tracing", true);
+    _ = try schema.addString("start_node", "The reference atom whose dependents are traced. The tool queries path(X, start_node), so the caller's path/2 rules must be written as path(X, Start) :- depends_on(Start, X) (or similar), i.e. second argument is the source and first is the destination.", true);
     const built = try schema.build();
 
     return .{
         .name = "trace_dependency",
-        .description = "Trace transitive dependencies from a start node using path/2 rules",
+        .description = "Trace transitive dependents of an atom via path/2 rules. Returns every X such that path(X, start_node) is provable. Convention: path/2 rules must have the source as the SECOND argument (path(X, Start) :- depends_on(Start, X), ...). If your rules put the source first, swap the argument order before calling.",
         .inputSchema = .{
             .properties = built.object.get("properties"),
             .required = &.{"start_node"},

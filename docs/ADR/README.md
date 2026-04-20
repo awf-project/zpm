@@ -6,8 +6,9 @@ title: "Architecture Decision Records"
 | ADR | Decision | Status | Date |
 |-----|----------|--------|------|
 | [0001](0001-mcp-server-with-stdio-transport.md) | MCP Server with STDIO Transport via mcp.zig | Accepted | 2026-04-09 |
-| [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Accepted | 2026-04-10 |
+| [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Superseded by [0004](0004-trealla-prolog-via-c-ffi-replacing-scryer.md) | 2026-04-10 |
 | [0003](0003-knowledge-base-persistence-via-wal-and-snapshots.md) | Knowledge Base Persistence via Write-Ahead Journal and Snapshots | Accepted | 2026-04-13 |
+| [0004](0004-trealla-prolog-via-c-ffi-replacing-scryer.md) | Trealla Prolog via C FFI Replacing Scryer-Prolog | Accepted | 2026-04-19 |
 
 This directory contains the Architecture Decision Records (ADRs) for this project.
 
@@ -38,8 +39,9 @@ Numbers are never reused. If a decision is reversed, the original ADR is marked 
 | ADR | Title | Status |
 |-----|-------|--------|
 | [0001](0001-mcp-server-with-stdio-transport.md) | MCP Server with STDIO Transport via mcp.zig | Accepted |
-| [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Accepted |
+| [0002](0002-scryer-prolog-via-rust-ffi-staticlib.md) | Scryer-Prolog Integration via Rust FFI Static Library | Superseded by [0004](0004-trealla-prolog-via-c-ffi-replacing-scryer.md) |
 | [0003](0003-knowledge-base-persistence-via-wal-and-snapshots.md) | Knowledge Base Persistence via Write-Ahead Journal and Snapshots | Accepted |
+| [0004](0004-trealla-prolog-via-c-ffi-replacing-scryer.md) | Trealla Prolog via C FFI Replacing Scryer-Prolog | Accepted |
 
 <!--
   Update this table as ADRs are added. Format:

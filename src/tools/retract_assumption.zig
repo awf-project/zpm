@@ -61,6 +61,12 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
+
+    // Journal-first: engine stays untouched if the WAL write fails.
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+
     engine.retractAll(retract_pattern) catch {};
 
     var removed_count: usize = 0;
@@ -78,10 +84,6 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
             engine.retractAll(fact_str) catch {};
             removed_count += 1;
         }
-    }
-
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = assumption }) catch {};
     }
 
     const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, removed_count }) catch return mcp.tools.ToolError.OutOfMemory;

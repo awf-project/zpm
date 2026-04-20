@@ -1,52 +1,74 @@
+//! Trealla Prolog C API declarations for Zig. This module replaces the former
+//! `ffi/trealla-wrapper.c` shim — we now call Trealla directly from Zig, with
+//! the glue code (stdout capture, findall output parsing, error detection,
+//! assertz wrapping) living in `engine.zig` + `capture.zig`.
+
 const std = @import("std");
 
-pub extern "C" fn prolog_init() ?*anyopaque;
-pub extern "C" fn prolog_deinit(handle: ?*anyopaque) void;
-pub extern "C" fn prolog_query(handle: ?*anyopaque, goal: [*:0]const u8) ?[*:0]u8;
-pub extern "C" fn prolog_assert(handle: ?*anyopaque, clause: [*:0]const u8) i32;
-pub extern "C" fn prolog_retract(handle: ?*anyopaque, clause: [*:0]const u8) i32;
-pub extern "C" fn prolog_retractall(handle: ?*anyopaque, head: [*:0]const u8) i32;
-pub extern "C" fn prolog_load_file(handle: ?*anyopaque, path: [*:0]const u8) i32;
-pub extern "C" fn prolog_load_string(handle: ?*anyopaque, source: [*:0]const u8) i32;
-pub extern "C" fn prolog_free_string(s: ?[*:0]u8) void;
+/// Opaque handle returned by `pl_create`.
+pub const Prolog = opaque {};
 
-test "prolog_init returns non-null handle" {
-    const handle = prolog_init();
-    try std.testing.expect(handle != null);
-    prolog_deinit(handle);
+pub extern "C" fn pl_create() ?*Prolog;
+pub extern "C" fn pl_destroy(pl: *Prolog) void;
+pub extern "C" fn pl_consult(pl: *Prolog, filename: [*:0]const u8) bool;
+pub extern "C" fn pl_eval(pl: *Prolog, expr: [*:0]const u8, interactive: bool) bool;
+
+pub extern "C" fn set_quiet(pl: *Prolog) void;
+
+/// Trealla global that leaks a dangling pointer across pl_destroy. We reset
+/// it to null from Zig after each pl_destroy so the next pl_create
+/// reinitialises cleanly. See ffi/trealla/src/prolog.c:g_destroy / g_init.
+pub extern var g_tpl_lib: ?[*:0]u8;
+
+// Trealla's `tpl.c` defines these but we don't include that file in library
+// mode. Re-export them from Zig so the linker is satisfied.
+pub export var g_envp: ?[*]?[*:0]u8 = null;
+pub export fn sigfn(s: c_int) callconv(.c) void {
+    _ = s;
 }
 
-test "prolog_query member/2 returns JSON array with solutions" {
-    const handle = prolog_init();
-    try std.testing.expect(handle != null);
-    defer prolog_deinit(handle);
+const testing = std.testing;
 
-    const result = prolog_query(handle, "member(X, [a,b,c])");
-    try std.testing.expect(result != null);
-    defer prolog_free_string(result);
-
-    const json = std.mem.sliceTo(result.?, 0);
-    try std.testing.expectStringStartsWith(json, "[");
-    try std.testing.expect(json.len > 2);
+test "pl_create returns non-null handle" {
+    const pl = pl_create();
+    try testing.expect(pl != null);
+    pl_destroy(pl.?);
+    g_tpl_lib = null;
 }
 
-test "prolog_assert succeeds and query finds asserted fact" {
-    const handle = prolog_init();
-    try std.testing.expect(handle != null);
-    defer prolog_deinit(handle);
+test "pl_create + pl_destroy cycle twice without crashing" {
+    const pl1 = pl_create();
+    try testing.expect(pl1 != null);
+    pl_destroy(pl1.?);
+    g_tpl_lib = null;
 
-    const rc = prolog_assert(handle, "test_fact(hello)");
-    try std.testing.expectEqual(@as(i32, 0), rc);
-
-    const result = prolog_query(handle, "test_fact(X)");
-    try std.testing.expect(result != null);
-    defer prolog_free_string(result);
-
-    const json = std.mem.sliceTo(result.?, 0);
-    try std.testing.expect(std.mem.indexOf(u8, json, "hello") != null);
+    const pl2 = pl_create();
+    try testing.expect(pl2 != null);
+    pl_destroy(pl2.?);
+    g_tpl_lib = null;
 }
 
-test "prolog_retractall with null handle returns error code" {
-    const rc = prolog_retractall(null, "color(_)");
-    try std.testing.expectEqual(@as(i32, -1), rc);
+test "pl_eval succeeds on true goal" {
+    const pl = pl_create().?;
+    defer {
+        pl_destroy(pl);
+        g_tpl_lib = null;
+    }
+    set_quiet(pl);
+    try testing.expect(pl_eval(pl, "true.", false));
+}
+
+// Documented Trealla quirk: pl_eval returns true as long as the parser +
+// executor ran without raising an error, even when the goal itself fails
+// (e.g. `fail.` or `once(retract(nonexistent))`). Callers that need to
+// distinguish Prolog success from failure must write a stdout marker
+// inside the goal and parse the capture — see engine.evalAndCheckMarker.
+test "pl_eval returns true even for goals that fail (Trealla behaviour)" {
+    const pl = pl_create().?;
+    defer {
+        pl_destroy(pl);
+        g_tpl_lib = null;
+    }
+    set_quiet(pl);
+    try testing.expect(pl_eval(pl, "fail.", false));
 }

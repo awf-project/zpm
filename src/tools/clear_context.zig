@@ -8,12 +8,12 @@ const JournalEntry = wal.JournalEntry;
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
-    _ = try schema.addString("category", "The predicate category pattern to retract (e.g. 'task_status')", true);
+    _ = try schema.addString("category", "A Prolog term pattern passed directly to retractall/1. Use wildcards for each argument: 'task_status(_, _)' for arity 2, 'module(_)' for arity 1. A bare functor name without parentheses matches only a 0-arity predicate.", true);
     const built = try schema.build();
 
     return .{
         .name = "clear_context",
-        .description = "Retract all Prolog facts matching a given category pattern",
+        .description = "Retract all Prolog facts matching a given term pattern (invokes retractall/1). The pattern must be a full Prolog term with wildcards for argument positions, e.g. 'module(_)' or 'task_status(_, _)' — not just the functor name.",
         .inputSchema = .{
             .properties = built.object.get("properties"),
             .required = &.{"category"},
@@ -31,10 +31,10 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const category = mcp.tools.getString(args, "category") orelse return mcp.tools.ToolError.InvalidArguments;
     if (category.len == 0) return mcp.tools.errorResult(allocator, "Category must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
-    engine.retractAll(category) catch return mcp.tools.ToolError.ExecutionFailed;
     if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = category }) catch {};
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = category }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
+    engine.retractAll(category) catch return mcp.tools.ToolError.ExecutionFailed;
     const msg = std.fmt.allocPrint(allocator, "Cleared: {s}", .{category}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;

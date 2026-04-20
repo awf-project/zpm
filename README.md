@@ -9,7 +9,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
 - Echo tool for health-check and smoke testing
-- Prolog inference engine with scryer-prolog C-ABI integration
+- Prolog inference engine with Trealla C API integration
 - Knowledge management tools: assert facts and define rules via MCP
 - Exploration tools: query Prolog goals and trace transitive dependencies via MCP
 - Supervision tools: verify knowledge base consistency and explain proof chains via MCP
@@ -26,7 +26,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 ### Prerequisites
 
 - [Zig](https://ziglang.org/download/) >= 0.15.2
-- [Rust](https://www.rust-lang.org/tools/install) stable (for scryer-prolog FFI compilation)
+- C compiler (gcc or clang)
 
 ### Install
 
@@ -88,13 +88,11 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 | Command | Description |
 |---------|-------------|
-| `make build` | Build the server binary (includes Rust FFI compilation) |
+| `make build` | Build the server binary |
 | `make check` | Run all checks (lint + test + e2e) |
 | `make clean` | Remove build artifacts |
-| `make ffi-build` | Build the Rust FFI static library only |
 | `make fmt` | Format source code |
 | `make functional-test` | Run end-to-end MCP protocol tests |
-| `make functional-test-engine` | Run end-to-end Prolog engine tests |
 | `make lint` | Check formatting |
 | `make test` | Run unit tests (inline Zig tests) |
 
@@ -162,10 +160,10 @@ src/
     wal.zig         # Write-ahead journal: append mutations and replay from checkpoints
   prolog/
     engine.zig      # Prolog engine with query, assert/retract, loading
-    ffi.zig         # C-ABI extern declarations for scryer-prolog
+    ffi.zig         # C-ABI extern declarations for Trealla's pl_* API
+    capture.zig     # stdout redirection for query output parsing
 ffi/
-  zpm-prolog-ffi/   # Rust staticlib wrapping scryer-prolog
-    src/lib.rs
+  trealla/          # Trealla Prolog C source (git submodule, compiled by build.zig)
 site/
   config/              # Hugo configuration (params, menus, modules, production)
   content/             # Homepage, blog, and docs section index pages
@@ -177,15 +175,14 @@ site/
     hugo.yml           # GitHub Pages build and deploy workflow
 tests/
   functional_mcp_server_test.sh    # End-to-end MCP protocol tests
-  functional_prolog_engine_test.sh # End-to-end Prolog engine tests
 ```
 
-The project uses a flat module structure. Hexagonal architecture is deferred until domain complexity justifies it; see [ADR-0002](docs/ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md) for the rationale.
+The project uses a flat module structure. Hexagonal architecture is deferred until domain complexity justifies it; see [ADR-0004](docs/ADR/0004-trealla-prolog-via-c-ffi-replacing-scryer.md) for the current Prolog backend rationale.
 
 ## Roadmap
 
 - [x] F001: MCP server creation via mcp.zig
-- [x] F002: Prolog inference engine integration (scryer-prolog via Rust FFI)
+- [x] F002: Prolog inference engine integration (Trealla via C API)
 - [x] F003: Knowledge management tools — write (remember_fact, define_rule)
 - [x] F004: Knowledge management tools — read (query_logic, trace_dependency)
 - [x] F005: Supervision and quality tools (verify_consistency, explain_why)
@@ -199,6 +196,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
 - [x] F014: Hugo static site with GitHub Pages auto-deployment
 - [x] F015: Binary installation & multi-platform release (4 platforms: linux-x86_64, linux-arm64, darwin-x86_64, darwin-arm64)
+- [x] F016: Replace Scryer-Prolog with Trealla and remove Rust stack
 
 ## Documentation
 

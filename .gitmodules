@@ -1,0 +1,3 @@
+[submodule "ffi/trealla"]
+	path = ffi/trealla
+	url = https://github.com/trealla-prolog/trealla

@@ -253,35 +253,6 @@ test "server capabilities include tools after registration" {
     try std.testing.expect(server.capabilities.tools != null);
 }
 
-test "server registers all eighteen tools" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var server = initTestServer();
-    defer server.deinit();
-
-    try server.addTool(try echo.tool(alloc));
-    try server.addTool(try remember_fact.tool(alloc));
-    try server.addTool(try define_rule.tool(alloc));
-    try server.addTool(try query_logic.tool(alloc));
-    try server.addTool(try trace_dependency.tool(alloc));
-    try server.addTool(try verify_consistency.tool(alloc));
-    try server.addTool(try explain_why.tool(alloc));
-    try server.addTool(get_knowledge_schema.tool);
-    try server.addTool(try forget_fact.tool(alloc));
-    try server.addTool(try clear_context.tool(alloc));
-    try server.addTool(try update_fact.tool(alloc));
-    try server.addTool(try upsert_fact.tool(alloc));
-    try server.addTool(try assume_fact.tool(alloc));
-    try server.addTool(try retract_assumption.tool(alloc));
-    try server.addTool(try get_belief_status.tool(alloc));
-    try server.addTool(try get_justification.tool(alloc));
-    try server.addTool(list_assumptions.tool);
-    try server.addTool(try retract_assumptions.tool(alloc));
-
-    try std.testing.expectEqual(@as(usize, 18), server.tools.count());
-}
-
 test "server registers get_knowledge_schema tool" {
     var server = initTestServer();
     defer server.deinit();
@@ -292,7 +263,7 @@ test "server registers get_knowledge_schema tool" {
     try std.testing.expect(server.tools.contains("get_knowledge_schema"));
 }
 
-test "server registers all twenty-two tools" {
+test "server registers all tools" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

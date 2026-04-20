@@ -30,6 +30,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     if (fact.len == 0) return mcp.tools.errorResult(allocator, "Fact must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
     engine.assertFact(fact) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -38,9 +41,6 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         defer allocator.free(sc);
         engine.assertFact(sc) catch {};
     } else |_| {}
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = fact }) catch {};
-    }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -155,6 +155,44 @@ test "handler asserts zpm_source interactive attribution alongside fact" {
         else => return error.TestUnexpectedResult,
     };
     try std.testing.expectEqualStrings("interactive", source);
+}
+
+test "handler returns ExecutionFailed when journal write fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    // Swap the WAL fd for a read-only /dev/null so writeAll fails.
+    if (pm.wal) |*w| {
+        w.file.close();
+        w.file = try std.fs.openFileAbsolute("/dev/null", .{ .mode = .read_only });
+    }
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "journal_fail_fact(x)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = handler(allocator, args);
+    try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+
+    var qr = try engine.query("journal_fail_fact(x).");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 0), qr.solutions.len);
 }
 
 test "handler returns error result for invalid Prolog syntax" {

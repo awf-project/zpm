@@ -39,14 +39,6 @@ pub fn termToString(allocator: std.mem.Allocator, term: engine_mod.Term) ![]u8 {
         .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
         .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
         .compound => |c| {
-            // Conjunction ','(A, B) should be serialized as "A, B" not ",(A, B)"
-            if (std.mem.eql(u8, c.functor, ",") and c.args.len == 2) {
-                const left = try termToString(allocator, c.args[0]);
-                defer allocator.free(left);
-                const right = try termToString(allocator, c.args[1]);
-                defer allocator.free(right);
-                return std.fmt.allocPrint(allocator, "{s}, {s}", .{ left, right });
-            }
             var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(allocator);
             try buf.appendSlice(allocator, c.functor);

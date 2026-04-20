@@ -14,33 +14,13 @@ pub fn build(b: *std.Build) void {
     exe_module.addImport("mcp", mcp_dep.module("mcp"));
     exe_module.addImport("cli", cli_dep.module("cli"));
 
-    const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
-    cargo_build.setCwd(b.path("ffi/zpm-prolog-ffi"));
-
-    const patch_step: ?*std.Build.Step = if (target.result.os.tag == .linux) blk: {
-        const patch_ffi = b.addSystemCommand(&.{
-            "objcopy",
-            "--redefine-sym",
-            "cfgetospeed@GLIBC_2.2.5=cfgetospeed",
-            "--redefine-sym",
-            "cfgetispeed@GLIBC_2.2.5=cfgetispeed",
-            "--redefine-sym",
-            "cfsetospeed@GLIBC_2.2.5=cfsetospeed",
-            "--redefine-sym",
-            "cfsetispeed@GLIBC_2.2.5=cfsetispeed",
-            "--redefine-sym",
-            "cfsetspeed@GLIBC_2.2.5=cfsetspeed",
-            "ffi/zpm-prolog-ffi/target/release/libzpm_prolog_ffi.a",
-        });
-        patch_ffi.step.dependOn(&cargo_build.step);
-        break :blk &patch_ffi.step;
-    } else null;
+    const trealla = buildTrealla(b, target, optimize);
 
     const exe = b.addExecutable(.{
         .name = "zpm",
         .root_module = exe_module,
     });
-    linkFfi(exe, b, patch_step);
+    linkFfi(exe, trealla);
     b.installArtifact(exe);
 
     const run_exe = b.addRunArtifact(exe);
@@ -62,7 +42,7 @@ pub fn build(b: *std.Build) void {
         .name = "roundtrip",
         .root_module = roundtrip_module,
     });
-    linkFfi(roundtrip_exe, b, patch_step);
+    linkFfi(roundtrip_exe, trealla);
     const run_roundtrip = b.addRunArtifact(roundtrip_exe);
     const roundtrip_step = b.step("roundtrip", "Run Prolog roundtrip example");
     roundtrip_step.dependOn(&run_roundtrip.step);
@@ -73,8 +53,8 @@ pub fn build(b: *std.Build) void {
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_module,
     });
-    linkFfi(exe_unit_tests, b, patch_step);
-    // scryer-prolog FFI writes to stdout on init, corrupting the zig_test
+    linkFfi(exe_unit_tests, trealla);
+    // Trealla FFI writes to stdout on init, corrupting the zig_test
     // IPC protocol (--listen=-). Create Run step manually to skip IPC.
     const run_exe_unit_tests = std.Build.Step.Run.create(b, "run main tests");
     run_exe_unit_tests.addArtifactArg(exe_unit_tests);
@@ -92,9 +72,28 @@ pub fn build(b: *std.Build) void {
     const engine_unit_tests = b.addTest(.{
         .root_module = engine_test_module,
     });
-    linkFfi(engine_unit_tests, b, patch_step);
+    linkFfi(engine_unit_tests, trealla);
     const run_engine_unit_tests = b.addRunArtifact(engine_unit_tests);
     test_step.dependOn(&run_engine_unit_tests.step);
+
+    // Capture tests (port of ffi/trealla-wrapper.c stdout redirection logic).
+    const capture_test_module = b.createModule(.{
+        .root_source_file = b.path("src/prolog/capture.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const capture_unit_tests = b.addTest(.{
+        .root_module = capture_test_module,
+    });
+    // capture.zig does not need the Trealla static lib but keeping linkFfi is
+    // harmless and avoids a separate link config.
+    linkFfi(capture_unit_tests, trealla);
+    // Capture tests temporarily redirect stdout, which would clobber the zig
+    // test IPC channel. Run them inheriting stdio like the exe tests do.
+    const run_capture_unit_tests = std.Build.Step.Run.create(b, "run capture tests");
+    run_capture_unit_tests.addArtifactArg(capture_unit_tests);
+    run_capture_unit_tests.stdio = .inherit;
+    test_step.dependOn(&run_capture_unit_tests.step);
 
     // wal persistence module (F010) — declared early for tool test dependencies
     const wal_test_module = b.createModule(.{
@@ -106,7 +105,7 @@ pub fn build(b: *std.Build) void {
     const wal_unit_tests = b.addTest(.{
         .root_module = wal_test_module,
     });
-    linkFfi(wal_unit_tests, b, patch_step);
+    linkFfi(wal_unit_tests, trealla);
     const run_wal_unit_tests = b.addRunArtifact(wal_unit_tests);
     test_step.dependOn(&run_wal_unit_tests.step);
 
@@ -136,7 +135,7 @@ pub fn build(b: *std.Build) void {
     const snapshot_unit_tests = b.addTest(.{
         .root_module = snapshot_test_module,
     });
-    linkFfi(snapshot_unit_tests, b, patch_step);
+    linkFfi(snapshot_unit_tests, trealla);
     const run_snapshot_unit_tests = b.addRunArtifact(snapshot_unit_tests);
     test_step.dependOn(&run_snapshot_unit_tests.step);
 
@@ -153,7 +152,7 @@ pub fn build(b: *std.Build) void {
     const manager_unit_tests = b.addTest(.{
         .root_module = manager_test_module,
     });
-    linkFfi(manager_unit_tests, b, patch_step);
+    linkFfi(manager_unit_tests, trealla);
     const run_manager_unit_tests = b.addRunArtifact(manager_unit_tests);
     test_step.dependOn(&run_manager_unit_tests.step);
 
@@ -170,7 +169,7 @@ pub fn build(b: *std.Build) void {
     const forget_fact_unit_tests = b.addTest(.{
         .root_module = forget_fact_test_module,
     });
-    linkFfi(forget_fact_unit_tests, b, patch_step);
+    linkFfi(forget_fact_unit_tests, trealla);
     const run_forget_fact_unit_tests = b.addRunArtifact(forget_fact_unit_tests);
     test_step.dependOn(&run_forget_fact_unit_tests.step);
 
@@ -187,7 +186,7 @@ pub fn build(b: *std.Build) void {
     const clear_context_unit_tests = b.addTest(.{
         .root_module = clear_context_test_module,
     });
-    linkFfi(clear_context_unit_tests, b, patch_step);
+    linkFfi(clear_context_unit_tests, trealla);
     const run_clear_context_unit_tests = b.addRunArtifact(clear_context_unit_tests);
     test_step.dependOn(&run_clear_context_unit_tests.step);
 
@@ -204,7 +203,7 @@ pub fn build(b: *std.Build) void {
     const update_fact_unit_tests = b.addTest(.{
         .root_module = update_fact_test_module,
     });
-    linkFfi(update_fact_unit_tests, b, patch_step);
+    linkFfi(update_fact_unit_tests, trealla);
     const run_update_fact_unit_tests = b.addRunArtifact(update_fact_unit_tests);
     test_step.dependOn(&run_update_fact_unit_tests.step);
 
@@ -221,7 +220,7 @@ pub fn build(b: *std.Build) void {
     const upsert_fact_unit_tests = b.addTest(.{
         .root_module = upsert_fact_test_module,
     });
-    linkFfi(upsert_fact_unit_tests, b, patch_step);
+    linkFfi(upsert_fact_unit_tests, trealla);
     const run_upsert_fact_unit_tests = b.addRunArtifact(upsert_fact_unit_tests);
     test_step.dependOn(&run_upsert_fact_unit_tests.step);
 
@@ -238,7 +237,7 @@ pub fn build(b: *std.Build) void {
     const assume_fact_unit_tests = b.addTest(.{
         .root_module = assume_fact_test_module,
     });
-    linkFfi(assume_fact_unit_tests, b, patch_step);
+    linkFfi(assume_fact_unit_tests, trealla);
     const run_assume_fact_unit_tests = b.addRunArtifact(assume_fact_unit_tests);
     test_step.dependOn(&run_assume_fact_unit_tests.step);
 
@@ -255,7 +254,7 @@ pub fn build(b: *std.Build) void {
     const retract_assumption_unit_tests = b.addTest(.{
         .root_module = retract_assumption_test_module,
     });
-    linkFfi(retract_assumption_unit_tests, b, patch_step);
+    linkFfi(retract_assumption_unit_tests, trealla);
     const run_retract_assumption_unit_tests = b.addRunArtifact(retract_assumption_unit_tests);
     test_step.dependOn(&run_retract_assumption_unit_tests.step);
 
@@ -270,7 +269,7 @@ pub fn build(b: *std.Build) void {
     const get_belief_status_unit_tests = b.addTest(.{
         .root_module = get_belief_status_test_module,
     });
-    linkFfi(get_belief_status_unit_tests, b, patch_step);
+    linkFfi(get_belief_status_unit_tests, trealla);
     const run_get_belief_status_unit_tests = b.addRunArtifact(get_belief_status_unit_tests);
     test_step.dependOn(&run_get_belief_status_unit_tests.step);
 
@@ -285,7 +284,7 @@ pub fn build(b: *std.Build) void {
     const get_justification_unit_tests = b.addTest(.{
         .root_module = get_justification_test_module,
     });
-    linkFfi(get_justification_unit_tests, b, patch_step);
+    linkFfi(get_justification_unit_tests, trealla);
     const run_get_justification_unit_tests = b.addRunArtifact(get_justification_unit_tests);
     test_step.dependOn(&run_get_justification_unit_tests.step);
 
@@ -300,7 +299,7 @@ pub fn build(b: *std.Build) void {
     const list_assumptions_unit_tests = b.addTest(.{
         .root_module = list_assumptions_test_module,
     });
-    linkFfi(list_assumptions_unit_tests, b, patch_step);
+    linkFfi(list_assumptions_unit_tests, trealla);
     const run_list_assumptions_unit_tests = b.addRunArtifact(list_assumptions_unit_tests);
     test_step.dependOn(&run_list_assumptions_unit_tests.step);
 
@@ -317,7 +316,7 @@ pub fn build(b: *std.Build) void {
     const retract_assumptions_unit_tests = b.addTest(.{
         .root_module = retract_assumptions_test_module,
     });
-    linkFfi(retract_assumptions_unit_tests, b, patch_step);
+    linkFfi(retract_assumptions_unit_tests, trealla);
     const run_retract_assumptions_unit_tests = b.addRunArtifact(retract_assumptions_unit_tests);
     test_step.dependOn(&run_retract_assumptions_unit_tests.step);
 
@@ -338,7 +337,7 @@ pub fn build(b: *std.Build) void {
     const restore_snapshot_unit_tests = b.addTest(.{
         .root_module = restore_snapshot_test_module,
     });
-    linkFfi(restore_snapshot_unit_tests, b, patch_step);
+    linkFfi(restore_snapshot_unit_tests, trealla);
     const run_restore_snapshot_unit_tests = b.addRunArtifact(restore_snapshot_unit_tests);
     test_step.dependOn(&run_restore_snapshot_unit_tests.step);
 
@@ -355,7 +354,7 @@ pub fn build(b: *std.Build) void {
     const save_snapshot_unit_tests = b.addTest(.{
         .root_module = save_snapshot_test_module,
     });
-    linkFfi(save_snapshot_unit_tests, b, patch_step);
+    linkFfi(save_snapshot_unit_tests, trealla);
     const run_save_snapshot_unit_tests = b.addRunArtifact(save_snapshot_unit_tests);
     test_step.dependOn(&run_save_snapshot_unit_tests.step);
 
@@ -372,7 +371,7 @@ pub fn build(b: *std.Build) void {
     const list_snapshots_unit_tests = b.addTest(.{
         .root_module = list_snapshots_test_module,
     });
-    linkFfi(list_snapshots_unit_tests, b, patch_step);
+    linkFfi(list_snapshots_unit_tests, trealla);
     const run_list_snapshots_unit_tests = b.addRunArtifact(list_snapshots_unit_tests);
     test_step.dependOn(&run_list_snapshots_unit_tests.step);
 
@@ -389,7 +388,7 @@ pub fn build(b: *std.Build) void {
     const get_persistence_status_unit_tests = b.addTest(.{
         .root_module = get_persistence_status_test_module,
     });
-    linkFfi(get_persistence_status_unit_tests, b, patch_step);
+    linkFfi(get_persistence_status_unit_tests, trealla);
     const run_get_persistence_status_unit_tests = b.addRunArtifact(get_persistence_status_unit_tests);
     test_step.dependOn(&run_get_persistence_status_unit_tests.step);
 
@@ -403,19 +402,135 @@ pub fn build(b: *std.Build) void {
     const project_unit_tests = b.addTest(.{
         .root_module = project_test_module,
     });
-    linkFfi(project_unit_tests, b, patch_step);
+    linkFfi(project_unit_tests, trealla);
     const run_project_unit_tests = b.addRunArtifact(project_unit_tests);
     test_step.dependOn(&run_project_unit_tests.step);
 }
 
-fn linkFfi(compile: *std.Build.Step.Compile, b: *std.Build, patch_step: ?*std.Build.Step) void {
-    compile.addLibraryPath(b.path("ffi/zpm-prolog-ffi/target/release"));
-    compile.linkSystemLibrary("zpm_prolog_ffi");
-    compile.linkSystemLibrary("ssl");
-    compile.linkSystemLibrary("crypto");
-    if (compile.rootModuleTarget().os.tag == .linux) {
-        compile.linkSystemLibrary("gcc_s");
+fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    // Trealla's C code has undefined-behavior patterns that trigger Zig
+    // UBSan-on-Debug aborts when fed malformed Prolog (e.g. ")(invalid").
+    // Real MCP clients can send arbitrary strings, so aborting the process
+    // is worse than the original bug — we disable sanitize-c for Trealla so
+    // bad input produces a recoverable error instead of a SIGABRT.
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .sanitize_c = .off,
+    });
+    const lib = b.addLibrary(.{
+        .name = "trealla",
+        .root_module = mod,
+        .linkage = .static,
+    });
+
+    lib.addIncludePath(b.path("ffi/trealla/src"));
+    lib.addIncludePath(b.path("ffi"));
+
+    const lib_path = b.fmt("-DDEFAULT_LIBRARY_PATH=\"{s}\"", .{b.path("ffi/trealla/library").getPath(b)});
+    const flags: []const []const u8 = &.{
+        "-DUSE_OPENSSL=0",
+        "-DUSE_FFI=0",
+        "-DUSE_ISOCLINE",
+        "-DEMBED=1",
+        "-D_GNU_SOURCE",
+        lib_path,
+    };
+
+    // Build bin2c as a native build tool to embed .pl libraries as C arrays
+    const bin2c_mod = b.createModule(.{
+        .target = b.graph.host,
+        .optimize = .ReleaseFast,
+    });
+    const bin2c = b.addExecutable(.{
+        .name = "bin2c",
+        .root_module = bin2c_mod,
+    });
+    bin2c.addCSourceFile(.{
+        .file = b.path("ffi/trealla/util/bin2c.c"),
+        .flags = &.{},
+    });
+    bin2c.linkLibC();
+
+    // Embed each .pl library file as a C source with byte arrays
+    const pl_libs = [_][]const u8{
+        "abnf",     "aggregate", "arithmetic", "assoc",   "atts",
+        "builtins", "charsio",   "concurrent", "clpz",    "curl",
+        "dcgs",     "debug",     "dif",        "error",   "format",
+        "freeze",   "gensym",    "gsl",        "http",    "iso_ext",
+        "json",     "lambda",    "lists",      "ordsets", "pairs",
+        "pio",      "random",    "raylib",     "rbtrees", "reif",
+        "si",       "sockets",   "sqlite3",    "time",    "ugraphs",
+        "uuid",     "when",
+    };
+
+    const wf = b.addWriteFiles();
+    for (pl_libs) |name| {
+        const gen = b.addRunArtifact(bin2c);
+        gen.setCwd(b.path("ffi/trealla"));
+        gen.addArg(b.fmt("library/{s}.pl", .{name}));
+        const out_name = b.fmt("library_{s}_pl.c", .{name});
+        const generated_c = wf.addCopyFile(gen.captureStdOut(), out_name);
+        lib.addCSourceFile(.{
+            .file = generated_c,
+            .flags = &.{},
+        });
     }
+
+    lib.addCSourceFiles(.{
+        .root = b.path("ffi/trealla/src"),
+        .files = &.{
+            "imath/imath.c",
+            "imath/imrat.c",
+            "isocline/src/isocline.c",
+            "sre/re.c",
+            "base64.c",
+            "bif_atts.c",
+            "bif_bboard.c",
+            "bif_control.c",
+            "bif_csv.c",
+            "bif_database.c",
+            "bif_ffi.c",
+            "bif_format.c",
+            "bif_functions.c",
+            "bif_maps.c",
+            "bif_os.c",
+            "bif_posix.c",
+            "bif_predicates.c",
+            "bif_sort.c",
+            "bif_sregex.c",
+            "bif_streams.c",
+            "bif_tasks.c",
+            "bif_threads.c",
+            "compile.c",
+            "heap.c",
+            "history.c",
+            "library.c",
+            "list.c",
+            "module.c",
+            "network.c",
+            "parser.c",
+            "print.c",
+            "prolog.c",
+            "query.c",
+            "skiplist.c",
+            "terms.c",
+            "toplevel.c",
+            "unify.c",
+            "utf8.c",
+            "version.c",
+        },
+        .flags = flags,
+    });
+
+    lib.linkSystemLibrary("m");
+    lib.linkLibC();
+
+    return lib;
+}
+
+fn linkFfi(compile: *std.Build.Step.Compile, trealla: *std.Build.Step.Compile) void {
+    compile.linkLibrary(trealla);
+    compile.linkSystemLibrary("m");
     compile.linkLibC();
-    if (patch_step) |step| compile.step.dependOn(step);
 }

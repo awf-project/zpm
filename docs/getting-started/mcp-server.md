@@ -30,7 +30,7 @@ If you prefer to build from source, or your platform is not supported by the pre
 ### Prerequisites
 
 - [Zig](https://ziglang.org/download/) 0.15.2 or later
-- [Rust](https://www.rust-lang.org/tools/install) stable toolchain (for scryer-prolog FFI compilation)
+- C compiler (gcc or clang)
 - A terminal or command prompt
 
 ### 1. Build the Server
@@ -143,7 +143,6 @@ The server handles the MCP protocol handshake and tool discovery automatically.
 
 **Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm init`, `zpm serve`). Run `zpm --help` for a list of available commands.
 
-**Rust build errors:** Ensure `cargo` is in your PATH. The first build compiles scryer-prolog from source, which takes ~60-90 seconds. Subsequent builds use the Cargo cache.
 
 ## Next Steps
 

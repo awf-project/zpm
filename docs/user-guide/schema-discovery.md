@@ -29,7 +29,7 @@ get_knowledge_schema
 # }
 ```
 
-The tool requires no arguments. It returns all user-defined predicates — Scryer-Prolog built-ins are excluded.
+The tool requires no arguments. It returns all user-defined predicates — Prolog built-ins are excluded.
 
 ## Understand Predicate Types
 
