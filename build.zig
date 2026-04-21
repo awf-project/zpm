@@ -27,26 +27,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the MCP server");
     run_step.dependOn(&run_exe.step);
 
-    // Roundtrip example
-    const roundtrip_module = b.createModule(.{
-        .root_source_file = b.path("examples/roundtrip.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "prolog/engine", .module = b.createModule(.{
-            .root_source_file = b.path("src/prolog/engine.zig"),
-            .target = target,
-            .optimize = optimize,
-        }) }},
-    });
-    const roundtrip_exe = b.addExecutable(.{
-        .name = "roundtrip",
-        .root_module = roundtrip_module,
-    });
-    linkFfi(roundtrip_exe, trealla);
-    const run_roundtrip = b.addRunArtifact(roundtrip_exe);
-    const roundtrip_step = b.step("roundtrip", "Run Prolog roundtrip example");
-    roundtrip_step.dependOn(&run_roundtrip.step);
-
     const test_step = b.step("test", "Run unit tests");
 
     // Executable tests (reuses exe_module)
@@ -405,6 +385,28 @@ pub fn build(b: *std.Build) void {
     linkFfi(project_unit_tests, trealla);
     const run_project_unit_tests = b.addRunArtifact(project_unit_tests);
     test_step.dependOn(&run_project_unit_tests.step);
+
+    // cli module tests (F017) — registry tests run via exe_unit_tests (main.zig imports registry.zig)
+
+    const arg_mapper_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/arg_mapper.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    arg_mapper_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    const arg_mapper_unit_tests = b.addTest(.{ .root_module = arg_mapper_test_module });
+    const run_arg_mapper_unit_tests = b.addRunArtifact(arg_mapper_unit_tests);
+    test_step.dependOn(&run_arg_mapper_unit_tests.step);
+
+    const output_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/output.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    output_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    const output_unit_tests = b.addTest(.{ .root_module = output_test_module });
+    const run_output_unit_tests = b.addRunArtifact(output_unit_tests);
+    test_step.dependOn(&run_output_unit_tests.step);
 }
 
 fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {

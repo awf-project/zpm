@@ -36,12 +36,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     }
     buf.append(allocator, ']') catch return mcp.tools.ToolError.ExecutionFailed;
 
-    const msg = buf.toOwnedSlice(allocator) catch return mcp.tools.ToolError.ExecutionFailed;
-
-    return mcp.tools.ToolResult{
-        .is_error = false,
-        .content = &.{.{ .text = .{ .text = msg } }},
-    };
+    return mcp.tools.textResult(allocator, buf.items) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
 test "handler returns empty snapshot list when no snapshots exist" {
