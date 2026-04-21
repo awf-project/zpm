@@ -1051,4 +1051,336 @@ assert_true "auto-create subdirs: .zpm/data/ was created" test -d "$SUBDIRS_DIR/
 assert_true "auto-create subdirs: .zpm/kb/ was created" test -d "$SUBDIRS_DIR/.zpm/kb"
 rm -rf "$SUBDIRS_DIR"
 
+# Feature: F017
+# --- F017-T009: remember-fact CLI command ---
+
+echo "Test: zpm remember-fact persists fact and exits 0 (F017/US1)"
+RF_DIR=$(mktemp -d)
+(cd "$RF_DIR" && "$BINARY" init >/dev/null 2>&1)
+RF_EXIT=0
+RF_OUTPUT=$(cd "$RF_DIR" && "$BINARY" remember-fact "task_status(f017, in_progress)" 2>&1) || RF_EXIT=$?
+assert_exit_code "zpm remember-fact exits 0" "$RF_EXIT" 0
+assert_contains "zpm remember-fact confirms asserted fact" "$RF_OUTPUT" "task_status"
+
+echo "Test: zpm remember-fact with invalid Prolog syntax exits non-zero (F017/US1)"
+RF_INVALID_EXIT=0
+RF_INVALID_OUTPUT=$(cd "$RF_DIR" && "$BINARY" remember-fact 'decision(' 2>&1) || RF_INVALID_EXIT=$?
+assert_exit_code "zpm remember-fact invalid syntax exits non-zero" "$RF_INVALID_EXIT" 1
+assert_contains "zpm remember-fact invalid syntax reports error" "$RF_INVALID_OUTPUT" ""
+
+echo "Test: zpm remember-fact then query-logic round-trip (F017/US1)"
+RT_DIR=$(mktemp -d)
+(cd "$RT_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$RT_DIR" && "$BINARY" remember-fact "test(cli)" >/dev/null 2>&1)
+RT_EXIT=0
+RT_OUTPUT=$(cd "$RT_DIR" && "$BINARY" query-logic "test(X)" 2>&1) || RT_EXIT=$?
+assert_exit_code "query-logic after remember-fact exits 0" "$RT_EXIT" 0
+assert_contains "query-logic returns cli binding after remember-fact" "$RT_OUTPUT" "cli"
+rm -rf "$RF_DIR" "$RT_DIR"
+
+# Feature: F017
+# --- F017-T009: upsert-fact CLI command ---
+
+echo "Test: zpm upsert-fact inserts new fact and exits 0 (F017/US1)"
+UF_DIR=$(mktemp -d)
+(cd "$UF_DIR" && "$BINARY" init >/dev/null 2>&1)
+UF_EXIT=0
+UF_OUTPUT=$(cd "$UF_DIR" && "$BINARY" upsert-fact "task_status(f017, in_progress)" 2>&1) || UF_EXIT=$?
+assert_exit_code "zpm upsert-fact exits 0" "$UF_EXIT" 0
+assert_contains "zpm upsert-fact confirms operation" "$UF_OUTPUT" "task_status"
+
+echo "Test: zpm upsert-fact replaces existing fact with same functor and first arg (F017/US1)"
+(cd "$UF_DIR" && "$BINARY" remember-fact "task_status(f017, in_progress)" >/dev/null 2>&1)
+UF_REPLACE_EXIT=0
+UF_REPLACE_OUTPUT=$(cd "$UF_DIR" && "$BINARY" upsert-fact "task_status(f017, done)" 2>&1) || UF_REPLACE_EXIT=$?
+assert_exit_code "zpm upsert-fact replace exits 0" "$UF_REPLACE_EXIT" 0
+assert_contains "zpm upsert-fact replace confirms done fact" "$UF_REPLACE_OUTPUT" "done"
+rm -rf "$UF_DIR"
+
+# Feature: F017
+# --- F017-T010: query-logic CLI command ---
+
+echo "Test: zpm query-logic returns empty result for no matching facts (F017/US2)"
+QL_DIR=$(mktemp -d)
+(cd "$QL_DIR" && "$BINARY" init >/dev/null 2>&1)
+QL_EXIT=0
+QL_OUTPUT=$(cd "$QL_DIR" && "$BINARY" query-logic "missing(X)" 2>&1) || QL_EXIT=$?
+assert_exit_code "zpm query-logic no results exits 0" "$QL_EXIT" 0
+
+echo "Test: zpm query-logic returns matching bindings after remember-fact (F017/US2)"
+(cd "$QL_DIR" && "$BINARY" remember-fact "depends_on(cli, trealla)" >/dev/null 2>&1)
+QL2_EXIT=0
+QL2_OUTPUT=$(cd "$QL_DIR" && "$BINARY" query-logic "depends_on(X, trealla)" 2>&1) || QL2_EXIT=$?
+assert_exit_code "zpm query-logic with results exits 0" "$QL2_EXIT" 0
+assert_contains "zpm query-logic returns bound value" "$QL2_OUTPUT" "cli"
+rm -rf "$QL_DIR"
+
+# --- F017-T010: explain-why CLI command ---
+
+echo "Test: zpm explain-why for known fact exits 0 (F017/US2)"
+EW_DIR=$(mktemp -d)
+(cd "$EW_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$EW_DIR" && "$BINARY" remember-fact "project(zpm)" >/dev/null 2>&1)
+EW_EXIT=0
+EW_OUTPUT=$(cd "$EW_DIR" && "$BINARY" explain-why "project(zpm)" 2>&1) || EW_EXIT=$?
+assert_exit_code "zpm explain-why exits 0" "$EW_EXIT" 0
+assert_contains "zpm explain-why returns explanation" "$EW_OUTPUT" "project"
+rm -rf "$EW_DIR"
+
+# --- F017-T010: get-justification CLI command ---
+
+echo "Test: zpm get-justification for assumed fact exits 0 (F017/US2)"
+GJ_DIR=$(mktemp -d)
+(cd "$GJ_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$GJ_DIR" && "$BINARY" assume-fact "hypothesis(test)" --assumption "baseline" >/dev/null 2>&1)
+GJ_EXIT=0
+GJ_OUTPUT=$(cd "$GJ_DIR" && "$BINARY" get-justification "baseline" 2>&1) || GJ_EXIT=$?
+assert_exit_code "zpm get-justification exits 0" "$GJ_EXIT" 0
+assert_contains "zpm get-justification returns result" "$GJ_OUTPUT" "hypothesis"
+rm -rf "$GJ_DIR"
+
+# --- F017-T010: get-belief-status CLI command ---
+
+echo "Test: zpm get-belief-status for known fact exits 0 (F017/US2)"
+GB_DIR=$(mktemp -d)
+(cd "$GB_DIR" && "$BINARY" init >/dev/null 2>&1)
+# get-belief-status reports TMS state — must assume (not just remember) the fact
+(cd "$GB_DIR" && "$BINARY" assume-fact "decision(backend, trealla)" --assumption "chosen" >/dev/null 2>&1)
+GB_EXIT=0
+GB_OUTPUT=$(cd "$GB_DIR" && "$BINARY" get-belief-status "decision(backend, trealla)" 2>&1) || GB_EXIT=$?
+assert_exit_code "zpm get-belief-status exits 0" "$GB_EXIT" 0
+assert_contains "zpm get-belief-status returns status" "$GB_OUTPUT" "chosen"
+rm -rf "$GB_DIR"
+
+# --- F017-T010: list-assumptions CLI command ---
+
+echo "Test: zpm list-assumptions exits 0 with empty KB (F017/US2)"
+LA_DIR=$(mktemp -d)
+(cd "$LA_DIR" && "$BINARY" init >/dev/null 2>&1)
+LA_EXIT=0
+LA_OUTPUT=$(cd "$LA_DIR" && "$BINARY" list-assumptions 2>&1) || LA_EXIT=$?
+assert_exit_code "zpm list-assumptions empty exits 0" "$LA_EXIT" 0
+
+echo "Test: zpm list-assumptions shows assumed facts (F017/US2)"
+(cd "$LA_DIR" && "$BINARY" assume-fact "hypothesis(test)" --assumption "baseline" >/dev/null 2>&1)
+LA2_EXIT=0
+LA2_OUTPUT=$(cd "$LA_DIR" && "$BINARY" list-assumptions 2>&1) || LA2_EXIT=$?
+assert_exit_code "zpm list-assumptions with facts exits 0" "$LA2_EXIT" 0
+assert_contains "zpm list-assumptions includes assumed fact" "$LA2_OUTPUT" "baseline"
+rm -rf "$LA_DIR"
+
+# --- F017-T010: get-knowledge-schema CLI command ---
+
+echo "Test: zpm get-knowledge-schema exits 0 (F017/US2)"
+GKS_DIR=$(mktemp -d)
+(cd "$GKS_DIR" && "$BINARY" init >/dev/null 2>&1)
+GKS_EXIT=0
+GKS_OUTPUT=$(cd "$GKS_DIR" && "$BINARY" get-knowledge-schema 2>&1) || GKS_EXIT=$?
+assert_exit_code "zpm get-knowledge-schema exits 0" "$GKS_EXIT" 0
+rm -rf "$GKS_DIR"
+
+# --- F017-T010: get-persistence-status CLI command ---
+
+echo "Test: zpm get-persistence-status exits 0 with initialized KB (F017/US2)"
+GPS_DIR=$(mktemp -d)
+(cd "$GPS_DIR" && "$BINARY" init >/dev/null 2>&1)
+GPS_EXIT=0
+GPS_OUTPUT=$(cd "$GPS_DIR" && "$BINARY" get-persistence-status 2>&1) || GPS_EXIT=$?
+assert_exit_code "zpm get-persistence-status exits 0" "$GPS_EXIT" 0
+rm -rf "$GPS_DIR"
+
+# --- F017-T010: verify-consistency CLI command ---
+
+echo "Test: zpm verify-consistency exits 0 with empty KB (F017/US2)"
+VC_DIR=$(mktemp -d)
+(cd "$VC_DIR" && "$BINARY" init >/dev/null 2>&1)
+VC_EXIT=0
+VC_OUTPUT=$(cd "$VC_DIR" && "$BINARY" verify-consistency 2>&1) || VC_EXIT=$?
+assert_exit_code "zpm verify-consistency exits 0" "$VC_EXIT" 0
+rm -rf "$VC_DIR"
+
+# --- F017-T010: list-snapshots CLI command ---
+
+echo "Test: zpm list-snapshots exits 0 with no snapshots (F017/US2)"
+LSN_DIR=$(mktemp -d)
+(cd "$LSN_DIR" && "$BINARY" init >/dev/null 2>&1)
+LSN_EXIT=0
+LSN_OUTPUT=$(cd "$LSN_DIR" && "$BINARY" list-snapshots 2>&1) || LSN_EXIT=$?
+assert_exit_code "zpm list-snapshots exits 0" "$LSN_EXIT" 0
+rm -rf "$LSN_DIR"
+
+# --- F017-T010: trace-dependency CLI command ---
+
+echo "Test: zpm trace-dependency exits 0 for known fact (F017/US2)"
+TD_DIR=$(mktemp -d)
+(cd "$TD_DIR" && "$BINARY" init >/dev/null 2>&1)
+# trace_dependency queries path(X, start_node) — predecessors of start_node
+(cd "$TD_DIR" && "$BINARY" remember-fact "path(app, engine)" >/dev/null 2>&1)
+TD_EXIT=0
+TD_OUTPUT=$(cd "$TD_DIR" && "$BINARY" trace-dependency "engine" 2>&1) || TD_EXIT=$?
+assert_exit_code "zpm trace-dependency exits 0" "$TD_EXIT" 0
+assert_contains "zpm trace-dependency returns result" "$TD_OUTPUT" "app"
+rm -rf "$TD_DIR"
+
+# Feature: F017
+# --- F017-T011: NFR-001 performance gate ---
+
+echo "Test: zpm query-logic \"true\" completes under 500ms (F017/NFR-001)"
+PERF_DIR=$(mktemp -d)
+(cd "$PERF_DIR" && "$BINARY" init >/dev/null 2>&1)
+PERF_START=$(date +%s%3N)
+PERF_EXIT=0
+(cd "$PERF_DIR" && "$BINARY" query-logic "true" >/dev/null 2>&1) || PERF_EXIT=$?
+PERF_END=$(date +%s%3N)
+PERF_MS=$((PERF_END - PERF_START))
+assert_exit_code "zpm query-logic true exits 0" "$PERF_EXIT" 0
+if [ "$PERF_MS" -lt 500 ]; then
+    green "  PASS: query-logic completed in ${PERF_MS}ms (< 500ms)"
+    PASS=$((PASS + 1))
+else
+    red "  FAIL: query-logic took ${PERF_MS}ms (>= 500ms, NFR-001 violated)"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$PERF_DIR"
+
+# Feature: F017
+# --- F017-T012: remaining CLI commands ---
+
+echo "Test: zpm echo returns message and exits 0 (F017/US3)"
+ECHO_DIR=$(mktemp -d)
+(cd "$ECHO_DIR" && "$BINARY" init >/dev/null 2>&1)
+ECHO_EXIT=0
+ECHO_OUTPUT=$(cd "$ECHO_DIR" && "$BINARY" echo "hello" 2>&1) || ECHO_EXIT=$?
+assert_exit_code "zpm echo exits 0" "$ECHO_EXIT" 0
+assert_contains "zpm echo returns message" "$ECHO_OUTPUT" "hello"
+rm -rf "$ECHO_DIR"
+
+echo "Test: zpm assume-fact stores hypothesis and exits 0 (F017/US3)"
+AF_DIR=$(mktemp -d)
+(cd "$AF_DIR" && "$BINARY" init >/dev/null 2>&1)
+AF_EXIT=0
+AF_OUTPUT=$(cd "$AF_DIR" && "$BINARY" assume-fact "hypothesis(deploy_ready)" --assumption "baseline" 2>&1) || AF_EXIT=$?
+assert_exit_code "zpm assume-fact exits 0" "$AF_EXIT" 0
+assert_contains "zpm assume-fact confirms assumption" "$AF_OUTPUT" "hypothesis"
+rm -rf "$AF_DIR"
+
+echo "Test: zpm retract-assumption removes specific assumption and exits 0 (F017/US3)"
+RA_DIR=$(mktemp -d)
+(cd "$RA_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$RA_DIR" && "$BINARY" assume-fact "hypothesis(revert_needed)" --assumption "rollback" >/dev/null 2>&1)
+RA_EXIT=0
+RA_OUTPUT=$(cd "$RA_DIR" && "$BINARY" retract-assumption "rollback" 2>&1) || RA_EXIT=$?
+assert_exit_code "zpm retract-assumption exits 0" "$RA_EXIT" 0
+rm -rf "$RA_DIR"
+
+echo "Test: zpm retract-assumptions removes all assumptions and exits 0 (F017/US3)"
+RAS_DIR=$(mktemp -d)
+(cd "$RAS_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$RAS_DIR" && "$BINARY" assume-fact "hypothesis(a)" --assumption "guess_a" >/dev/null 2>&1)
+(cd "$RAS_DIR" && "$BINARY" assume-fact "hypothesis(b)" --assumption "guess_b" >/dev/null 2>&1)
+RAS_EXIT=0
+RAS_OUTPUT=$(cd "$RAS_DIR" && "$BINARY" retract-assumptions "guess_" 2>&1) || RAS_EXIT=$?
+assert_exit_code "zpm retract-assumptions exits 0" "$RAS_EXIT" 0
+rm -rf "$RAS_DIR"
+
+echo "Test: zpm forget-fact removes permanent fact and exits 0 (F017/US3)"
+FF_DIR=$(mktemp -d)
+(cd "$FF_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$FF_DIR" && "$BINARY" remember-fact "task_status(t012, done)" >/dev/null 2>&1)
+FF_EXIT=0
+FF_OUTPUT=$(cd "$FF_DIR" && "$BINARY" forget-fact "task_status(t012, done)" 2>&1) || FF_EXIT=$?
+assert_exit_code "zpm forget-fact exits 0" "$FF_EXIT" 0
+rm -rf "$FF_DIR"
+
+echo "Test: zpm update-fact replaces existing fact and exits 0 (F017/US3)"
+UPF_DIR=$(mktemp -d)
+(cd "$UPF_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$UPF_DIR" && "$BINARY" remember-fact "task_status(t012, in_progress)" >/dev/null 2>&1)
+UPF_EXIT=0
+UPF_OUTPUT=$(cd "$UPF_DIR" && "$BINARY" update-fact "task_status(t012, in_progress)" --new-fact "task_status(t012, done)" 2>&1) || UPF_EXIT=$?
+assert_exit_code "zpm update-fact exits 0" "$UPF_EXIT" 0
+assert_contains "zpm update-fact confirms updated fact" "$UPF_OUTPUT" "task_status"
+rm -rf "$UPF_DIR"
+
+echo "Test: zpm define-rule stores rule and exits 0 (F017/US3)"
+DR_DIR=$(mktemp -d)
+(cd "$DR_DIR" && "$BINARY" init >/dev/null 2>&1)
+DR_EXIT=0
+DR_OUTPUT=$(cd "$DR_DIR" && "$BINARY" define-rule "ready(X)" --body "task_status(X, done)" 2>&1) || DR_EXIT=$?
+assert_exit_code "zpm define-rule exits 0" "$DR_EXIT" 0
+assert_contains "zpm define-rule confirms rule" "$DR_OUTPUT" "ready"
+rm -rf "$DR_DIR"
+
+echo "Test: zpm clear-context removes matching facts and exits 0 (F017/US3)"
+CC_DIR=$(mktemp -d)
+(cd "$CC_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$CC_DIR" && "$BINARY" assume-fact "hypothesis(stale)" --assumption "obsolete" >/dev/null 2>&1)
+CC_EXIT=0
+CC_OUTPUT=$(cd "$CC_DIR" && "$BINARY" clear-context "hypothesis" 2>&1) || CC_EXIT=$?
+assert_exit_code "zpm clear-context exits 0" "$CC_EXIT" 0
+rm -rf "$CC_DIR"
+
+echo "Test: zpm save-snapshot creates snapshot and exits 0 (F017/US3)"
+SS_DIR=$(mktemp -d)
+(cd "$SS_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$SS_DIR" && "$BINARY" remember-fact "decision(backend, trealla)" >/dev/null 2>&1)
+SS_EXIT=0
+SS_OUTPUT=$(cd "$SS_DIR" && "$BINARY" save-snapshot "test-snap" 2>&1) || SS_EXIT=$?
+assert_exit_code "zpm save-snapshot exits 0" "$SS_EXIT" 0
+assert_contains "zpm save-snapshot confirms saved" "$SS_OUTPUT" "test-snap"
+
+echo "Test: zpm restore-snapshot restores saved snapshot and exits 0 (F017/US3)"
+RS_EXIT=0
+RS_OUTPUT=$(cd "$SS_DIR" && "$BINARY" restore-snapshot "test-snap" 2>&1) || RS_EXIT=$?
+assert_exit_code "zpm restore-snapshot exits 0" "$RS_EXIT" 0
+assert_contains "zpm restore-snapshot confirms restored" "$RS_OUTPUT" "test-snap"
+rm -rf "$SS_DIR"
+
+# --- FR-007: Error paths emit non-empty stderr with tool name + field name (T013) ---
+echo "Test: zpm remember-fact missing required arg emits non-empty stderr with tool and field name (FR-007/T013)"
+FR7_MISS_DIR=$(mktemp -d)
+(cd "$FR7_MISS_DIR" && "$BINARY" init >/dev/null 2>&1)
+pushd "$FR7_MISS_DIR" >/dev/null
+capture_cli_stderr remember-fact
+popd >/dev/null
+assert_true "zpm remember-fact missing arg exits non-zero" test "$CLI_EXIT" -ne 0
+assert_true "zpm remember-fact missing arg stderr is non-empty" test -n "$CLI_STDERR"
+assert_contains "zpm remember-fact missing arg stderr contains tool name" "$CLI_STDERR" "remember-fact"
+assert_contains "zpm remember-fact missing arg stderr contains field name" "$CLI_STDERR" "fact"
+rm -rf "$FR7_MISS_DIR"
+
+echo "Test: zpm remember-fact unknown flag emits non-empty stderr with tool and flag name (FR-007/T013)"
+FR7_UNK_DIR=$(mktemp -d)
+(cd "$FR7_UNK_DIR" && "$BINARY" init >/dev/null 2>&1)
+pushd "$FR7_UNK_DIR" >/dev/null
+capture_cli_stderr remember-fact "task_status(t013, done)" --unknown-flag
+popd >/dev/null
+assert_true "zpm remember-fact unknown flag exits non-zero" test "$CLI_EXIT" -ne 0
+assert_true "zpm remember-fact unknown flag stderr is non-empty" test -n "$CLI_STDERR"
+assert_contains "zpm remember-fact unknown flag stderr contains tool name" "$CLI_STDERR" "remember-fact"
+assert_contains "zpm remember-fact unknown flag stderr contains flag name" "$CLI_STDERR" "unknown-flag"
+rm -rf "$FR7_UNK_DIR"
+
+# Feature: F017
+# --- FR-008 / US2 AC1: --format json yields a parseable JSON array ---
+echo "Test: zpm query-logic --format json yields a JSON array on stdout (F017/US2 AC1)"
+FMT_DIR=$(mktemp -d)
+(cd "$FMT_DIR" && "$BINARY" init >/dev/null 2>&1)
+(cd "$FMT_DIR" && "$BINARY" remember-fact "task_status(f017, done)" >/dev/null 2>&1)
+FMT_EXIT=0
+FMT_STDOUT=$(cd "$FMT_DIR" && "$BINARY" query-logic "task_status(X, done)" --format json 2>/dev/null) || FMT_EXIT=$?
+assert_exit_code "zpm query-logic --format json exits 0" "$FMT_EXIT" 0
+if command -v jq >/dev/null 2>&1; then
+    if echo "$FMT_STDOUT" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        green "  PASS: --format json stdout parses as a JSON array via jq"
+        PASS=$((PASS + 1))
+    else
+        red "  FAIL: --format json stdout did not parse as a JSON array via jq (got: $FMT_STDOUT)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    assert_contains "zpm query-logic --format json output looks like a JSON array" "$FMT_STDOUT" "["
+fi
+rm -rf "$FMT_DIR"
+
 test_summary

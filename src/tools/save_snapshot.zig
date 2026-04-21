@@ -44,11 +44,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const msg = std.fmt.allocPrint(allocator, "Snapshot '{s}' saved successfully.", .{name}) catch
         return mcp.tools.ToolError.ExecutionFailed;
+    defer allocator.free(msg);
 
-    return mcp.tools.ToolResult{
-        .is_error = false,
-        .content = &.{.{ .text = .{ .text = msg } }},
-    };
+    return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
 const Engine = @import("../prolog/engine.zig").Engine;

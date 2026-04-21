@@ -4,7 +4,8 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init` and `serve` subcommands, `--help`/`-h` and `--version`/`-v` flags
+- CLI entrypoint with `init`, `serve`, and all 22 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- `--format json|text` flag for scriptable or human-readable output, conventional exit codes for shell integration
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
@@ -67,7 +68,14 @@ zig-out/bin/zpm init
 
 # Start the MCP server (STDIO transport)
 zig-out/bin/zpm serve
+
+# Invoke MCP tools directly from the shell
+zig-out/bin/zpm remember-fact "task_status(f017, done)"
+zig-out/bin/zpm query-logic "task_status(X, done)" --format json
+zig-out/bin/zpm save-snapshot "before-deploy"
 ```
+
+See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.
 
 ### Connect via MCP Client
 
@@ -197,6 +205,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F014: Hugo static site with GitHub Pages auto-deployment
 - [x] F015: Binary installation & multi-platform release (assets: linux-x86_64, linux-arm64, darwin-universal)
 - [x] F016: Replace Scryer-Prolog with Trealla and remove Rust stack
+- [x] F017: Expose the 22 MCP tools as CLI subcommands (`zpm <tool-name> [args]`) with `--format json|text`
 
 ## Documentation
 
