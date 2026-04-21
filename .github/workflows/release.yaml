@@ -136,7 +136,8 @@ jobs:
           path: artifacts
 
       - name: Generate SHA256SUMS
-        run: sha256sum artifacts/zpm-* > artifacts/SHA256SUMS
+        working-directory: artifacts
+        run: sha256sum zpm-* > SHA256SUMS
 
       - name: Create GitHub Release
         env:
@@ -164,7 +165,8 @@ jobs:
           path: artifacts
 
       - name: Generate SHA256SUMS
-        run: sha256sum artifacts/zpm-* > artifacts/SHA256SUMS
+        working-directory: artifacts
+        run: sha256sum zpm-* > SHA256SUMS
 
       - name: Create dev pre-release
         env:

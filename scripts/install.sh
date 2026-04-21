@@ -55,7 +55,11 @@ verify_checksum() {
         echo "warning: sha256sum and shasum not found, skipping checksum verification" >&2
         return
     fi
-    expected=$(grep "$name" "$checksums_file" | awk '{print $1}')
+    # SHA256SUMS lines look like "<hash>  [path/]filename". Strip any leading
+    # directory from the recorded name and match the basename exactly, so a
+    # download named `zpm-linux-x86_64` doesn't accidentally match every line
+    # that starts with `zpm-`.
+    expected=$(awk -v n="$name" '{sub(/^.*\//, "", $2)} $2 == n {print $1; exit}' "$checksums_file")
     actual=$($hash_cmd "$binary" | awk '{print $1}')
     if [ "$expected" != "$actual" ]; then
         echo "checksum mismatch for ${name}" >&2
@@ -85,7 +89,7 @@ main() {
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
 
-    binary="${tmpdir}/zpm"
+    binary="${tmpdir}/${platform}"
     checksums="${tmpdir}/SHA256SUMS"
 
     binary_url=$(fetch_latest_release_url "$platform")
