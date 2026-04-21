@@ -1,11 +1,26 @@
 .DEFAULT_GOAL := help
-.PHONY: help build test functional-test fmt lint clean check docs docs-serve docs-clean
+.PHONY: help build release install test functional-test fmt lint clean check docs docs-serve docs-clean
+
+INSTALL_DIR ?= $(HOME)/.local/bin
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the server binary
+build: ## Build the server binary (Debug)
 	zig build --summary all
+
+release: ## Build optimized binary (ReleaseSafe)
+	zig build -Doptimize=ReleaseSafe --summary all
+
+install: release ## Install optimized binary to $(INSTALL_DIR) (default: ~/.local/bin)
+	@mkdir -p $(INSTALL_DIR)
+	@install -m 755 zig-out/bin/zpm $(INSTALL_DIR)/zpm
+	@echo "zpm installed to $(INSTALL_DIR)/zpm"
+	@case ":$$PATH:" in \
+		*":$(INSTALL_DIR):"*) ;; \
+		*) echo "warning: $(INSTALL_DIR) is not in your PATH"; \
+		   echo "  Add to your shell profile: export PATH=\"\$$PATH:$(INSTALL_DIR)\"" ;; \
+	esac
 
 test: ## Run unit tests
 	zig build test --summary all

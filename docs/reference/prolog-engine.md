@@ -260,7 +260,7 @@ The engine is intentionally independent of MCP:
 - MCP tool handlers (F003) will wrap engine methods and convert results to JSON-RPC responses
 - This separation allows testing and reuse without MCP protocol overhead
 
-See [ADR-0002](../ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md) for the original rationale. F016 migrated from Rust FFI to Trealla's C99 API to eliminate Rust toolchain dependencies.
+See [ADR-0004](../ADR/0004-trealla-prolog-via-c-ffi-replacing-scryer.md) for the current Prolog backend rationale (Trealla via C FFI). The original Rust FFI design is captured in the superseded [ADR-0002](../ADR/0002-scryer-prolog-via-rust-ffi-staticlib.md); F016 migrated to Trealla's C99 API to eliminate the Rust toolchain dependency.
 
 ---
 

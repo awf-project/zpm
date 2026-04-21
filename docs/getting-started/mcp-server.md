@@ -55,25 +55,117 @@ zig-out/bin/zpm init
 
 This creates the `.zpm/` directory with `kb/` (for Prolog source files) and `data/` (for runtime persistence). You can place `.pl` files in `.zpm/kb/` to have them loaded automatically on server startup.
 
-## 3. Run the Server
+## 3. Configure in Your MCP Client
 
-Start the MCP server:
+zpm is an MCP server over stdio. Add it to your agentic tool's configuration — the tool will spawn `zpm serve` on demand and discover the tools automatically.
+
+The examples below assume `zpm` is on your `PATH` (via [Quick Install](#quick-install)). If you built from source, replace `zpm` with the absolute path to `zig-out/bin/zpm`.
+
+> **Working directory.** `zpm serve` walks up from its CWD to find the nearest `.zpm/`. If your client doesn't run the command from the project root, add `"cwd": "/absolute/path/to/project"` (JSON) or `cwd = "..."` (TOML) to pin it.
+
+### Claude Code
+
+Add the server from the project root:
 
 ```bash
-zig-out/bin/zpm serve
+claude mcp add zpm -- zpm serve
 ```
 
-The server discovers the nearest `.zpm/` directory, loads any `.pl` files from `.zpm/kb/`, and begins listening on stdin/stdout for JSON-RPC 2.0 requests.
+Or commit a project-scoped `.mcp.json` at the repo root:
 
-Running `zpm` without arguments displays help:
-
-```bash
-zig-out/bin/zpm
+```json
+{
+  "mcpServers": {
+    "zpm": {
+      "command": "zpm",
+      "args": ["serve"]
+    }
+  }
+}
 ```
 
-## 4. Test the Server
+### Claude Desktop
 
-In another terminal, you can send MCP protocol requests. The server implements three core methods:
+Edit `claude_desktop_config.json`:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "zpm": {
+      "command": "zpm",
+      "args": ["serve"],
+      "cwd": "/absolute/path/to/your/project"
+    }
+  }
+}
+```
+
+Restart Claude Desktop to load the server.
+
+### Cursor
+
+Create `.cursor/mcp.json` at your project root (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "zpm": {
+      "command": "zpm",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Zed
+
+Edit `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "zpm": {
+      "command": {
+        "path": "zpm",
+        "args": ["serve"]
+      }
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+Edit `.gemini/settings.json` at your project root (or `~/.gemini/settings.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "zpm": {
+      "command": "zpm",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Codex CLI
+
+Edit `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.zpm]
+command = "zpm"
+args = ["serve"]
+```
+
+## 4. Manual Testing (Optional)
+
+If you want to exercise the protocol directly without a client — for debugging or CI — you can pipe JSON-RPC 2.0 requests to `zpm serve` over stdio.
 
 ### Initialize (Handshake)
 
@@ -87,7 +179,7 @@ echo '{
     "capabilities": {},
     "clientInfo": {"name": "test-client"}
   }
-}' | zig-out/bin/zpm serve
+}' | zpm serve
 ```
 
 Expected response includes server name, version, and capabilities.
@@ -100,14 +192,10 @@ echo '{
   "id": 2,
   "method": "tools/list",
   "params": {}
-}' | zig-out/bin/zpm serve
+}' | zpm serve
 ```
 
-This shows the echo tool with its input schema.
-
 ### Call a Tool
-
-Invoke the echo tool with a message:
 
 ```bash
 echo '{
@@ -118,28 +206,22 @@ echo '{
     "name": "echo",
     "arguments": {"message": "Hello, zpm!"}
   }
-}' | zig-out/bin/zpm serve
+}' | zpm serve
 ```
 
 The server echoes back your message.
 
-## 5. Integration with Claude or Other MCP Clients
-
-To use zpm with Claude or other MCP-compatible clients, configure your client to:
-
-1. **Transport**: stdio
-2. **Command**: `zpm serve` (or `zig-out/bin/zpm serve` if built from source)
-3. **Working Directory**: zpm project root
-
-The server handles the MCP protocol handshake and tool discovery automatically.
-
 ## Troubleshooting
 
-**Server doesn't respond:** Make sure stdin/stdout are properly connected. The server closes cleanly when stdin reaches EOF.
+**Client can't find `zpm`:** GUI apps like Claude Desktop don't always inherit your shell `PATH`. If the client logs show `ENOENT` or "command not found", use an absolute path in the config (e.g., `"command": "/usr/local/bin/zpm"` or `"/home/you/.local/bin/zpm"`).
 
-**Invalid JSON:** Check your JSON format. The MCP protocol is strict about JSON-RPC 2.0 compliance.
+**Tools don't appear in the client:** Check the client's MCP logs — most tools expose a log panel or file. Verify `zpm --version` works in the same environment the client runs from, then restart the client after editing its config.
 
-**"No project directory found" error:** Run `zpm init` in your project root to create a `.zpm/` directory. The server requires this directory to start. If you're in a subdirectory, the server walks up the tree automatically — make sure `.zpm/` exists somewhere in the ancestry.
+**"No project directory found" error:** The client likely spawns `zpm serve` from a working directory that has no `.zpm/` above it. Run `zpm init` in your project root, then either launch the client from that directory or add `"cwd": "/absolute/path/to/project"` to the server entry.
+
+**Server doesn't respond (manual testing):** Make sure stdin/stdout are properly connected. The server closes cleanly when stdin reaches EOF.
+
+**Invalid JSON (manual testing):** The MCP protocol is strict about JSON-RPC 2.0 compliance — check your request format.
 
 **Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm init`, `zpm serve`). Run `zpm --help` for a list of available commands.
 

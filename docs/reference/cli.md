@@ -32,7 +32,7 @@ This command is idempotent. Running it on an already-initialized project prints 
 **Example:**
 ```bash
 # Initialize a new project
-zig-out/bin/zpm init
+zpm init
 
 # Verify the directory structure
 ls -la .zpm/
@@ -67,7 +67,7 @@ The server implements the full MCP protocol, including:
 - Tool execution (`tools/call`)
 - Request/response routing
 
-This is the primary command for integrating zpm with MCP clients like Claude, Cline, or custom applications.
+This is the primary command for integrating zpm with MCP-compatible clients (Claude Code, Claude Desktop, Cursor, Zed, Gemini CLI, Codex CLI, or custom applications). See [Configure in Your MCP Client](../getting-started/mcp-server.md#3-configure-in-your-mcp-client) for per-client configuration.
 
 **Example:**
 ```bash
@@ -120,9 +120,12 @@ zpm 0.1.0
 
 ### Integrate with MCP Client
 
-Configure your MCP client to use:
-- **Command:** `zig-out/bin/zpm serve`
+Configure your MCP client to spawn zpm:
+- **Command:** `zpm serve` (or absolute path to `zig-out/bin/zpm` if built from source)
 - **Transport:** stdio
+- **Working directory:** project root containing `.zpm/`
+
+Per-client configuration examples (Claude Code, Claude Desktop, Cursor, Zed, Gemini CLI, Codex CLI) live in the [Getting Started guide](../getting-started/mcp-server.md#3-configure-in-your-mcp-client).
 
 ### Debug Server Startup
 
