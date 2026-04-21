@@ -40,24 +40,16 @@ jobs:
       - name: Run tests
         run: zig build test
 
-  build:
+  build-linux:
     needs: [lint, test]
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: linux-x86_64
+          - target: linux-x86_64
             zig_target: x86_64-linux-gnu
-          - os: ubuntu-latest
-            target: linux-arm64
+          - target: linux-arm64
             zig_target: aarch64-linux-gnu
-          - os: macos-13
-            target: darwin-x86_64
-            zig_target: x86_64-macos
-          - os: macos-latest
-            target: darwin-arm64
-            zig_target: aarch64-macos
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,8 +80,48 @@ jobs:
           name: zpm-${{ matrix.target }}
           path: zig-out/bin/zpm-${{ matrix.target }}
 
+  build-darwin-universal:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install llvm-lipo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm
+
+      - name: Build aarch64-macos
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos
+          mv zig-out/bin/zpm zpm-arm64
+
+      - name: Build x86_64-macos
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-macos
+          mv zig-out/bin/zpm zpm-x86_64
+
+      - name: Fuse into universal binary
+        run: |
+          # On Ubuntu the llvm package ships tools as `llvm-lipo-<version>`;
+          # resolve whichever version is present.
+          LIPO="$(command -v llvm-lipo || ls /usr/bin/llvm-lipo-* 2>/dev/null | sort -V | tail -1)"
+          [ -n "$LIPO" ] || { echo "llvm-lipo not found" >&2; exit 1; }
+          "$LIPO" -create zpm-arm64 zpm-x86_64 -output zpm-darwin-universal
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpm-darwin-universal
+          path: zpm-darwin-universal
+
   release:
-    needs: [build]
+    needs: [build-linux, build-darwin-universal]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -119,7 +151,7 @@ jobs:
           fi
 
   dev-release:
-    needs: [build]
+    needs: [build-linux, build-darwin-universal]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:

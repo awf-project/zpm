@@ -195,7 +195,7 @@ The project uses a flat module structure. Hexagonal architecture is deferred unt
 - [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
 - [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
 - [x] F014: Hugo static site with GitHub Pages auto-deployment
-- [x] F015: Binary installation & multi-platform release (4 platforms: linux-x86_64, linux-arm64, darwin-x86_64, darwin-arm64)
+- [x] F015: Binary installation & multi-platform release (assets: linux-x86_64, linux-arm64, darwin-universal)
 - [x] F016: Replace Scryer-Prolog with Trealla and remove Rust stack
 
 ## Documentation

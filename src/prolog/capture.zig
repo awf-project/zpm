@@ -6,6 +6,7 @@
 //! original fds and unlinks the temp files.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 /// Process-wide counter used to build unique temp filenames. We combine pid +
@@ -35,7 +36,7 @@ pub const Capture = struct {
         // terminal rather than in our capture file.
         flushStdout();
 
-        const pid = std.os.linux.getpid();
+        const pid = std.c.getpid();
 
         const out_counter = g_counter.fetchAdd(1, .monotonic);
         const path_out = try std.fmt.allocPrintSentinel(
@@ -117,7 +118,7 @@ pub const Capture = struct {
         // causing captured dump_vars output to appear staggered or missing.
         posix.lseek_SET(fd, 0) catch {};
         posix.ftruncate(fd, 0) catch {};
-        _ = fseek(stdout, 0, 0);
+        _ = fseek(stdout_ptr.*, 0, 0);
 
         if (got < buf.len) {
             return try self.allocator.realloc(buf, got);
@@ -192,15 +193,21 @@ pub const Capture = struct {
 // libc still holds it in stdout/stderr buffer memory.
 extern "c" fn fflush(stream: ?*anyopaque) c_int;
 extern "c" fn fseek(stream: ?*anyopaque, offset: c_long, whence: c_int) c_int;
-extern "c" var stdout: ?*anyopaque;
-extern "c" var stderr: ?*anyopaque;
+
+// On Darwin, `stdout`/`stderr` are preprocessor macros that expand to
+// `__stdoutp`/`__stderrp`; those are the actual linker symbols. On glibc/musl
+// the unprefixed names are the real symbols. Resolve at comptime.
+const stdout_sym = if (builtin.target.os.tag.isDarwin()) "__stdoutp" else "stdout";
+const stderr_sym = if (builtin.target.os.tag.isDarwin()) "__stderrp" else "stderr";
+const stdout_ptr = @extern(*?*anyopaque, .{ .name = stdout_sym });
+const stderr_ptr = @extern(*?*anyopaque, .{ .name = stderr_sym });
 
 fn flushStdout() void {
-    _ = fflush(stdout);
+    _ = fflush(stdout_ptr.*);
 }
 
 fn flushStderr() void {
-    _ = fflush(stderr);
+    _ = fflush(stderr_ptr.*);
 }
 
 const testing = std.testing;
