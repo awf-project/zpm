@@ -24,11 +24,7 @@ ls -la .zpm/
 # -rw-r--r--  .gitignore
 ```
 
-Start the server:
-
-```bash
-zpm serve
-```
+Then configure your MCP client to spawn `zpm serve` — see [Configure in Your MCP Client](../getting-started/mcp-server.md#3-configure-in-your-mcp-client) in the Getting Started guide.
 
 ## What `.zpm/` Contains
 
@@ -129,8 +125,8 @@ hint: run 'zpm init' to initialize a project
    ```bash
    git clone https://github.com/example/my-project.git
    cd my-project
-   zpm serve     # Loads facts.pl automatically on startup
    ```
+   Open the project in your MCP client — it spawns `zpm serve`, which loads `facts.pl` automatically on startup.
 
 ## Troubleshooting
 
