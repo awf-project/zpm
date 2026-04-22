@@ -136,7 +136,7 @@ zpm upgrade --channel dev
 Every MCP tool is available as a CLI subcommand using kebab-case (e.g. `remember_fact` → `remember-fact`). Tool invocations share the same bootstrap as `zpm serve` — they discover the nearest `.zpm/`, load the knowledge base, run the handler, and exit.
 
 ```bash
-zpm <tool-name> [positional] [--flag value ...] [--format json|text]
+zpm <tool-name> [positional] [--flag value ...]
 ```
 
 The first required field of a tool's input schema is passed as a positional argument. Remaining required fields and all optional fields are passed as `--kebab-case` flags. The full tool roster lives in [MCP Tools Reference](mcp-tools.md); each entry documents its fields.
@@ -153,8 +153,8 @@ zpm upsert-fact "task_status(f017, done)"
 # Two-arg tool: head positional, body flag
 zpm define-rule "ancestor(X, Z)" --body "parent(X, Y), ancestor(Y, Z)"
 
-# Query with JSON output for piping to jq (US2)
-zpm query-logic "task_status(X, done)" --format json | jq '.[].X'
+# Query and pipe JSON output to jq (US2)
+zpm query-logic "task_status(X, done)" | jq '.[].X'
 
 # Snapshot management (US3)
 zpm save-snapshot "before-upgrade"
@@ -163,13 +163,8 @@ zpm restore-snapshot "before-upgrade"
 
 # Truth maintenance
 zpm assume-fact "requires_reboot(host)" --assumption "deploy-plan-v2"
-zpm list-assumptions --format json
+zpm list-assumptions
 ```
-
-**Output Formats:**
-
-- `--format text` (default) — human-readable; joins the tool's content blocks with newlines and prefixes error results with `ERROR: `.
-- `--format json` — structured; emits the raw `content` array from the MCP `ToolResult` so scripts can parse it with `jq`.
 
 **Discovering Commands:**
 
@@ -218,7 +213,7 @@ zpm 0.2.1
 | Code | Meaning |
 |------|---------|
 | 0 | Success (help, version, serve running normally, tool result with `is_error=false`) |
-| 1 | Error (unknown subcommand, invalid flags, serve crashed, no `.zpm/` found, tool result with `is_error=true`, missing required field, Prolog syntax error) |
+| 1 | Error (unknown subcommand, invalid flags, serve crashed, no `.zpm/` found, tool result with `is_error=true`, missing required field) |
 
 Tool subcommands write results to **stdout** and error or diagnostic messages (including the tool name and the offending field) to **stderr**, per FR-007.
 
@@ -257,10 +252,10 @@ zpm serve &           # Should start without blocking terminal
 The CLI layer (F017) is split across several modules for clear separation of concerns:
 
 1. **Registry** (`src/cli/registry.zig`) — All 22 MCP tools registered in a constant array
-2. **Argument Mapper** (`src/cli/arg_mapper.zig`) — Parse argv → `--kebab-case` flags, positional args, `--format` option
+2. **Argument Mapper** (`src/cli/arg_mapper.zig`) — Parse argv → `--kebab-case` flags and positional args
 3. **Bootstrap** (`src/cli/bootstrap.zig`) — Shared initialization: discover `.zpm/`, load knowledge base, start Prolog engine
 4. **Dispatcher** (`src/cli/dispatcher.zig`) — Route tool name → handler invocation, handle panic recovery
-5. **Output** (`src/cli/output.zig`) — Format results as text (default) or JSON, write stderr per FR-007
+5. **Output** (`src/cli/output.zig`) — Format tool results for stdout and write diagnostics to stderr per FR-007
 6. **Subcommand Handlers** (`src/cli/{init,serve}.zig`) — Entry points for `init` and `serve` subcommands
 
 This architecture ensures:
@@ -292,7 +287,8 @@ This architecture ensures:
 The following CLI features are deferred and not currently implemented:
 
 - Interactive REPL mode (`zpm repl`) for successive queries
-- Alternative output formats (YAML, TOML, CSV) — only `text` and `json` are supported today
+- User-selectable output format (`--format json|text`) — output is currently hard-coded per command (queries emit JSON, writes emit human-readable confirmations)
+- Alternative output formats (YAML, TOML, CSV)
 - Shell completion scripts (bash/zsh/fish)
 - Batch piping (stdin → multiple tool calls)
 - `.zpm/config.toml` — Project-level configuration file

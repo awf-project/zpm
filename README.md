@@ -6,7 +6,6 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 - CLI entrypoint with `init`, `serve`, `upgrade`, and all 22 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
-- `--format json|text` flag for scriptable or human-readable output, conventional exit codes for shell integration
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
 - Tool registration and discovery via `tools/list`
