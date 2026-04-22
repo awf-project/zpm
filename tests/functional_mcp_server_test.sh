@@ -46,7 +46,7 @@ INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersi
 RESPONSE=$(send_mcp "$INIT_REQ")
 
 assert_contains "serverInfo.name is zpm" "$RESPONSE" '"name":"zpm"'
-assert_contains "serverInfo.version is 0.1.0" "$RESPONSE" '"version":"0.1.0"'
+assert_contains "serverInfo.version is $ZPM_VERSION" "$RESPONSE" "\"version\":\"$ZPM_VERSION\""
 assert_contains "protocolVersion is 2025-11-25" "$RESPONSE" '"protocolVersion":"2025-11-25"'
 assert_contains "tools capability advertised" "$RESPONSE" '"tools":'
 
@@ -887,7 +887,7 @@ for VERSION_FLAG in "--version" "-v"; do
     echo "Test: zpm $VERSION_FLAG prints version string (US3)"
     capture_cli "$VERSION_FLAG"
     assert_exit_code "zpm $VERSION_FLAG exits 0" "$CLI_EXIT" 0
-    assert_contains "zpm $VERSION_FLAG output contains version" "$CLI_OUTPUT" "0.1.0"
+    assert_contains "zpm $VERSION_FLAG output contains version" "$CLI_OUTPUT" "$ZPM_VERSION"
 done
 
 # --- Test: zpm init creates .zpm/ directory structure (T009/US1) ---

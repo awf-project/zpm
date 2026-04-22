@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Single source of truth for the version: build.zig.zon. `src/version.zig`
+    // re-exports `build_options.version`, so every consumer sees the ZON value.
+    const zon = @import("build.zig.zon");
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", zon.version);
+    const build_options_module = build_options.createModule();
+
     const mcp_dep = b.dependency("mcp", .{});
     const cli_dep = b.dependency("cli", .{});
     const exe_module = b.createModule(.{
@@ -13,6 +20,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_module.addImport("mcp", mcp_dep.module("mcp"));
     exe_module.addImport("cli", cli_dep.module("cli"));
+    exe_module.addImport("build_options", build_options_module);
 
     const trealla = buildTrealla(b, target, optimize);
 
@@ -414,6 +422,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    version_module.addImport("build_options", build_options_module);
     const upgrade_test_module = b.createModule(.{
         .root_source_file = b.path("src/cli/upgrade.zig"),
         .target = target,

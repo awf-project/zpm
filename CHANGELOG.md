@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-22
+
+### Fixed
+- Version string reported by `zpm --version` and MCP `serverInfo.version` now matches the release tag. Previous releases (`v0.1.1`, `v0.2.0`) shipped binaries that reported `0.1.0` because the version was hardcoded in `src/version.zig` and never bumped.
+
+### Changed
+- `build.zig.zon` is now the single source of truth for the project version. `build.zig` injects it into `src/version.zig` via `b.addOptions()`; functional tests read it from the ZON too. Bumping the version requires editing only `build.zig.zon`.
+
 ### Breaking Changes
 - **Persistence storage format incompatible with prior versions.** Snapshot format and WAL format have both changed. After upgrading, run `rm -rf .zpm/kb/` to reset the local knowledge base. Pre-upgrade data cannot be migrated automatically.
 

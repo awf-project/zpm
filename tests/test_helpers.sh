@@ -8,6 +8,10 @@ set -euo pipefail
 PASS=0
 FAIL=0
 
+# Read the canonical project version from build.zig.zon so tests track the
+# single source of truth instead of hardcoding a literal.
+ZPM_VERSION="$(awk -F '"' '/^\s*\.version = /{print $2; exit}' "$(dirname "$0")/../build.zig.zon")"
+
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 

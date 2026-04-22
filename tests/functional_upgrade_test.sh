@@ -38,7 +38,7 @@ gen_tag_dir() {
 }
 
 gen_tag_dir "$SERVER_ROOT/v0.99.0" "v0.99.0"
-gen_tag_dir "$SERVER_ROOT/v0.2.0"  "v0.2.0"
+gen_tag_dir "$SERVER_ROOT/v99.0.0"  "v99.0.0"
 
 # Bad-checksum dir: same binaries, but SHA256SUMS lists wrong hashes
 # (simulating a tampered-with SHA256SUMS or a corrupted download).
@@ -64,14 +64,14 @@ write_releases_good() {
     ]
   },
   {
-    "tag_name": "v0.2.0",
+    "tag_name": "v99.0.0",
     "prerelease": false,
     "published_at": "2026-04-21T00:00:00Z",
     "assets": [
-      {"name": "zpm-linux-x86_64",     "browser_download_url": "http://127.0.0.1:$PORT/v0.2.0/zpm-linux-x86_64",      "size": 1},
-      {"name": "zpm-linux-arm64",      "browser_download_url": "http://127.0.0.1:$PORT/v0.2.0/zpm-linux-arm64",       "size": 1},
-      {"name": "zpm-darwin-universal", "browser_download_url": "http://127.0.0.1:$PORT/v0.2.0/zpm-darwin-universal",  "size": 1},
-      {"name": "SHA256SUMS",           "browser_download_url": "http://127.0.0.1:$PORT/v0.2.0/SHA256SUMS",            "size": 1}
+      {"name": "zpm-linux-x86_64",     "browser_download_url": "http://127.0.0.1:$PORT/v99.0.0/zpm-linux-x86_64",      "size": 1},
+      {"name": "zpm-linux-arm64",      "browser_download_url": "http://127.0.0.1:$PORT/v99.0.0/zpm-linux-arm64",       "size": 1},
+      {"name": "zpm-darwin-universal", "browser_download_url": "http://127.0.0.1:$PORT/v99.0.0/zpm-darwin-universal",  "size": 1},
+      {"name": "SHA256SUMS",           "browser_download_url": "http://127.0.0.1:$PORT/v99.0.0/SHA256SUMS",            "size": 1}
     ]
   }
 ]
@@ -82,7 +82,7 @@ write_releases_bad() {
     cat > "$SERVER_ROOT/releases" <<EOF
 [
   {
-    "tag_name": "v0.2.0",
+    "tag_name": "v99.0.0",
     "prerelease": false,
     "published_at": "2026-04-21T00:00:00Z",
     "assets": [
@@ -135,8 +135,8 @@ WORK_DIR=$(mktemp -d)
 cp "$BINARY" "$WORK_DIR/zpm"
 run_upgrade "$WORK_DIR/zpm"
 assert_exit_code "happy upgrade exits 0" "$CLI_EXIT" 0
-assert_contains "success output names prev version" "$CLI_OUTPUT" "0.1.0"
-assert_contains "success output names new version"  "$CLI_OUTPUT" "v0.2.0"
+assert_contains "success output names prev version" "$CLI_OUTPUT" "$ZPM_VERSION"
+assert_contains "success output names new version"  "$CLI_OUTPUT" "v99.0.0"
 assert_contains "success output names channel"      "$CLI_OUTPUT" "stable"
 rm -rf "$WORK_DIR"
 

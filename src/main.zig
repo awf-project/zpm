@@ -171,10 +171,6 @@ test "server initializes with correct name and version" {
     try std.testing.expectEqualStrings(version, server.config.version);
 }
 
-test "version constant value is 0.1.0" {
-    try std.testing.expectEqualStrings("0.1.0", version);
-}
-
 test "server registers all tools" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -208,7 +208,7 @@ zpm -v
 
 **Example Output:**
 ```
-zpm 0.1.0
+zpm 0.2.1
 ```
 
 **Exit Code:** 0

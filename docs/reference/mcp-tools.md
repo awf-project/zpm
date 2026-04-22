@@ -8,7 +8,7 @@ title: "MCP Tools Reference"
 - **Transport**: STDIO (stdin/stdout)
 - **Protocol version**: `2025-11-25`
 - **Server name**: `zpm`
-- **Server version**: `0.1.0`
+- **Server version**: `0.2.1`
 
 ## Server Capabilities
 
