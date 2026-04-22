@@ -1383,4 +1383,136 @@ else
 fi
 rm -rf "$FMT_DIR"
 
+# Feature: F019
+# --- Test 59: full assume→query→retract→query=[] + list_assumptions cycle (US1 #1) ---
+echo "Test: retract_assumption removes fact and disappears from list_assumptions (US1)"
+RETRACT_CYCLE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":132,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"feature(f019, fix, planned)\",\"assumption\":\"spec_draft\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":133,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(f019, _, _)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":134,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"spec_draft\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":135,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(f019, _, _)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":136,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp "$RETRACT_CYCLE_INPUT")
+ASSUME_LINE=$(echo "$RESPONSE" | grep '"id":132')
+QUERY_BEFORE=$(echo "$RESPONSE" | grep '"id":133')
+RETRACT_LINE=$(echo "$RESPONSE" | grep '"id":134')
+QUERY_AFTER=$(echo "$RESPONSE" | grep '"id":135')
+LIST_LINE=$(echo "$RESPONSE" | grep '"id":136')
+
+assert_contains "assume_fact spec_draft succeeds" "$ASSUME_LINE" '"isError":false'
+assert_contains "fact queryable before retraction" "$QUERY_BEFORE" '[{}]'
+assert_contains "retract_assumption returns success" "$RETRACT_LINE" '"isError":false'
+assert_contains "fact absent after retraction" "$QUERY_AFTER" '[]'
+assert_not_contains "spec_draft absent from list_assumptions" "$LIST_LINE" 'spec_draft'
+
+# --- Test 60: multi-fact same-assumption removal with accurate count (US1 #3) ---
+echo "Test: retract_assumption removes all facts under assumption and reports correct count (US1)"
+RETRACT_MULTI_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":137,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"service(api, running)\",\"assumption\":\"deploy_batch\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":138,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"service(db, running)\",\"assumption\":\"deploy_batch\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":139,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"deploy_batch\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":140,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"service(_, running)\"}}}
+"
+RESPONSE=$(send_mcp "$RETRACT_MULTI_INPUT")
+ASSUME1_LINE=$(echo "$RESPONSE" | grep '"id":137')
+ASSUME2_LINE=$(echo "$RESPONSE" | grep '"id":138')
+RETRACT_MULTI_LINE=$(echo "$RESPONSE" | grep '"id":139')
+QUERY_MULTI_AFTER=$(echo "$RESPONSE" | grep '"id":140')
+
+assert_contains "first assume_fact deploy_batch succeeds" "$ASSUME1_LINE" '"isError":false'
+assert_contains "second assume_fact deploy_batch succeeds" "$ASSUME2_LINE" '"isError":false'
+assert_contains "retract_assumption deploy_batch returns success" "$RETRACT_MULTI_LINE" '"isError":false'
+assert_contains "retract_assumption reports 2 facts removed" "$RETRACT_MULTI_LINE" '2 fact(s) removed'
+assert_contains "all facts gone after multi-fact retraction" "$QUERY_MULTI_AFTER" '[]'
+
+# --- Test 61: restore_snapshot makes feature/3 facts visible in get_knowledge_schema (US2 #1) ---
+echo "Test: restore_snapshot then get_knowledge_schema reports feature/3 count=4 (US2)"
+PERSIST_DIR_61=$(mktemp -d)
+SNAP_WRITE_61="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":141,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(auth, login, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":142,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(api, rest, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":143,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(db, postgres, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":144,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(cache, redis, planned)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":145,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
+"
+RESPONSE=$(send_mcp_persist "$SNAP_WRITE_61" "$PERSIST_DIR_61")
+SNAP_61_LINE=$(echo "$RESPONSE" | grep '"id":145')
+assert_contains "save snapshot f019_us2 succeeds" "$SNAP_61_LINE" '"isError":false'
+
+SNAP_READ_61="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":146,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":147,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp_persist "$SNAP_READ_61" "$PERSIST_DIR_61")
+RESTORE_61_LINE=$(echo "$RESPONSE" | grep '"id":146')
+SCHEMA_61_LINE=$(echo "$RESPONSE" | grep '"id":147')
+assert_contains "restore_snapshot f019_us2 succeeds" "$RESTORE_61_LINE" '"isError":false'
+assert_contains "get_knowledge_schema after restore shows feature predicate" "$SCHEMA_61_LINE" '\"name\":\"feature\"'
+assert_contains "get_knowledge_schema after restore shows arity 3" "$SCHEMA_61_LINE" '\"arity\":3'
+assert_contains "get_knowledge_schema after restore reports count 4" "$SCHEMA_61_LINE" '\"count\":4'
+
+# --- Test 62: restore_snapshot then query_logic returns 4 bindings (US2 #2) ---
+echo "Test: restore_snapshot then query_logic feature/3 returns 4 bindings (US2)"
+SNAP_QUERY_62="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":148,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":149,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(F, _, _)\"}}}
+"
+RESPONSE=$(send_mcp_persist "$SNAP_QUERY_62" "$PERSIST_DIR_61")
+QUERY_62_LINE=$(echo "$RESPONSE" | grep '"id":149')
+BINDING_COUNT=$(echo "$QUERY_62_LINE" | grep -o '\\"F\\":' | wc -l | tr -d ' ')
+if [ "$BINDING_COUNT" -eq 4 ] 2>/dev/null; then
+    green "  PASS: query_logic returns exactly 4 bindings for feature/3 after restore"
+    PASS=$((PASS + 1))
+else
+    red "  FAIL: query_logic did not return 4 bindings for feature/3 after restore (got $BINDING_COUNT, line: $QUERY_62_LINE)"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$PERSIST_DIR_61"
+
+# --- Test 63: snapshot round-trip preserves both remember_fact and assume_fact entries (US2 #3) ---
+echo "Test: restore_snapshot round-trip preserves dynamic facts and list_assumptions (US2)"
+PERSIST_DIR_63=$(mktemp -d)
+MIXED_WRITE_63="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(zpm, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":151,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"risk(latency, low)\",\"assumption\":\"perf_guess\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":152,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"f019_mixed\"}}}
+"
+RESPONSE=$(send_mcp_persist "$MIXED_WRITE_63" "$PERSIST_DIR_63")
+MIXED_SNAP_LINE=$(echo "$RESPONSE" | grep '"id":152')
+assert_contains "save mixed snapshot f019_mixed succeeds" "$MIXED_SNAP_LINE" '"isError":false'
+
+MIXED_READ_63="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":153,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_mixed\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":154,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"project(zpm, active)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":155,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
+"
+RESPONSE=$(send_mcp_persist "$MIXED_READ_63" "$PERSIST_DIR_63")
+RESTORE_63_LINE=$(echo "$RESPONSE" | grep '"id":153')
+QUERY_63_LINE=$(echo "$RESPONSE" | grep '"id":154')
+LIST_63_LINE=$(echo "$RESPONSE" | grep '"id":155')
+assert_contains "restore mixed snapshot succeeds" "$RESTORE_63_LINE" '"isError":false'
+assert_contains "permanent fact queryable after mixed restore" "$QUERY_63_LINE" '[{}]'
+assert_contains "assumption preserved in list_assumptions after mixed restore" "$LIST_63_LINE" 'perf_guess'
+rm -rf "$PERSIST_DIR_63"
+
+# --- Test 64: retract_assumption with unknown name returns structured error (spec edge case / FR-006 / NFR-003) ---
+echo "Test: retract_assumption with unknown assumption returns isError=true and does not silently succeed (US1)"
+UNKNOWN_RETRACT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":156,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"never_assumed_name\"}}}
+"
+RESPONSE=$(send_mcp "$UNKNOWN_RETRACT_INPUT")
+UNKNOWN_RETRACT_LINE=$(echo "$RESPONSE" | grep '"id":156')
+
+assert_contains "retract_assumption unknown name returns isError true" "$UNKNOWN_RETRACT_LINE" '"isError":true'
+assert_not_contains "retract_assumption unknown name does not falsely report removal" "$UNKNOWN_RETRACT_LINE" 'fact(s) removed'
+
 test_summary

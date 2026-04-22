@@ -57,21 +57,30 @@ pub const WriteAheadLog = struct {
     }
 
     pub fn append(self: *WriteAheadLog, entry: JournalEntry) !void {
+        return self.appendBatch(&[_]JournalEntry{entry});
+    }
+
+    /// Append multiple entries as a single `writeAll` + `sync`. Ensures that
+    /// either all entries land in the journal or none do — no partial prefix
+    /// that would leave replay reconstructing a half-applied mutation.
+    pub fn appendBatch(self: *WriteAheadLog, entries: []const JournalEntry) !void {
         var aw: std.io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
-        try std.json.Stringify.value(
-            JournalEntryJson{
-                .ts = entry.timestamp,
-                .op = entry.op.tag(),
-                .clause = entry.clause,
-            },
-            .{},
-            &aw.writer,
-        );
-        try aw.writer.writeByte('\n');
-        const json_line = try aw.toOwnedSlice();
-        defer self.allocator.free(json_line);
-        try self.file.writeAll(json_line);
+        for (entries) |entry| {
+            try std.json.Stringify.value(
+                JournalEntryJson{
+                    .ts = entry.timestamp,
+                    .op = entry.op.tag(),
+                    .clause = entry.clause,
+                },
+                .{},
+                &aw.writer,
+            );
+            try aw.writer.writeByte('\n');
+        }
+        const buf = try aw.toOwnedSlice();
+        defer self.allocator.free(buf);
+        try self.file.writeAll(buf);
         try self.file.sync();
     }
 
@@ -107,17 +116,25 @@ pub const WriteAheadLog = struct {
     }
 
     pub fn rotate(self: *WriteAheadLog) !void {
-        self.file.close();
-
         var dir = try std.fs.openDirAbsolute(self.dir_path, .{});
         defer dir.close();
 
         var name_buf: [64]u8 = undefined;
         const ts = std.time.timestamp();
         const archive = try std.fmt.bufPrint(&name_buf, "journal-{d}.wal", .{ts});
-        try dir.rename("journal.wal", archive);
 
-        self.file = try dir.createFile("journal.wal", .{ .truncate = true });
+        // Rename first (atomic on POSIX); the existing fd stays valid and now
+        // points at the archived inode, so concurrent writers don't see an
+        // invalid handle. Close only after the replacement is ready.
+        try dir.rename("journal.wal", archive);
+        const new_file = dir.createFile("journal.wal", .{ .truncate = true }) catch |err| {
+            // Put journal.wal back so replay/boot still finds the log.
+            dir.rename(archive, "journal.wal") catch {};
+            return err;
+        };
+
+        self.file.close();
+        self.file = new_file;
     }
 };
 
@@ -321,6 +338,29 @@ test "replay propagates error on unknown op in journal entry" {
     try std.testing.expectError(error.CorruptWalEntry, wal.replay(engine));
 }
 
+test "replay of retract_assumption journal entries removes facts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    try wal.append(.{ .timestamp = 1, .op = .assert, .clause = "tms_justification(feature(f019,draft,planned),spec_draft)" });
+    try wal.append(.{ .timestamp = 2, .op = .assert, .clause = "feature(f019,draft,planned)" });
+    try wal.append(.{ .timestamp = 3, .op = .retractall, .clause = "tms_justification(_,spec_draft)" });
+    try wal.append(.{ .timestamp = 4, .op = .retractall, .clause = "feature(f019,_,_)" });
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try wal.replay(engine);
+
+    var result = try engine.query("feature(f019,_,_)");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 0), result.solutions.len);
+}
+
 test "replay handles journal larger than 64KB (no hardcoded limit)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -344,4 +384,59 @@ test "replay handles journal larger than 64KB (no hardcoded limit)" {
     var result = try engine.query("fact(N)");
     defer result.deinit();
     try std.testing.expect(result.solutions.len >= 100);
+}
+
+test "appendBatch writes all entries atomically" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    const entries = [_]JournalEntry{
+        .{ .timestamp = 1715000000, .op = .retractall, .clause = "tms_justification(_,alpha)" },
+        .{ .timestamp = 1715000000, .op = .retractall, .clause = "tms_justification(_,beta)" },
+        .{ .timestamp = 1715000000, .op = .retractall, .clause = "tms_justification(_,gamma)" },
+    };
+    try wal.appendBatch(&entries);
+
+    const f = try tmp.dir.openFile("journal.wal", .{});
+    defer f.close();
+    var buf: [1024]u8 = undefined;
+    const n = try f.readAll(&buf);
+    const content = buf[0..n];
+
+    var line_count: usize = 0;
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len == 0) continue;
+        line_count += 1;
+        const parsed = try std.json.parseFromSlice(JournalEntryJson, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("retractall", parsed.value.op);
+    }
+    try std.testing.expectEqual(@as(usize, 3), line_count);
+    try std.testing.expect(std.mem.indexOf(u8, content, "alpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "beta") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "gamma") != null);
+}
+
+test "appendBatch writes nothing when entries is empty" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path);
+    defer wal.deinit();
+
+    try wal.appendBatch(&[_]JournalEntry{});
+
+    const f = try tmp.dir.openFile("journal.wal", .{});
+    defer f.close();
+    var buf: [16]u8 = undefined;
+    const n = try f.readAll(&buf);
+    try std.testing.expectEqual(@as(usize, 0), n);
 }

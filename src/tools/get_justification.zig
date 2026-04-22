@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
+const validation = @import("tool_validation");
 const Term = engine_mod.Term;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -29,6 +30,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
+    if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 

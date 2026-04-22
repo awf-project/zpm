@@ -86,6 +86,13 @@ pub const PersistenceManager = struct {
         if (self.wal) |*w| try w.append(entry);
     }
 
+    /// Journal multiple entries atomically — either all land in the WAL or
+    /// none do. Use this for multi-step mutations like `retract_assumption`
+    /// to prevent replay reconstructing a half-applied intermediate state.
+    pub fn journalMutations(self: *PersistenceManager, entries: []const JournalEntry) !void {
+        if (self.wal) |*w| try w.appendBatch(entries);
+    }
+
     pub fn saveSnapshot(self: *PersistenceManager, engine: *Engine, name: []const u8) !void {
         if (self.status != .active) return;
         var snap = try snapshot_mod.Snapshot.generate(self.allocator, engine, self.snapshot_dir_path, name);
@@ -173,6 +180,35 @@ test "journalMutation is no-op when manager is degraded" {
     try std.testing.expectEqual(PersistenceStatus.degraded, manager.getStatus());
     const entry = JournalEntry{ .timestamp = 1713000000, .clause = "fact(a)" };
     try manager.journalMutation(entry);
+}
+
+test "journalMutations batches WAL entries" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer manager.deinit();
+
+    const entries = [_]JournalEntry{
+        .{ .timestamp = 1715000000, .op = .retractall, .clause = "tms_justification(_,alpha)" },
+        .{ .timestamp = 1715000000, .op = .retractall, .clause = "tms_justification(_,beta)" },
+    };
+    try manager.journalMutations(&entries);
+
+    var content_buf: [1024]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expect(std.mem.indexOf(u8, content, "alpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "beta") != null);
+
+    var line_count: usize = 0;
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len != 0) line_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), line_count);
 }
 
 test "listSnapshots returns snapshot filenames in persistence directory" {

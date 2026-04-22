@@ -26,16 +26,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 }
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const obj = if (args) |a| switch (a) {
-        .object => |o| o,
-        else => return mcp.tools.ToolError.InvalidArguments,
-    } else return mcp.tools.ToolError.InvalidArguments;
-
-    const name_val = obj.get("name") orelse return mcp.tools.ToolError.InvalidArguments;
-    const name = switch (name_val) {
-        .string => |s| s,
-        else => return mcp.tools.ToolError.InvalidArguments,
-    };
+    const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
     const pm = context.getPersistenceManagerAs(PersistenceManager) orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -136,6 +127,36 @@ test "handler returns ExecutionFailed when snapshot file does not exist" {
 
     var obj = std.json.ObjectMap.init(allocator);
     try obj.put("name", .{ .string = "nonexistent_snap" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = handler(allocator, args);
+    try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+}
+
+test "handler returns ExecutionFailed when snapshot file is malformed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try tmp.dir.writeFile(.{ .sub_path = "malformed_snap.pl", .data = "bad(unclosed\n" });
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("name", .{ .string = "malformed_snap" });
     const args = std.json.Value{ .object = obj };
 
     const result = handler(allocator, args);

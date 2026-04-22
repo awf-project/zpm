@@ -5,6 +5,7 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
+const validation = @import("tool_validation");
 const Term = engine_mod.Term;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -94,6 +95,7 @@ fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, a
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const pattern = mcp.tools.getString(args, "pattern") orelse return mcp.tools.ToolError.InvalidArguments;
+    if (!validation.isValidGlobPattern(pattern)) return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
@@ -133,14 +135,17 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
     }
 
-    // Two-phase for atomicity: journal every entry before any engine
-    // mutation, so a partial WAL never corresponds to a partial in-memory
-    // state. retractall replay is idempotent — retry-safe.
+    // Two-phase commit: build every WAL entry, write them as a single batch,
+    // THEN mutate the engine. A partial batch (per-entry fsync + fail) would
+    // replay a half-retracted state (some assumptions gone, others still live).
     if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        var entries: std.ArrayList(JournalEntry) = .empty;
+        defer entries.deinit(allocator);
         const ts = std.time.timestamp();
         for (matching.items) |assumption| {
-            pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.ExecutionFailed;
+            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.OutOfMemory;
         }
+        pm.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
     for (matching.items) |assumption| {

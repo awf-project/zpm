@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xba1b5087bed36a4b,
     .name = .zpm,
-    .version = "0.2.1",
+    .version = "0.2.2",
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .mcp = .{

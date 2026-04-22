@@ -24,15 +24,6 @@ pub const Snapshot = struct {
             const tmp_file = try dir.createFile(tmp_name, .{});
             var close_tmp = true;
             defer if (close_tmp) tmp_file.close();
-            const ts = std.time.timestamp();
-            var hdr_buf: [64]u8 = undefined;
-            const hdr = try std.fmt.bufPrint(&hdr_buf, "%% zpm snapshot {d}\n", .{ts});
-            tmp_file.writeAll(hdr) catch |err| {
-                tmp_file.close();
-                close_tmp = false;
-                dir.deleteFile(tmp_name) catch {};
-                return err;
-            };
             writeClausesToFile(allocator, engine, tmp_file) catch |err| {
                 tmp_file.close();
                 close_tmp = false;
@@ -63,10 +54,20 @@ pub const Snapshot = struct {
 };
 
 fn writeClausesToFile(allocator: std.mem.Allocator, engine: *Engine, file: std.fs.File) !void {
+    const ts = std.time.timestamp();
+    var hdr_buf: [64]u8 = undefined;
+    const hdr = try std.fmt.bufPrint(&hdr_buf, "%% zpm snapshot {d}\n", .{ts});
+    try file.writeAll(hdr);
+
+    var it = engine.iterateDeclaredDynamic();
+    while (it.next()) |entry| {
+        var dir_buf: [256]u8 = undefined;
+        const directive = try std.fmt.bufPrint(&dir_buf, ":- dynamic({s}).\n", .{entry.key_ptr.*});
+        try file.writeAll(directive);
+    }
+
     const dump = try engine.dumpDynamicPredicates(allocator);
     defer allocator.free(dump);
-
-    try file.writeAll("%% zpm snapshot\n");
     try file.writeAll(dump);
 }
 
@@ -401,6 +402,123 @@ test "static-after-load: assertFact-retractall-assertFact sanity" {
     defer result.deinit();
     try std.testing.expectEqual(@as(usize, 1), result.solutions.len);
     try std.testing.expectEqualStrings("b", result.solutions[0].bindings.get("X").?.atom);
+}
+
+test "snapshot file starts with %% zpm snapshot header" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "hdr_test");
+    defer snap.deinit();
+
+    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "hdr_test.pl", 4096);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.startsWith(u8, content, "%% zpm snapshot "));
+}
+
+test "snapshot file contains :- dynamic directive for each predicate from declared_dynamic" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try engine.assertFact("fact_a(1)");
+    try engine.assertFact("fact_b(x, y)");
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "directives_test");
+    defer snap.deinit();
+
+    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "directives_test.pl", 8192);
+    defer std.testing.allocator.free(content);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, ":- dynamic(fact_a/1)."));
+    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, ":- dynamic(fact_b/2)."));
+}
+
+test "snapshot file emits :- dynamic directives before first clause" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try engine.assertFact("user_item(alpha, 1)");
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "order_test");
+    defer snap.deinit();
+
+    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "order_test.pl", 8192);
+    defer std.testing.allocator.free(content);
+
+    const directive_pos = std.mem.indexOf(u8, content, ":- dynamic(user_item/2).") orelse
+        return error.DirectiveMissing;
+    const clause_pos = std.mem.indexOf(u8, content, "user_item(alpha") orelse
+        return error.ClauseMissing;
+
+    try std.testing.expect(directive_pos < clause_pos);
+}
+
+test "restore makes four feature/3 facts queryable (US2 acceptance)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try engine.assertFact("feature(f001, 'Mcp Server', complete)");
+    try engine.assertFact("feature(f002, 'Prolog Engine', complete)");
+    try engine.assertFact("feature(f003, 'Persistence', complete)");
+    try engine.assertFact("feature(f019, 'Fix Retract', planned)");
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_test");
+    defer snap.deinit();
+
+    const engine2 = try Engine.init(.{});
+    defer engine2.deinit();
+    try snap.restore(engine2);
+
+    var result = try engine2.query("feature(F, _, _)");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 4), result.solutions.len);
+}
+
+test "restore makes feature/3 schema count=4 via clause introspection (US2 schema acceptance)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+    try engine.assertFact("feature(f001, 'Mcp Server', complete)");
+    try engine.assertFact("feature(f002, 'Prolog Engine', complete)");
+    try engine.assertFact("feature(f003, 'Persistence', complete)");
+    try engine.assertFact("feature(f019, 'Fix Retract', planned)");
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_schema_test");
+    defer snap.deinit();
+
+    const engine2 = try Engine.init(.{});
+    defer engine2.deinit();
+    try snap.restore(engine2);
+
+    var schema_result = try engine2.query("clause(feature(_,_,_), true)");
+    defer schema_result.deinit();
+    try std.testing.expectEqual(@as(usize, 4), schema_result.solutions.len);
+
+    var query_result = try engine2.query("feature(F, _, _)");
+    defer query_result.deinit();
+    try std.testing.expectEqual(@as(usize, 4), query_result.solutions.len);
 }
 
 test "generate propagates dump error and leaves no final snapshot file" {

@@ -76,8 +76,11 @@ Use `restore_snapshot` to return to a previous state:
 
 The restore process:
 1. Loads the snapshot, replacing the current knowledge base
-2. Replays all journal entries recorded after the snapshot
-3. Returns to the exact state including any facts added since the snapshot
+2. Asserts all facts from the snapshot as immediately queryable predicates
+3. Replays all journal entries recorded after the snapshot
+4. Returns to the exact state including any facts added since the snapshot
+
+**Important:** All predicates in the snapshot are loaded as dynamic, so they are fully accessible via `query_logic` and reflected in `get_knowledge_schema` counts immediately after restore. The snapshot mechanism uses human-readable Prolog source format with explicit `:- dynamic(F/A).` directives to ensure reliable round-trip behavior.
 
 This enables point-in-time recovery without losing recent changes.
 

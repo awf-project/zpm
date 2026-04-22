@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const validation = @import("tool_validation");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
@@ -31,10 +32,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
 
-    if (assumption.len == 0 or !std.ascii.isLower(assumption[0])) return mcp.tools.ToolError.InvalidArguments;
-    for (assumption[1..]) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_') return mcp.tools.ToolError.InvalidArguments;
-    }
+    if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
     if (fact.len == 0) {
         return mcp.tools.errorResult(allocator, "assume_fact: fact must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
