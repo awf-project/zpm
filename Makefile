@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build release install test functional-test fmt lint clean check docs docs-serve docs-clean
+.PHONY: help build release install test functional-test upgrade-test fmt lint clean check docs docs-serve docs-clean
 
 INSTALL_DIR ?= $(HOME)/.local/bin
 
@@ -27,6 +27,10 @@ test: ## Run unit tests
 
 functional-test: build ## Run end-to-end MCP protocol tests
 	bash tests/functional_mcp_server_test.sh
+	bash tests/functional_upgrade_test.sh
+
+upgrade-test: build ## Run upgrade end-to-end tests
+	bash tests/functional_upgrade_test.sh
 
 fmt: ## Format source code
 	zig fmt .

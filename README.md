@@ -4,7 +4,8 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init`, `serve`, and all 22 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- CLI entrypoint with `init`, `serve`, `upgrade`, and all 22 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - `--format json|text` flag for scriptable or human-readable output, conventional exit codes for shell integration
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
@@ -58,21 +59,25 @@ The built binary is located at `zig-out/bin/zpm`.
 
 ```bash
 # Display help (also: zpm --help, zpm -h)
-zig-out/bin/zpm
+zpm
 
 # Show version (also: zpm -v)
-zig-out/bin/zpm --version
+zpm --version
 
 # Initialize a project directory
-zig-out/bin/zpm init
+zpm init
 
 # Start the MCP server (STDIO transport)
-zig-out/bin/zpm serve
+zpm serve
+
+# Upgrade to the latest release (verifies SHA256, atomic replace)
+zpm upgrade
+zpm upgrade --channel dev --dry-run
 
 # Invoke MCP tools directly from the shell
-zig-out/bin/zpm remember-fact "task_status(f017, done)"
-zig-out/bin/zpm query-logic "task_status(X, done)" --format json
-zig-out/bin/zpm save-snapshot "before-deploy"
+zpm remember-fact "task_status(f017, done)"
+zpm query-logic "task_status(X, done)" --format json
+zpm save-snapshot "before-deploy"
 ```
 
 See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.
@@ -103,6 +108,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `make functional-test` | Run end-to-end MCP protocol tests |
 | `make lint` | Check formatting |
 | `make test` | Run unit tests (inline Zig tests) |
+| `make upgrade-test` | Run upgrade end-to-end tests |
 
 ## MCP Tools
 
@@ -130,82 +136,6 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `update_fact` | Atomically replace an existing fact (retract old, assert new) | `old_fact` (string, required), `new_fact` (string, required) |
 | `upsert_fact` | Replace a fact matching functor+first arg, or insert if not found | `fact` (string, required) |
 | `verify_consistency` | Check knowledge base for integrity violations | `scope` (string, optional) |
-
-## Architecture
-
-```
-src/
-  main.zig          # CLI entrypoint and MCP server (STDIO transport)
-  project.zig       # Project directory discovery (.zpm/) and initialization
-  tools/
-    assume_fact.zig        # TMS: assert fact under named assumption
-    clear_context.zig      # Clear context tool handler (bulk fact deletion)
-    context.zig            # Engine singleton for tool handlers
-    define_rule.zig        # Define rule tool handler
-    echo.zig               # Echo tool handler
-    explain_why.zig        # Proof tree explanation tool handler
-    forget_fact.zig        # Forget fact tool handler (single fact deletion)
-    get_belief_status.zig  # TMS: query belief support status and justifications
-    get_justification.zig  # TMS: list facts supported by an assumption
-    get_knowledge_schema.zig   # Knowledge schema introspection tool handler
-    get_persistence_status.zig # Persistence layer status and metadata
-    list_assumptions.zig   # TMS: list all active assumptions
-    list_snapshots.zig     # List available snapshots and metadata
-    query_logic.zig        # Query logic tool handler
-    remember_fact.zig      # Remember fact tool handler
-    restore_snapshot.zig   # Restore from a named snapshot and replay journal
-    retract_assumption.zig # TMS: retract assumption with propagation
-    retract_assumptions.zig # TMS: bulk retract by glob pattern
-    save_snapshot.zig      # Create a named snapshot of the knowledge base
-    term_utils.zig         # Shared Prolog term parsing utilities
-    trace_dependency.zig   # Trace dependency tool handler
-    update_fact.zig        # Update fact tool handler (atomic replacement)
-    upsert_fact.zig        # Upsert fact tool handler (insert or replace)
-    verify_consistency.zig # Knowledge base consistency checker
-  persistence/
-    manager.zig     # Persistence lifecycle: initialization, degraded mode, state tracking
-    snapshot.zig    # Snapshot generation and restoration via Prolog introspection
-    wal.zig         # Write-ahead journal: append mutations and replay from checkpoints
-  prolog/
-    engine.zig      # Prolog engine with query, assert/retract, loading
-    ffi.zig         # C-ABI extern declarations for Trealla's pl_* API
-    capture.zig     # stdout redirection for query output parsing
-ffi/
-  trealla/          # Trealla Prolog C source (git submodule, compiled by build.zig)
-site/
-  config/              # Hugo configuration (params, menus, modules, production)
-  content/             # Homepage, blog, and docs section index pages
-  layouts/             # Custom Hugo templates (home.html, redirect)
-  assets/              # Custom JS/CSS assets
-  package.json         # Thulite/Doks theme dependencies
-.github/
-  workflows/
-    hugo.yml           # GitHub Pages build and deploy workflow
-tests/
-  functional_mcp_server_test.sh    # End-to-end MCP protocol tests
-```
-
-The project uses a flat module structure. Hexagonal architecture is deferred until domain complexity justifies it; see [ADR-0004](docs/ADR/0004-trealla-prolog-via-c-ffi-replacing-scryer.md) for the current Prolog backend rationale.
-
-## Roadmap
-
-- [x] F001: MCP server creation via mcp.zig
-- [x] F002: Prolog inference engine integration (Trealla via C API)
-- [x] F003: Knowledge management tools — write (remember_fact, define_rule)
-- [x] F004: Knowledge management tools — read (query_logic, trace_dependency)
-- [x] F005: Supervision and quality tools (verify_consistency, explain_why)
-- [x] F006: Knowledge schema discovery (get_knowledge_schema)
-- [x] F007: Fact deletion tools (forget_fact, clear_context)
-- [x] F008: Fact update and upsert tools (update_fact, upsert_fact)
-- [x] F009: Truth Maintenance System (assume_fact, retract_assumption, get_belief_status, get_justification, list_assumptions, retract_assumptions)
-- [x] F010: Knowledge base persistence via WAL and snapshots (save_snapshot, restore_snapshot, list_snapshots, get_persistence_status)
-- [x] F011: CLI entrypoint with help and serve subcommand
-- [x] F012: Local project directory for configuration and persistence (`.zpm/` init, discovery, per-project isolation)
-- [x] F013: GitHub Actions release workflow with tag-triggered releases and dev pre-releases
-- [x] F014: Hugo static site with GitHub Pages auto-deployment
-- [x] F015: Binary installation & multi-platform release (assets: linux-x86_64, linux-arm64, darwin-universal)
-- [x] F016: Replace Scryer-Prolog with Trealla and remove Rust stack
-- [x] F017: Expose the 22 MCP tools as CLI subcommands (`zpm <tool-name> [args]`) with `--format json|text`
 
 ## Documentation
 

@@ -78,6 +78,59 @@ zig-out/bin/zpm serve
 echo '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {...}}' | socat - EXEC:'zig-out/bin/zpm serve'
 ```
 
+### `upgrade`
+
+Downloads the latest release binary from GitHub, verifies its SHA256 checksum, and atomically replaces the currently running executable.
+
+```bash
+zpm upgrade [--channel stable|dev] [--dry-run]
+```
+
+On invocation, the command:
+
+1. Resolves the target release from the GitHub releases API for `awf-project/zpm`:
+   - `stable` (default): the latest release with `prerelease: false`
+   - `dev`: the most recently published release, regardless of the `prerelease` flag
+2. Short-circuits with an "already up to date" message if the resolved tag matches the running binary's embedded version
+3. Detects the host OS/architecture and selects the matching release asset:
+   - Linux x86_64 → `zpm-linux-x86_64`
+   - Linux arm64 → `zpm-linux-arm64`
+   - macOS (x86_64 or arm64) → `zpm-darwin-universal` (single fat binary)
+4. Downloads the asset and its `SHA256SUMS` file to a temporary location with explicit HTTP timeouts
+5. Computes the SHA256 of the downloaded asset and compares it against the published entry (matched by full basename)
+6. Writes the verified bytes to `<install-path>.new`, preserves the original file mode, and renames the temp file over the running binary
+
+If any step fails (network error, checksum mismatch, permission denied, unsupported platform, unknown channel), the command exits non-zero and leaves the originally installed binary byte-identical.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--channel stable\|dev` | Release channel to pull from (default: `stable`). Unknown values are rejected with an error listing the supported channels. |
+| `--dry-run` | Report the target version, asset URL, expected checksum, and install path without modifying anything. |
+
+**Example:**
+
+```bash
+# Upgrade to the latest stable release
+zpm upgrade
+
+# Preview the upgrade plan without touching the binary
+zpm upgrade --dry-run
+
+# Pull the latest prerelease (dev channel)
+zpm upgrade --channel dev
+```
+
+**Exit Codes:**
+
+- `0` — Success (binary replaced, or already up to date)
+- `1` — Error (network failure, checksum mismatch, permission denied, unsupported platform, unknown channel)
+
+**Supported Platforms:** Linux (x86_64, arm64) and macOS (x86_64, arm64). On other platforms, the command exits with an error listing the supported targets.
+
+**Read-Only Filesystems:** If the running binary lives on a path without write permission (e.g., `/usr/local/bin` without sudo), the command surfaces the permission error and suggests re-running with elevated privileges.
+
 ### Tool Subcommands
 
 Every MCP tool is available as a CLI subcommand using kebab-case (e.g. `remember_fact` → `remember-fact`). Tool invocations share the same bootstrap as `zpm serve` — they discover the nearest `.zpm/`, load the knowledge base, run the handler, and exit.

@@ -407,6 +407,23 @@ pub fn build(b: *std.Build) void {
     const output_unit_tests = b.addTest(.{ .root_module = output_test_module });
     const run_output_unit_tests = b.addRunArtifact(output_unit_tests);
     test_step.dependOn(&run_output_unit_tests.step);
+
+    // upgrade module tests (F018)
+    const version_module = b.createModule(.{
+        .root_source_file = b.path("src/version.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const upgrade_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cli/upgrade.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    upgrade_test_module.addImport("output.zig", output_test_module);
+    upgrade_test_module.addImport("../version.zig", version_module);
+    const upgrade_unit_tests = b.addTest(.{ .root_module = upgrade_test_module });
+    const run_upgrade_unit_tests = b.addRunArtifact(upgrade_unit_tests);
+    test_step.dependOn(&run_upgrade_unit_tests.step);
 }
 
 fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {

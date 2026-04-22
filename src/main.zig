@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const cli = @import("cli");
 const serve_cli = @import("cli/serve.zig");
 const init_cli = @import("cli/init.zig");
+const upgrade_cli = @import("cli/upgrade.zig");
 const dispatcher = @import("cli/dispatcher.zig");
 const registry = @import("cli/registry.zig");
 
@@ -11,7 +12,7 @@ const version = @import("version.zig").version;
 /// Widest `cli_name` across built-ins + registry, so the description column
 /// lines up. Kept as a comptime-computed constant.
 const help_name_column_width: usize = blk: {
-    var w: usize = "serve".len;
+    var w: usize = "upgrade".len;
     for (registry.all()) |def| {
         if (def.cli_name.len > w) w = def.cli_name.len;
     }
@@ -41,6 +42,7 @@ fn printHelp(stdout: std.fs.File) !void {
     try w.writeAll("\n");
     try writeCommandRow(w, use_color, "init", "Initialize a .zpm/ project directory");
     try writeCommandRow(w, use_color, "serve", "Start the MCP server on stdio");
+    try writeCommandRow(w, use_color, "upgrade", "Upgrade zpm to the latest release");
     for (registry.all()) |def| {
         try writeCommandRow(w, use_color, def.cli_name, def.description);
     }
@@ -72,7 +74,7 @@ fn writeCommandRow(w: *std.io.Writer, use_color: bool, name: []const u8, desc: [
 
 fn assembleCommands(allocator: std.mem.Allocator) ![]cli.Command {
     const tool_cmds = try dispatcher.buildCommands(allocator);
-    const all_cmds = try allocator.alloc(cli.Command, 2 + tool_cmds.len);
+    const all_cmds = try allocator.alloc(cli.Command, 3 + tool_cmds.len);
     all_cmds[0] = cli.Command{
         .name = "init",
         .description = cli.Description{ .one_line = "Initialize a .zpm/ project directory" },
@@ -83,7 +85,12 @@ fn assembleCommands(allocator: std.mem.Allocator) ![]cli.Command {
         .description = cli.Description{ .one_line = "Start the MCP server on stdio" },
         .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = serve_cli.serveAction } },
     };
-    @memcpy(all_cmds[2..], tool_cmds);
+    all_cmds[2] = cli.Command{
+        .name = "upgrade",
+        .description = cli.Description{ .one_line = "Upgrade zpm to the latest release" },
+        .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = upgrade_cli.upgradeExecAction } },
+    };
+    @memcpy(all_cmds[3..], tool_cmds);
     return all_cmds;
 }
 
@@ -107,10 +114,17 @@ pub fn main() !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "upgrade")) {
+        upgrade_cli.upgradeExecAction() catch {
+            std.posix.exit(1);
+        };
+        return;
+    }
+
     // zig-cli emits an empty stderr on unknown subcommands; filter here so
     // users see a real message.
     const is_help = std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h");
-    const is_builtin = std.mem.eql(u8, args[1], "init") or std.mem.eql(u8, args[1], "serve");
+    const is_builtin = std.mem.eql(u8, args[1], "init") or std.mem.eql(u8, args[1], "serve") or std.mem.eql(u8, args[1], "upgrade");
     if (!is_help and !is_builtin) {
         const kind: []const u8 = if (args[1].len > 0 and args[1][0] == '-') "option" else "command";
         std.debug.print("ERROR: unknown {s} '{s}'\nTry 'zpm --help' for more information.\n", .{ kind, args[1] });
@@ -174,13 +188,15 @@ test "server registers all tools" {
     try std.testing.expectEqual(@as(usize, 22), server.tools.count());
 }
 
-test "assembleCommands prepends init + serve to the 22 tool commands" {
+test "assembleCommands prepends init + serve + upgrade to the 22 tool commands" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const all_cmds = try assembleCommands(arena.allocator());
-    try std.testing.expectEqual(@as(usize, 24), all_cmds.len);
+    try std.testing.expectEqual(@as(usize, 25), all_cmds.len);
     try std.testing.expectEqualStrings("init", all_cmds[0].name);
     try std.testing.expectEqualStrings("serve", all_cmds[1].name);
+    try std.testing.expectEqualStrings("upgrade", all_cmds[2].name);
     try std.testing.expectEqual(init_cli.initAction, all_cmds[0].target.action.exec);
     try std.testing.expectEqual(serve_cli.serveAction, all_cmds[1].target.action.exec);
+    try std.testing.expectEqual(upgrade_cli.upgradeExecAction, all_cmds[2].target.action.exec);
 }
