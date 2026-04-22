@@ -16,6 +16,7 @@ Welcome to zpm documentation. Choose your path:
 - **[Fact Deletion](user-guide/fact-deletion.md)** — Remove individual facts or clear entire categories
 - **[Truth Maintenance System](user-guide/truth-maintenance.md)** — Manage assumptions and automatically propagate belief changes
 - **[Knowledge Base Persistence](user-guide/persistence.md)** — Save and restore knowledge base state with snapshots and automatic recovery
+- **[Upgrading zpm](user-guide/upgrading.md)** — Keep zpm up to date with SHA256 verification
 - **[Contributing to Documentation](user-guide/contributing-docs.md)** — Guidelines for writing site documentation
 
 ## For Developers
