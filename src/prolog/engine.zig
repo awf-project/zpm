@@ -180,6 +180,10 @@ pub const Engine = struct {
         return self.declared_dynamic.contains(key);
     }
 
+    pub fn iterateDeclaredDynamic(self: *Engine) std.StringHashMap(void).Iterator {
+        return self.declared_dynamic.iterator();
+    }
+
     /// Emit `:- dynamic(F/A).` to Trealla and remember the key. Idempotent
     /// at both the engine-cache level and the Prolog-VM level.
     fn declareDynamic(self: *Engine, functor: []const u8, arity: usize) EngineError!void {
@@ -400,9 +404,6 @@ pub const Engine = struct {
     pub fn loadFile(self: *Engine, path: []const u8) EngineError!void {
         const handle = self.handle orelse return EngineError.LoadFailed;
 
-        const path_z = self.allocator.dupeZ(u8, path) catch return EngineError.OutOfMemory;
-        defer self.allocator.free(path_z);
-
         // Verify readability up front — mirrors the access(R_OK) check in the
         // old C wrapper so missing files fail fast instead of going through
         // Trealla's error reporting path.
@@ -420,6 +421,24 @@ pub const Engine = struct {
             }
         } else |_| {}
 
+        // Load via `consult/1` as a Prolog goal rather than `pl_consult`.
+        // Trealla's `pl_consult` is only reliable on a pristine VM; after any
+        // mutation (even a plain query) it silently skips asserting clauses,
+        // which made snapshot restore report success while leaving the KB
+        // empty. Executing `consult/1` through `pl_eval` goes through the
+        // regular directive/assertion pipeline and stays consistent.
+        const escaped = escapeForPrologAtom(self.allocator, path) catch
+            return EngineError.OutOfMemory;
+        defer self.allocator.free(escaped);
+
+        const code = std.fmt.allocPrintSentinel(
+            self.allocator,
+            "consult('{s}').",
+            .{escaped},
+            0,
+        ) catch return EngineError.OutOfMemory;
+        defer self.allocator.free(code);
+
         var cap = Capture.init(self.allocator);
         var have_cap = true;
         cap.begin(true) catch {
@@ -427,7 +446,7 @@ pub const Engine = struct {
         };
         defer if (have_cap) cap.end();
 
-        const ok = ffi.pl_consult(handle, path_z);
+        const ok = ffi.pl_eval(handle, code, false);
 
         if (have_cap) {
             if (cap.readAndReset()) |out| self.allocator.free(out) else |_| {}
@@ -1184,4 +1203,68 @@ test "Engine.query round-trips compound values via JSON" {
     const sol0 = result.solutions[0].bindings;
     try testing.expect(sol0.contains("X"));
     try testing.expect(sol0.contains("Y"));
+}
+
+test "iterateDeclaredDynamic includes preload-seeded predicates" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    var it = engine.iterateDeclaredDynamic();
+    var found_zpm_source = false;
+    var found_tms = false;
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "zpm_source/2")) found_zpm_source = true;
+        if (std.mem.eql(u8, entry.key_ptr.*, "tms_justification/2")) found_tms = true;
+    }
+    try testing.expect(found_zpm_source);
+    try testing.expect(found_tms);
+}
+
+test "iterateDeclaredDynamic includes predicate after assertFact" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.assertFact("feature(f019, test, planned).");
+
+    var it = engine.iterateDeclaredDynamic();
+    var found = false;
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "feature/3")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "iterateDeclaredDynamic keys have functor/arity format" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.assertFact("tag(alpha).");
+    try engine.assertFact("pair(x, y).");
+
+    var it = engine.iterateDeclaredDynamic();
+    var found_tag = false;
+    var found_pair = false;
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const slash = std.mem.indexOfScalar(u8, key, '/');
+        try testing.expect(slash != null);
+        if (std.mem.eql(u8, key, "tag/1")) found_tag = true;
+        if (std.mem.eql(u8, key, "pair/2")) found_pair = true;
+    }
+    try testing.expect(found_tag);
+    try testing.expect(found_pair);
+}
+
+test "iterateDeclaredDynamic includes predicate from loadString dynamic directive" {
+    var engine = try Engine.init(.{});
+    defer engine.deinit();
+
+    try engine.loadString(":- dynamic(rule/3). rule(a, b, c).");
+
+    var it = engine.iterateDeclaredDynamic();
+    var found = false;
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "rule/3")) found = true;
+    }
+    try testing.expect(found);
 }

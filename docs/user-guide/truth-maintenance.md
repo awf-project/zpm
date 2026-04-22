@@ -152,19 +152,37 @@ When an assumption no longer holds, retract it:
 }
 ```
 
-**Response:**
+**Response (Success):**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 5,
   "result": {
     "type": "text",
-    "text": "retract_assumption: removed assumption 'sensor_reading_valid' and retracted facts: [temperature(room_a, 22.5)]"
+    "text": "Retracted assumption 'sensor_reading_valid': 1 fact(s) removed"
   }
 }
 ```
 
-**Automatic Propagation:** After retraction, any derived facts that depended solely on that assumption are no longer derivable. In this example, `comfortable_temp(room_a)` would no longer be derivable because its supporting fact `temperature(room_a, 22.5)` was retracted.
+**Automatic Propagation:** After retraction, zpm removes all facts that depended solely on that assumption from the knowledge base and journals the retraction. Derived facts that relied on those removed facts are no longer derivable. In this example, `comfortable_temp(room_a)` would no longer be derivable because its supporting fact `temperature(room_a, 22.5)` was retracted.
+
+**Response (Error - Unknown Assumption):**
+
+If you attempt to retract an assumption that does not exist:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "type": "text",
+    "text": "Unknown assumption 'nonexistent_assumption'",
+    "isError": true
+  }
+}
+```
+
+No facts are removed and no WAL entry is written when an assumption is unknown.
 
 ### Step 5: Bulk Retract by Pattern
 

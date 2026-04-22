@@ -112,6 +112,26 @@ pub fn build(b: *std.Build) void {
     term_utils_exe_module.addImport("../prolog/engine.zig", engine_test_module);
     exe_module.addImport("term_utils", term_utils_exe_module);
 
+    // tool_validation shared module: rejects Prolog-injection payloads in
+    // atom-name / glob-pattern MCP arguments before they're interpolated
+    // into goal strings.
+    const validation_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/validation.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const validation_exe_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/validation.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_module.addImport("tool_validation", validation_exe_module);
+    const validation_unit_tests = b.addTest(.{
+        .root_module = validation_module,
+    });
+    const run_validation_unit_tests = b.addRunArtifact(validation_unit_tests);
+    test_step.dependOn(&run_validation_unit_tests.step);
+
     // snapshot persistence module (F010) — declared early for tool test dependencies
     const snapshot_test_module = b.createModule(.{
         .root_source_file = b.path("src/persistence/snapshot.zig"),
@@ -311,6 +331,11 @@ pub fn build(b: *std.Build) void {
     retract_assumption_test_module.addImport("term_utils", term_utils_module);
     get_justification_test_module.addImport("term_utils", term_utils_module);
     retract_assumptions_test_module.addImport("term_utils", term_utils_module);
+
+    retract_assumption_test_module.addImport("tool_validation", validation_module);
+    retract_assumptions_test_module.addImport("tool_validation", validation_module);
+    assume_fact_test_module.addImport("tool_validation", validation_module);
+    get_justification_test_module.addImport("tool_validation", validation_module);
 
     // restore_snapshot tool tests (F010)
     const restore_snapshot_test_module = b.createModule(.{

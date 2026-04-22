@@ -1304,6 +1304,8 @@ If `fact` or `assumption` is missing, null, or empty:
 }
 ```
 
+Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (lowercase letter followed by alphanumerics/underscores).
+
 ---
 
 ## Get Belief Status Tool
@@ -1466,6 +1468,8 @@ If the `assumption` argument is missing, null, or empty:
 }
 ```
 
+Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (lowercase letter followed by alphanumerics/underscores).
+
 ---
 
 ## List Assumptions Tool
@@ -1543,7 +1547,7 @@ If the `assumption` argument is missing, null, or empty:
 
 **Name:** `retract_assumption`
 
-**Description:** Retract a named assumption and remove all facts that have no remaining justifications. Mutations are journaled to the WAL.
+**Description:** Retract a named assumption and remove all facts that have no remaining justifications. Mutations are journaled to the WAL. Returns an error if the assumption does not exist.
 
 **Annotations:**
 - Read-only: ✗
@@ -1598,7 +1602,7 @@ If the `assumption` argument is missing, null, or empty:
 }
 ```
 
-### Response (Error)
+### Response (Error - Invalid Arguments)
 
 If the `assumption` argument is missing, null, or empty:
 
@@ -1611,6 +1615,28 @@ If the `assumption` argument is missing, null, or empty:
       {
         "type": "text",
         "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (lowercase letter followed by alphanumerics/underscores).
+
+### Response (Error - Unknown Assumption)
+
+If the assumption does not exist:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 18,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Unknown assumption 'nonexistent'",
         "isError": true
       }
     ]
@@ -1699,6 +1725,8 @@ If the `pattern` argument is missing, null, or empty:
 }
 ```
 
+Returns `InvalidArguments` if the `pattern` contains characters outside the allowed glob charset (lowercase letters, digits, underscores, and the wildcards `*` and `?`).
+
 ---
 
 ## Save Snapshot Tool
@@ -1786,7 +1814,7 @@ If the `name` argument is missing, null, or empty:
 
 **Name:** `restore_snapshot`
 
-**Description:** Restore the Prolog knowledge base from a named snapshot file. This replaces the current knowledge base state entirely with the snapshot contents.
+**Description:** Restore the Prolog knowledge base from a named snapshot file. This replaces the current knowledge base state entirely with the snapshot contents. All predicates in the snapshot are loaded as dynamic and are immediately queryable via `query_logic` and visible in `get_knowledge_schema`.
 
 **Annotations:**
 - Read-only: ✗

@@ -5,6 +5,7 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
+const validation = @import("tool_validation");
 const Term = engine_mod.Term;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -29,20 +30,24 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
+fn unknownAssumption(allocator: std.mem.Allocator, assumption: []const u8) mcp.tools.ToolError!mcp.tools.ToolResult {
+    const msg = std.fmt.allocPrint(allocator, "Unknown assumption '{s}'", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+}
+
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
+    if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const query_str = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
-    var qr = engine.query(query_str) catch {
-        const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': 0 facts affected", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
-        defer allocator.free(msg);
-        return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
-    };
+    var qr = engine.query(query_str) catch return mcp.tools.ToolError.ExecutionFailed;
     defer qr.deinit();
+
+    if (qr.solutions.len == 0) return unknownAssumption(allocator, assumption);
 
     var fact_strings: std.ArrayList([]u8) = .empty;
     defer {
@@ -62,16 +67,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
 
-    // Journal-first: engine stays untouched if the WAL write fails.
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
+    var orphan_facts: std.ArrayList([]const u8) = .empty;
+    defer orphan_facts.deinit(allocator);
 
-    engine.retractAll(retract_pattern) catch {};
-
-    var removed_count: usize = 0;
     for (fact_strings.items) |fact_str| {
-        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},_)", .{fact_str}) catch continue;
+        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
         defer allocator.free(check_query);
 
         const has_other = blk: {
@@ -81,12 +81,30 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
 
         if (!has_other) {
-            engine.retractAll(fact_str) catch {};
-            removed_count += 1;
+            orphan_facts.append(allocator, fact_str) catch continue;
         }
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, removed_count }) catch return mcp.tools.ToolError.OutOfMemory;
+    // Journal-first AND atomic: build all WAL entries, write them as a single
+    // batch, THEN mutate the engine. A partial batch would replay a half-
+    // retracted state (TMS link gone, orphan facts still asserted).
+    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+        var entries: std.ArrayList(JournalEntry) = .empty;
+        defer entries.deinit(allocator);
+        const ts = std.time.timestamp();
+        entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
+        for (orphan_facts.items) |fact_str| {
+            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = fact_str }) catch return mcp.tools.ToolError.OutOfMemory;
+        }
+        pm.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+
+    engine.retractAll(retract_pattern) catch {};
+    for (orphan_facts.items) |fact_str| {
+        engine.retractAll(fact_str) catch {};
+    }
+
+    const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, orphan_facts.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -101,6 +119,7 @@ test "handler retracts assumption and removes unjustified fact" {
     const engine = try Engine.init(.{});
     defer engine.deinit();
     context.setEngine(engine);
+    defer context.clearEngine();
 
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
@@ -124,6 +143,7 @@ test "handler preserves fact when other justification exists" {
     const engine = try Engine.init(.{});
     defer engine.deinit();
     context.setEngine(engine);
+    defer context.clearEngine();
 
     try engine.assertFact("active(service).");
     try engine.assertFact("tms_justification(active(service), assumption_a).");
@@ -138,7 +158,7 @@ test "handler preserves fact when other justification exists" {
     try std.testing.expect(!result.is_error);
 }
 
-test "handler is idempotent when assumption does not exist" {
+test "handler returns error for unknown assumption" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -153,7 +173,45 @@ test "handler is idempotent when assumption does not exist" {
 
     const result = try handler(allocator, args);
 
-    try std.testing.expect(!result.is_error);
+    try std.testing.expect(result.is_error);
+    try std.testing.expectEqual(@as(usize, 1), result.content.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "Unknown assumption") != null);
+}
+
+test "handler does not write a WAL entry for unknown assumption" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("assumption", .{ .string = "nonexistent" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(result.is_error);
+
+    tmp.dir.access("journal.wal", .{}) catch |err| {
+        try std.testing.expectEqual(error.FileNotFound, err);
+        return;
+    };
+    var content_buf: [512]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    try std.testing.expectEqual(@as(usize, 0), content.len);
 }
 
 test "handler returns InvalidArguments when args are null" {
@@ -221,4 +279,42 @@ test "handler journals retracted assumption name to WAL" {
     var content_buf: [1024]u8 = undefined;
     const content = try tmp.dir.readFile("journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "baseline") != null);
+}
+
+test "handler journals per-fact retractall entries to WAL" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    try engine.assertFact("deployed(app, prod).");
+    try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("assumption", .{ .string = "baseline" });
+    const args = std.json.Value{ .object = obj };
+
+    _ = try handler(allocator, args);
+
+    var content_buf: [2048]u8 = undefined;
+    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+
+    // WAL must contain the TMS link pattern, not the raw assumption name alone
+    try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification(_,baseline)") != null);
+    // WAL must also contain the orphaned fact pattern
+    try std.testing.expect(std.mem.indexOf(u8, content, "deployed(app, prod)") != null);
 }
