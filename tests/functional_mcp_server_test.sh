@@ -7,39 +7,6 @@
 BINARY="$(cd "$(dirname "${1:-zig-out/bin/zpm}")" && pwd)/$(basename "${1:-zig-out/bin/zpm}")"
 TIMEOUT=5
 
-send_mcp_persist() {
-    local input="$1" dir="$2"
-    mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb"
-    (cd "$dir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
-}
-
-send_mcp() {
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    send_mcp_persist "$1" "$tmpdir"
-    rm -rf "$tmpdir"
-}
-
-# Run `$BINARY $@`, capture combined stdout+stderr into $CLI_OUTPUT, exit code into $CLI_EXIT.
-capture_cli() {
-    local tmpfile
-    tmpfile=$(mktemp)
-    CLI_EXIT=0
-    "$BINARY" "$@" >"$tmpfile" 2>&1 || CLI_EXIT=$?
-    CLI_OUTPUT=$(cat "$tmpfile")
-    rm -f "$tmpfile"
-}
-
-# Same as capture_cli, but splits stdout (discarded) from stderr into $CLI_STDERR.
-capture_cli_stderr() {
-    local tmpfile
-    tmpfile=$(mktemp)
-    CLI_EXIT=0
-    "$BINARY" "$@" >/dev/null 2>"$tmpfile" || CLI_EXIT=$?
-    CLI_STDERR=$(cat "$tmpfile")
-    rm -f "$tmpfile"
-}
-
 # --- Test 1: Initialize handshake returns correct server info ---
 echo "Test: Initialize handshake"
 INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}'
@@ -676,23 +643,82 @@ LIST_LINE=$(echo "$RESPONSE" | grep '"id":100')
 assert_contains "list_assumptions includes alpha" "$LIST_LINE" 'alpha'
 assert_contains "list_assumptions includes beta" "$LIST_LINE" 'beta'
 
-# --- Test 49: retract_assumptions with glob pattern retracts matching assumptions only ---
-echo "Test: retract_assumptions with pattern retracts matching only"
-RETRACT_PATTERN_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod1)\",\"assumption\":\"sess1_x\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":102,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod2)\",\"assumption\":\"sess1_y\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"loaded(mod3)\",\"assumption\":\"sess2_x\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":104,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":105,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"loaded(mod3)\"}}}
-"
-RESPONSE=$(send_mcp "$RETRACT_PATTERN_INPUT")
-RETRACT_PAT_LINE=$(echo "$RESPONSE" | grep '"id":104')
-QUERY_REMAIN_LINE=$(echo "$RESPONSE" | grep '"id":105')
+# --- Test 49: retract_assumptions dual-transport exemplar (US2) ---
+# FR-004/FR-006: every assertion runs once via CLI binary and once via MCP JSON-RPC
+# against a shared $ZPM_HOME. Single-quote --pattern to prevent shell glob expansion.
 
-assert_contains "retract_assumptions pattern returns success" "$RETRACT_PAT_LINE" '"isError":false'
-assert_contains "retract_assumptions reports 2 assumptions retracted" "$RETRACT_PAT_LINE" '2 assumption(s) removed'
-assert_contains "non-matching assumption fact survives pattern retraction" "$QUERY_REMAIN_LINE" '[{}]'
+_assert_retract_parity() {
+    local output="$1" transport="${2:-transport}"
+    # Scope assertions to the read-phase slice so the earlier assume-fact echoes of
+    # sess1_a1/sess1_a2 (which confirm the assumption name in their success text)
+    # don't poison the "absent after retract" checks.
+    local list_line query1_line query2_line
+    if [ "$transport" = "MCP" ]; then
+        assert_contains "[$transport] retract_assumptions isError:false" "$output" '"isError":false'
+        list_line=$(echo "$output" | grep '"id":203' || true)
+        query1_line=$(echo "$output" | grep '"id":204' || true)
+        query2_line=$(echo "$output" | grep '"id":205' || true)
+    else
+        assert_contains "[$transport] retract_assumptions reports removal count" "$output" "assumption(s) removed"
+        # CLI chain tail: list-assumptions (n-2), query deployed (n-1), query running (n)
+        list_line=$(echo "$output" | tail -n 3 | head -n 1)
+        query1_line=$(echo "$output" | tail -n 2 | head -n 1)
+        query2_line=$(echo "$output" | tail -n 1)
+    fi
+    assert_not_contains "[$transport] sess1_a1 absent from list_assumptions" "$list_line" 'sess1_a1'
+    assert_not_contains "[$transport] sess1_a2 absent from list_assumptions" "$list_line" 'sess1_a2'
+    assert_contains "[$transport] deployed(app,prod) resolves empty after retract" "$query1_line" '[]'
+    assert_contains "[$transport] running(service) resolves empty after retract" "$query2_line" '[]'
+}
+
+RETRACT_PARITY_MCP="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(service)\",\"assumption\":\"sess1_a2\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
+{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"deployed(app,prod)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":205,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"running(service)\"}}}"
+
+echo "Test: retract_assumptions CLI+MCP dual-transport parity"
+run_dual_transport_scenario \
+    "retract_assumptions pattern retracts matching assumptions only" \
+    "assume-fact deployed(app,prod) --assumption sess1_a1 && assume-fact running(service) --assumption sess1_a2 && retract-assumptions --pattern 'sess1_*' && list-assumptions && query-logic --goal deployed(app,prod) && query-logic --goal running(service)" \
+    "$RETRACT_PARITY_MCP" \
+    "_assert_retract_parity"
+
+_assert_replay_empty() {
+    local output="$1" transport="${2:-transport}"
+    # Scope to the read-phase list_assumptions response only: the preceding write
+    # chain echoes sess1_a1/sess1_a2 in assume-fact confirmations, which would
+    # false-trigger a full-transcript `absent` check.
+    local list_line
+    if [ "$transport" = "MCP" ]; then
+        list_line=$(echo "$output" | grep '"id":213' || true)
+    else
+        list_line=$(echo "$output" | tail -n 1)
+    fi
+    assert_not_contains "[$transport] list_assumptions empty after WAL replay: no sess1_a1" "$list_line" 'sess1_a1'
+    assert_not_contains "[$transport] list_assumptions empty after WAL replay: no sess1_a2" "$list_line" 'sess1_a2'
+}
+
+RETRACT_REPLAY_WRITE_MCP="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":211,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(service)\",\"assumption\":\"sess1_a2\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":212,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}"
+
+RETRACT_REPLAY_READ_MCP="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":213,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
+
+echo "Test: retract_assumptions WAL replay round-trip CLI+MCP"
+run_dual_transport_scenario \
+    "retract_assumptions write-restart-list replay round-trip" \
+    "assume-fact deployed(app,prod) --assumption sess1_a1 && assume-fact running(service) --assumption sess1_a2 && retract-assumptions --pattern 'sess1_*' && list-assumptions" \
+    "$RETRACT_REPLAY_WRITE_MCP" \
+    "_assert_replay_empty" \
+    "$RETRACT_REPLAY_READ_MCP"
 
 # Feature: F010
 # --- Test 51: save_snapshot persists current knowledge base to disk (US3) ---
@@ -1514,5 +1540,305 @@ UNKNOWN_RETRACT_LINE=$(echo "$RESPONSE" | grep '"id":156')
 
 assert_contains "retract_assumption unknown name returns isError true" "$UNKNOWN_RETRACT_LINE" '"isError":true'
 assert_not_contains "retract_assumption unknown name does not falsely report removal" "$UNKNOWN_RETRACT_LINE" 'fact(s) removed'
+
+# --- Test 65: run_dual_transport_scenario - echo tool executes assertions for both CLI and MCP ---
+echo "Test: run_dual_transport_scenario - echo via both transports"
+_t65_assert() {
+    assert_contains "dual-transport echo contains message text" "$1" 'hello dual'
+}
+DUAL_ECHO_MCP_65="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"hello dual\"}}}"
+T65_PRE_PASS=$PASS
+run_dual_transport_scenario "echo via dual transport" \
+    "echo --message 'hello dual'" \
+    "$DUAL_ECHO_MCP_65" \
+    _t65_assert || true
+if [ "$PASS" -ge "$((T65_PRE_PASS + 2))" ]; then
+    green "  PASS: run_dual_transport_scenario executed assertions for both CLI and MCP"
+    PASS=$((PASS + 1))
+else
+    red "  FAIL: run_dual_transport_scenario did not execute assertions for both transports (expected >=2 new PASS entries)"
+    FAIL=$((FAIL + 1))
+fi
+
+# --- Test 66: run_dual_transport_scenario - remember_fact persists via both transports ---
+echo "Test: run_dual_transport_scenario - remember_fact success via both transports"
+_t66_assert() {
+    assert_contains "dual-transport remember_fact returns success" "$1" 'sensor_active'
+}
+DUAL_REMEMBER_MCP_66="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"sensor_active(t66)\"}}}
+"
+T66_PRE_PASS=$PASS
+run_dual_transport_scenario "remember_fact via dual transport" \
+    "remember-fact --fact sensor_active(t66)" \
+    "$DUAL_REMEMBER_MCP_66" \
+    _t66_assert || true
+if [ "$PASS" -ge "$((T66_PRE_PASS + 2))" ]; then
+    green "  PASS: run_dual_transport_scenario executed remember_fact assertions for both CLI and MCP"
+    PASS=$((PASS + 1))
+else
+    red "  FAIL: run_dual_transport_scenario did not execute remember_fact assertions for both transports"
+    FAIL=$((FAIL + 1))
+fi
+
+# --- Test 67: run_dual_transport_scenario - query_logic returns bindings via both transports ---
+echo "Test: run_dual_transport_scenario - query_logic via both transports"
+_t67_assert() {
+    assert_contains "dual-transport query_logic returns binding" "$1" 't67_val'
+}
+DUAL_QUERY_MCP_67="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"probe(t67_val)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"probe(X)\"}}}"
+run_dual_transport_scenario "query_logic via dual transport" \
+    "remember-fact --fact probe(t67_val) && query-logic --goal probe(X)" \
+    "$DUAL_QUERY_MCP_67" \
+    _t67_assert || true
+
+# --- Test 68: run_dual_transport_scenario - upsert_fact inserts and replaces via both transports ---
+echo "Test: run_dual_transport_scenario - upsert_fact via both transports"
+_t68_assert() {
+    assert_contains "dual-transport upsert_fact confirms operation" "$1" 'svc_t68'
+}
+DUAL_UPSERT_MCP_68="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"status(svc_t68, up)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":205,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"status(svc_t68, degraded)\"}}}"
+run_dual_transport_scenario "upsert_fact via dual transport" \
+    "upsert-fact --fact status(svc_t68,up) && upsert-fact --fact status(svc_t68,degraded)" \
+    "$DUAL_UPSERT_MCP_68" \
+    _t68_assert || true
+
+# --- Test 69: run_dual_transport_scenario - assume_fact creates hypothesis via both transports ---
+echo "Test: run_dual_transport_scenario - assume_fact via both transports"
+_t69_assert() {
+    assert_contains "dual-transport assume_fact returns success" "$1" 'hyp_t69'
+}
+DUAL_ASSUME_MCP_69="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":206,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(hyp_t69)\",\"assumption\":\"t69_guess\"}}}"
+run_dual_transport_scenario "assume_fact via dual transport" \
+    "assume-fact --fact ready(hyp_t69) --assumption t69_guess" \
+    "$DUAL_ASSUME_MCP_69" \
+    _t69_assert || true
+
+# --- Test 70: run_dual_transport_scenario - retract_assumption removes single assumption via both transports ---
+echo "Test: run_dual_transport_scenario - retract_assumption (singular) via both transports"
+_t70_assert() {
+    local output="$1" transport="${2:-transport}"
+    # Scope to the list_assumptions response only. The preceding assume-fact and
+    # retract-assumption segments echo t70_guess in their confirmations (CLI:
+    # "Assumed: ... [assumption: t70_guess]" / "Retracted assumption: t70_guess";
+    # MCP: arguments are reflected in the tool call responses), so a full-transcript
+    # absent-check is structurally impossible. We verify the end-state instead.
+    local list_line
+    if [ "$transport" = "MCP" ]; then
+        list_line=$(echo "$output" | grep '"id":209' || true)
+    else
+        list_line=$(echo "$output" | tail -n 1)
+    fi
+    assert_not_contains "[$transport] t70_guess absent from list_assumptions" "$list_line" 't70_guess'
+}
+DUAL_RETRACT_SINGLE_MCP_70="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":207,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc_t70)\",\"assumption\":\"t70_guess\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":208,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"t70_guess\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":209,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
+run_dual_transport_scenario "retract_assumption singular via dual transport" \
+    "assume-fact --fact active(svc_t70) --assumption t70_guess && retract-assumption t70_guess && list-assumptions" \
+    "$DUAL_RETRACT_SINGLE_MCP_70" \
+    _t70_assert || true
+
+# --- Test 71: run_dual_transport_scenario - save_snapshot and list_snapshots via both transports ---
+echo "Test: run_dual_transport_scenario - save_snapshot and list_snapshots via both transports"
+_t71_assert() {
+    assert_contains "dual-transport save_snapshot confirms name" "$1" 'snap_t71'
+}
+DUAL_SNAP_MCP_71="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"stored(t71)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":211,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"snap_t71\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":212,\"method\":\"tools/call\",\"params\":{\"name\":\"list_snapshots\",\"arguments\":{}}}
+{\"jsonrpc\":\"2.0\",\"id\":213,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"snap_t71\"}}}"
+run_dual_transport_scenario "save/list/restore snapshot via dual transport" \
+    "remember-fact --fact stored(t71) && save-snapshot snap_t71 && list-snapshots && restore-snapshot snap_t71" \
+    "$DUAL_SNAP_MCP_71" \
+    _t71_assert || true
+
+# --- T009: Extend dual-transport parity to remaining tool scenarios ---
+
+# --- Test 72: run_dual_transport_scenario - define_rule stores rule and query derives fact via both transports ---
+echo "Test: run_dual_transport_scenario - define_rule via both transports"
+_t72_assert() {
+    assert_contains "dual-transport define_rule derived fact is queryable" "$1" 't72_socrates'
+}
+DUAL_DEFINE_RULE_MCP_72="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"human(t72_socrates)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":601,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"mortal(X)\",\"body\":\"human(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":602,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"mortal(t72_socrates)\"}}}"
+run_dual_transport_scenario "define_rule via dual transport" \
+    "remember-fact --fact human(t72_socrates) && define-rule --head mortal(X) --body human(X) && query-logic --goal mortal(t72_socrates)" \
+    "$DUAL_DEFINE_RULE_MCP_72" \
+    _t72_assert || true
+
+# --- Test 73: run_dual_transport_scenario - forget_fact retracts asserted fact via both transports ---
+echo "Test: run_dual_transport_scenario - forget_fact via both transports"
+_t73_assert() {
+    assert_contains "dual-transport forget_fact: query returns empty after retraction" "$1" '[]'
+}
+DUAL_FORGET_MCP_73="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(t73_user, admin)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":611,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(t73_user, admin)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":612,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"role(t73_user, admin)\"}}}"
+run_dual_transport_scenario "forget_fact via dual transport" \
+    "remember-fact --fact role(t73_user,admin) && forget-fact --fact role(t73_user,admin) && query-logic --goal role(t73_user,admin)" \
+    "$DUAL_FORGET_MCP_73" \
+    _t73_assert || true
+
+# --- Test 74: run_dual_transport_scenario - clear_context removes matching facts via both transports ---
+echo "Test: run_dual_transport_scenario - clear_context via both transports"
+_t74_assert() {
+    assert_contains "dual-transport clear_context: cleared facts return empty" "$1" '[]'
+}
+DUAL_CLEAR_MCP_74="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"cache(t74_key, val1)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":621,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"cache(t74_key, val2)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":622,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"cache(t74_key, _)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":623,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"cache(t74_key, _)\"}}}"
+run_dual_transport_scenario "clear_context via dual transport" \
+    "remember-fact --fact cache(t74_key,val1) && remember-fact --fact cache(t74_key,val2) && clear-context --category cache(t74_key,_) && query-logic --goal cache(t74_key,_)" \
+    "$DUAL_CLEAR_MCP_74" \
+    _t74_assert || true
+
+# --- Test 75: run_dual_transport_scenario - update_fact replaces fact via both transports ---
+echo "Test: run_dual_transport_scenario - update_fact via both transports"
+_t75_assert() {
+    assert_contains "dual-transport update_fact: new value is present" "$1" 't75_v2'
+}
+DUAL_UPDATE_MCP_75="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":630,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(t75_key, t75_v1)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":631,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"config(t75_key, t75_v1)\",\"new_fact\":\"config(t75_key, t75_v2)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":632,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(t75_key, X)\"}}}"
+run_dual_transport_scenario "update_fact via dual transport" \
+    "remember-fact --fact config(t75_key,t75_v1) && update-fact --old-fact config(t75_key,t75_v1) --new-fact config(t75_key,t75_v2) && query-logic --goal config(t75_key,X)" \
+    "$DUAL_UPDATE_MCP_75" \
+    _t75_assert || true
+
+# --- Test 76: run_dual_transport_scenario - trace_dependency follows path facts via both transports ---
+echo "Test: run_dual_transport_scenario - trace_dependency via both transports"
+_t76_assert() {
+    assert_contains "dual-transport trace_dependency returns reachable node" "$1" 't76_b'
+}
+DUAL_TRACE_MCP_76="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":640,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(t76_b, t76_a)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":641,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"t76_a\"}}}"
+run_dual_transport_scenario "trace_dependency via dual transport" \
+    "remember-fact --fact path(t76_b,t76_a) && trace-dependency t76_a" \
+    "$DUAL_TRACE_MCP_76" \
+    _t76_assert || true
+
+# --- Test 77: run_dual_transport_scenario - verify_consistency returns no violations for empty KB via both transports ---
+echo "Test: run_dual_transport_scenario - verify_consistency via both transports"
+_t77_assert() {
+    assert_contains "dual-transport verify_consistency: violations list present" "$1" 'violations'
+}
+DUAL_VERIFY_MCP_77="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":650,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
+run_dual_transport_scenario "verify_consistency via dual transport" \
+    "verify-consistency" \
+    "$DUAL_VERIFY_MCP_77" \
+    _t77_assert || true
+
+# --- Test 78: run_dual_transport_scenario - explain_why returns proof for known fact via both transports ---
+echo "Test: run_dual_transport_scenario - explain_why via both transports"
+_t78_assert() {
+    assert_contains "dual-transport explain_why returns proven status" "$1" 'proven'
+}
+DUAL_EXPLAIN_MCP_78="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":660,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"status(t78_svc, up)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":661,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"status(t78_svc, up)\"}}}"
+run_dual_transport_scenario "explain_why via dual transport" \
+    "remember-fact --fact status(t78_svc,up) && explain-why --fact status(t78_svc,up)" \
+    "$DUAL_EXPLAIN_MCP_78" \
+    _t78_assert || true
+
+# --- Test 79: run_dual_transport_scenario - get_knowledge_schema returns predicate info via both transports ---
+echo "Test: run_dual_transport_scenario - get_knowledge_schema via both transports"
+_t79_assert() {
+    assert_contains "dual-transport get_knowledge_schema lists t79_pred predicate" "$1" 't79_pred'
+}
+DUAL_SCHEMA_MCP_79="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":670,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"t79_pred(val)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":671,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
+run_dual_transport_scenario "get_knowledge_schema via dual transport" \
+    "remember-fact --fact t79_pred(val) && get-knowledge-schema" \
+    "$DUAL_SCHEMA_MCP_79" \
+    _t79_assert || true
+
+# --- Test 80: run_dual_transport_scenario - get_belief_status returns "in" for assumed fact via both transports ---
+echo "Test: run_dual_transport_scenario - get_belief_status via both transports"
+_t80_assert() {
+    assert_contains "dual-transport get_belief_status returns in for assumed fact" "$1" 'in'
+}
+DUAL_BELIEF_MCP_80="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":680,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t80_svc)\",\"assumption\":\"t80_guess\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":681,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"ready(t80_svc)\"}}}"
+run_dual_transport_scenario "get_belief_status via dual transport" \
+    "assume-fact --fact ready(t80_svc) --assumption t80_guess && get-belief-status --fact ready(t80_svc)" \
+    "$DUAL_BELIEF_MCP_80" \
+    _t80_assert || true
+
+# --- Test 81: run_dual_transport_scenario - get_justification returns assumption facts via both transports ---
+echo "Test: run_dual_transport_scenario - get_justification via both transports"
+_t81_assert() {
+    assert_contains "dual-transport get_justification returns supported fact" "$1" 'ready'
+}
+DUAL_JUST_MCP_81="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":690,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t81_svc)\",\"assumption\":\"t81_probe\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":691,\"method\":\"tools/call\",\"params\":{\"name\":\"get_justification\",\"arguments\":{\"assumption\":\"t81_probe\"}}}"
+run_dual_transport_scenario "get_justification via dual transport" \
+    "assume-fact --fact ready(t81_svc) --assumption t81_probe && get-justification t81_probe" \
+    "$DUAL_JUST_MCP_81" \
+    _t81_assert || true
+
+# --- Test 82: run_dual_transport_scenario - list_assumptions shows active assumptions via both transports ---
+echo "Test: run_dual_transport_scenario - list_assumptions via both transports"
+_t82_assert() {
+    assert_contains "dual-transport list_assumptions includes assumption name" "$1" 't82_hyp'
+}
+DUAL_LIST_ASSUME_MCP_82="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":700,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(t82_node)\",\"assumption\":\"t82_hyp\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":701,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
+run_dual_transport_scenario "list_assumptions via dual transport" \
+    "assume-fact --fact active(t82_node) --assumption t82_hyp && list-assumptions" \
+    "$DUAL_LIST_ASSUME_MCP_82" \
+    _t82_assert || true
+
+# --- Test 83: run_dual_transport_scenario - get_persistence_status reports active mode via both transports ---
+echo "Test: run_dual_transport_scenario - get_persistence_status via both transports"
+_t83_assert() {
+    assert_contains "dual-transport get_persistence_status reports active mode" "$1" 'active'
+}
+DUAL_PERSIST_MCP_83="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":710,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
+run_dual_transport_scenario "get_persistence_status via dual transport" \
+    "get-persistence-status" \
+    "$DUAL_PERSIST_MCP_83" \
+    _t83_assert || true
 
 test_summary

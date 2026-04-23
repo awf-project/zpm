@@ -46,23 +46,23 @@ fn globMatch(pattern: []const u8, str: []const u8) bool {
     return false;
 }
 
-fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, assumption: []const u8) !void {
-    const query_str = try std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption});
+fn retractAssumptionJournaled(
+    allocator: std.mem.Allocator,
+    engine: *engine_mod.Engine,
+    pm: ?*PersistenceManager,
+    assumption: []const u8,
+) mcp.tools.ToolError!void {
+    const query_str = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
+
+    var qr = engine.query(query_str) catch return;
+    defer qr.deinit();
 
     var fact_strings: std.ArrayList([]u8) = .empty;
     defer {
         for (fact_strings.items) |s| allocator.free(s);
         fact_strings.deinit(allocator);
     }
-
-    var qr = engine.query(query_str) catch {
-        const retract_empty = try std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption});
-        defer allocator.free(retract_empty);
-        engine.retractAll(retract_empty) catch {};
-        return;
-    };
-    defer qr.deinit();
 
     for (qr.solutions) |solution| {
         const fact_term = solution.bindings.get("F") orelse continue;
@@ -73,12 +73,14 @@ fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, a
         };
     }
 
-    const retract_pattern = try std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption});
+    const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
-    engine.retractAll(retract_pattern) catch {};
+
+    var orphan_facts: std.ArrayList([]const u8) = .empty;
+    defer orphan_facts.deinit(allocator);
 
     for (fact_strings.items) |fact_str| {
-        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},_)", .{fact_str}) catch continue;
+        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
         defer allocator.free(check_query);
 
         const has_other = blk: {
@@ -88,8 +90,25 @@ fn retractAssumption(allocator: std.mem.Allocator, engine: *engine_mod.Engine, a
         };
 
         if (!has_other) {
-            engine.retractAll(fact_str) catch {};
+            orphan_facts.append(allocator, fact_str) catch continue;
         }
+    }
+
+    // Journal-first: flush the full WAL batch before any engine mutation.
+    if (pm) |mgr| {
+        var entries: std.ArrayList(JournalEntry) = .empty;
+        defer entries.deinit(allocator);
+        const ts = std.time.timestamp();
+        entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
+        for (orphan_facts.items) |fact_str| {
+            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = fact_str }) catch return mcp.tools.ToolError.OutOfMemory;
+        }
+        mgr.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+
+    engine.retractAll(retract_pattern) catch {};
+    for (orphan_facts.items) |fact_str| {
+        engine.retractAll(fact_str) catch {};
     }
 }
 
@@ -135,21 +154,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
     }
 
-    // Two-phase commit: build every WAL entry, write them as a single batch,
-    // THEN mutate the engine. A partial batch (per-entry fsync + fail) would
-    // replay a half-retracted state (some assumptions gone, others still live).
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        var entries: std.ArrayList(JournalEntry) = .empty;
-        defer entries.deinit(allocator);
-        const ts = std.time.timestamp();
-        for (matching.items) |assumption| {
-            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = assumption }) catch return mcp.tools.ToolError.OutOfMemory;
-        }
-        pm.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-
+    const pm = context.getPersistenceManagerAs(PersistenceManager);
     for (matching.items) |assumption| {
-        retractAssumption(allocator, engine, assumption) catch {};
+        retractAssumptionJournaled(allocator, engine, pm, assumption) catch {};
     }
 
     const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
@@ -291,6 +298,73 @@ test "handler journals each retracted assumption to WAL" {
 
     var content_buf: [2048]u8 = undefined;
     const content = try tmp.dir.readFile("journal.wal", &content_buf);
-    try std.testing.expect(std.mem.indexOf(u8, content, "session1_a1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "session1_a2") != null);
+    // FR-001: WAL must contain the TMS link pattern, not just the bare assumption name
+    try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification(_,session1_a1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification(_,session1_a2)") != null);
+    // FR-002: WAL must contain one entry per orphan fact
+    try std.testing.expect(std.mem.indexOf(u8, content, "deployed(app, prod)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "running(service)") != null);
+    // FR-003: bare assumption names must NOT appear as standalone WAL clause values
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"clause\":\"session1_a1\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"clause\":\"session1_a2\"") == null);
+}
+
+test "handler replay round-trip restores state" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    {
+        const engine = try Engine.init(.{});
+        defer engine.deinit();
+        context.setEngine(engine);
+        defer context.clearEngine();
+
+        try engine.assertFact("deployed(app, prod).");
+        try engine.assertFact("tms_justification(deployed(app, prod), session1_a1).");
+        try engine.assertFact("running(service).");
+        try engine.assertFact("tms_justification(running(service), session1_a2).");
+
+        var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+        defer pm.deinit();
+        context.setPersistenceManager(&pm);
+        defer context.clearPersistenceManager();
+
+        var obj = std.json.ObjectMap.init(allocator);
+        try obj.put("pattern", .{ .string = "session1_*" });
+        const args = std.json.Value{ .object = obj };
+
+        const result = try handler(allocator, args);
+        try std.testing.expect(!result.is_error);
+    }
+
+    {
+        const fresh_engine = try Engine.init(.{});
+        defer fresh_engine.deinit();
+
+        var pm2 = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+        defer pm2.deinit();
+        try pm2.restore(fresh_engine);
+
+        var tms_qr = try fresh_engine.query("tms_justification(_,session1_a1)");
+        defer tms_qr.deinit();
+        try std.testing.expectEqual(@as(usize, 0), tms_qr.solutions.len);
+
+        var tms_qr2 = try fresh_engine.query("tms_justification(_,session1_a2)");
+        defer tms_qr2.deinit();
+        try std.testing.expectEqual(@as(usize, 0), tms_qr2.solutions.len);
+
+        var fact_qr = try fresh_engine.query("deployed(app, prod)");
+        defer fact_qr.deinit();
+        try std.testing.expectEqual(@as(usize, 0), fact_qr.solutions.len);
+
+        var fact_qr2 = try fresh_engine.query("running(service)");
+        defer fact_qr2.deinit();
+        try std.testing.expectEqual(@as(usize, 0), fact_qr2.solutions.len);
+    }
 }

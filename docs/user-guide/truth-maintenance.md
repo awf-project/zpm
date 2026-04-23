@@ -204,6 +204,8 @@ If you have many related assumptions (e.g., from the same reasoning session), re
 
 This retracts all assumptions matching the pattern `session_1_*` (e.g., `session_1_a`, `session_1_b`) and propagates their removal throughout the knowledge base.
 
+**Automatic Propagation:** As with `retract_assumption`, facts that depended solely on a matched assumption are removed from the knowledge base, and each retraction is journaled to the WAL. After a restart, replaying the journal reproduces the same end state as the live call — `list_assumptions` and fact queries return identical results before and after recovery.
+
 ## Handling Multi-Support
 
 When a fact is supported by multiple assumptions, TMS ensures it survives retraction of any single assumption:
