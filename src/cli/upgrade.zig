@@ -1,12 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const cli = @import("cli");
 const version_info = @import("../version.zig");
+
+var channel_slot: Channel = .stable;
+var dry_run_slot: bool = false;
 
 pub const UpgradeError = error{
     UnsupportedPlatform,
     NoStableRelease,
     NoRelease,
-    UnknownChannel,
     ChecksumMismatch,
     ChecksumNotFound,
     SHA256SUMSMissing,
@@ -336,7 +339,6 @@ fn errorMessage(err: anyerror) []const u8 {
         UpgradeError.UnsupportedPlatform => "unsupported platform (supported: linux-x86_64, linux-arm64, darwin-universal)",
         UpgradeError.NoStableRelease => "no stable release published; re-run with --channel dev to opt into prereleases",
         UpgradeError.NoRelease => "no releases published for the selected channel",
-        UpgradeError.UnknownChannel => "unknown channel value (supported: stable, dev)",
         UpgradeError.ChecksumMismatch => "checksum verification failed; downloaded binary does not match the published SHA256SUMS entry",
         UpgradeError.ChecksumNotFound => "SHA256SUMS has no entry for the selected platform asset",
         UpgradeError.SHA256SUMSMissing => "release has no SHA256SUMS asset; cannot verify integrity",
@@ -364,47 +366,21 @@ fn writeError(err: anyerror) void {
 
 pub fn upgradeExecAction() anyerror!void {
     const allocator = std.heap.page_allocator;
-    const raw_args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, raw_args);
-    const tool_args: []const []const u8 = if (raw_args.len > 2) raw_args[2..] else &.{};
-    upgradeAction(allocator, tool_args) catch |err| {
+    const opts = UpgradeOptions{ .channel = channel_slot, .dry_run = dry_run_slot };
+    upgradeAction(allocator, opts) catch |err| {
         writeError(err);
         return err;
     };
 }
 
-pub fn parseUpgradeOptions(args: []const []const u8) anyerror!UpgradeOptions {
-    var opts = UpgradeOptions{
-        .channel = .stable,
-        .dry_run = false,
-    };
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--channel")) {
-            i += 1;
-            if (i >= args.len) return error.MissingValue;
-            if (std.mem.eql(u8, args[i], "stable")) {
-                opts.channel = .stable;
-            } else if (std.mem.eql(u8, args[i], "dev")) {
-                opts.channel = .dev;
-            } else {
-                return UpgradeError.UnknownChannel;
-            }
-        } else if (std.mem.eql(u8, args[i], "--dry-run")) {
-            opts.dry_run = true;
-        }
-    }
-    return opts;
-}
-
-pub fn upgradeAction(allocator: std.mem.Allocator, args: []const []const u8) anyerror!void {
+pub fn upgradeAction(allocator: std.mem.Allocator, opts: UpgradeOptions) anyerror!void {
     var http_client = HttpReleaseClient.init(allocator);
     defer http_client.deinit();
 
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     var stdout_buf: [1024]u8 = undefined;
     var stdout_fw = stdout.writer(&stdout_buf);
-    try upgradeActionWithClient(allocator, args, http_client.releaseClient(), &stdout_fw.interface);
+    try upgradeActionWithClient(allocator, opts, http_client.releaseClient(), &stdout_fw.interface);
     try stdout_fw.interface.flush();
 }
 
@@ -417,11 +393,10 @@ fn findAssetUrl(assets: []const ReleaseAsset, name: []const u8) ?[]const u8 {
 
 pub fn upgradeActionWithClient(
     allocator: std.mem.Allocator,
-    args: []const []const u8,
+    opts: UpgradeOptions,
     client: ReleaseClient,
     out: *std.io.Writer,
 ) anyerror!void {
-    const opts = try parseUpgradeOptions(args);
     const release = try client.fetchLatest(opts.channel);
     defer freeRelease(allocator, release);
 
@@ -830,34 +805,11 @@ const CurrentVersionClient = struct {
     }
 };
 
-test "parseUpgradeOptions parses --channel dev flag" {
-    const opts = try parseUpgradeOptions(&[_][]const u8{ "--channel", "dev" });
-    try std.testing.expectEqual(Channel.dev, opts.channel);
-}
-
-test "parseUpgradeOptions defaults to stable channel with no flags" {
-    const opts = try parseUpgradeOptions(&[_][]const u8{});
-    try std.testing.expectEqual(Channel.stable, opts.channel);
-    try std.testing.expect(!opts.dry_run);
-}
-
-test "parseUpgradeOptions rejects unknown channel value with UnknownChannel error" {
-    try std.testing.expectError(
-        UpgradeError.UnknownChannel,
-        parseUpgradeOptions(&[_][]const u8{ "--channel", "nightly" }),
-    );
-}
-
-test "parseUpgradeOptions parses --dry-run flag" {
-    const opts = try parseUpgradeOptions(&[_][]const u8{"--dry-run"});
-    try std.testing.expect(opts.dry_run);
-}
-
 test "upgradeActionWithClient short-circuits without download when version matches current" {
     var mock = CurrentVersionClient{};
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try upgradeActionWithClient(std.testing.allocator, &[_][]const u8{}, mock.client(), &aw.writer);
+    try upgradeActionWithClient(std.testing.allocator, .{ .channel = .stable, .dry_run = false }, mock.client(), &aw.writer);
     try std.testing.expect(!mock.download_called);
     try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "already up to date") != null);
 }
@@ -957,4 +909,41 @@ test "selectRelease stable channel returns first prerelease:false in list when m
     // GitHub API returns newest first; stable should pick the first prerelease:false entry
     const r = try selectRelease(&[_]Release{ newer_stable, older_stable }, .stable);
     try std.testing.expectEqualStrings("v1.1.0", r.tag_name);
+}
+
+pub fn buildCommand(runner: *cli.AppRunner) !cli.Command {
+    const opts = try runner.allocOptions(&.{
+        .{
+            .long_name = "channel",
+            .help = "Release channel: 'stable' or 'dev' (default: stable)",
+            .required = false,
+            .value_ref = runner.mkRef(&channel_slot),
+        },
+        .{
+            .long_name = "dry-run",
+            .help = "Print upgrade plan without writing the new binary",
+            .required = false,
+            .value_ref = runner.mkRef(&dry_run_slot),
+        },
+    });
+    return cli.Command{
+        .name = "upgrade",
+        .description = .{ .one_line = "Upgrade zpm to the latest release" },
+        .options = opts,
+        .target = .{ .action = .{ .exec = upgradeExecAction } },
+    };
+}
+
+test "buildCommand exposes channel and dry-run options" {
+    var runner = try cli.AppRunner.init(std.testing.allocator);
+    defer runner.deinit();
+    const cmd = try buildCommand(&runner);
+
+    try std.testing.expectEqualStrings("upgrade", cmd.name);
+    const opts = cmd.options orelse return error.MissingOptions;
+    try std.testing.expectEqual(@as(usize, 2), opts.len);
+    try std.testing.expectEqualStrings("channel", opts[0].long_name);
+    try std.testing.expectEqualStrings("dry-run", opts[1].long_name);
+    try std.testing.expect(!opts[0].required);
+    try std.testing.expect(!opts[1].required);
 }

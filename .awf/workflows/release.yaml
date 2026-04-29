@@ -1,0 +1,152 @@
+name: release
+version: "1.0.0"
+description: |
+  Bump the .version field in build.zig.zon (semver), commit the change,
+  create an annotated v<version> tag, and push commit + tag to origin.
+  The pushed tag triggers .github/workflows/release.yaml which builds
+  cross-platform binaries and publishes the GitHub Release.
+
+inputs:
+  - name: bump
+    type: string
+    required: true
+    description: "Semver part to bump: major, minor, or patch"
+    validation:
+      enum: [major, minor, patch]
+
+states:
+  initial: preflight
+
+  preflight:
+    type: step
+    command: |
+      set -eu
+      branch="$(git rev-parse --abbrev-ref HEAD)"
+      if [ "$branch" != "main" ]; then
+        echo "ERROR: must run from main (currently on '$branch')" >&2
+        exit 1
+      fi
+      if ! git diff-index --quiet HEAD --; then
+        echo "ERROR: uncommitted changes in tracked files" >&2
+        git status --short >&2
+        exit 1
+      fi
+      echo "preflight ok: clean tracked tree on main"
+    on_success: read_version
+    on_failure: {message: "Preflight failed: must be on a clean main branch", status: 2}
+
+  read_version:
+    type: step
+    command: |
+      set -eu
+      printf "%s" "$(grep -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' build.zig.zon \
+        | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
+    on_success: compute_version
+    on_failure: {message: "Failed to read .version from build.zig.zon"}
+
+  compute_version:
+    type: step
+    command: |
+      set -eu
+      current="{{.states.read_version.Output}}"
+      bump="{{.inputs.bump}}"
+      if [ -z "$current" ]; then
+        echo "ERROR: empty current version" >&2
+        exit 1
+      fi
+      major="${current%%.*}"
+      rest="${current#*.}"
+      minor="${rest%%.*}"
+      patch="${rest#*.}"
+      case "$bump" in
+        major) major=$((major + 1)); minor=0; patch=0 ;;
+        minor) minor=$((minor + 1)); patch=0 ;;
+        patch) patch=$((patch + 1)) ;;
+        *) echo "ERROR: invalid bump '$bump'" >&2; exit 1 ;;
+      esac
+      printf "%s.%s.%s" "$major" "$minor" "$patch"
+    on_success: check_tag
+    on_failure: {message: "Failed to compute next version from '{{.states.read_version.Output}}'"}
+
+  check_tag:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      tag="v$next"
+      if git rev-parse "$tag" >/dev/null 2>&1; then
+        echo "ERROR: tag $tag already exists" >&2
+        exit 1
+      fi
+      echo "release plan: {{.states.read_version.Output}} -> $next (tag $tag)"
+    on_success: update_zon
+    on_failure: {message: "Tag v{{.states.compute_version.Output}} already exists", status: 2}
+
+  update_zon:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      sed -i.bak -E "s/(\\.version = \")[0-9]+\\.[0-9]+\\.[0-9]+(\")/\\1${next}\\2/" build.zig.zon
+      rm -f build.zig.zon.bak
+      grep -E '\.version =' build.zig.zon
+    on_success: update_changelog
+    on_failure: {message: "Failed to rewrite .version in build.zig.zon"}
+
+  update_changelog:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      today="$(date +%Y-%m-%d)"
+      if ! grep -q '^## \[Unreleased\]$' CHANGELOG.md; then
+        echo "ERROR: CHANGELOG.md missing '## [Unreleased]' header" >&2
+        exit 1
+      fi
+      awk -v ver="$next" -v date="$today" '
+        !done && /^## \[Unreleased\]$/ {
+          print
+          print ""
+          print "## [" ver "] - " date
+          done = 1
+          next
+        }
+        { print }
+      ' CHANGELOG.md > CHANGELOG.md.tmp
+      mv CHANGELOG.md.tmp CHANGELOG.md
+      grep -nE '^## \[' CHANGELOG.md | head -3
+    on_success: commit
+    on_failure: {message: "Failed to update CHANGELOG.md"}
+
+  commit:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      git add build.zig.zon CHANGELOG.md
+      git commit -m "chore(release): v${next}"
+    on_success: tag
+    on_failure: {message: "Failed to commit release bump"}
+
+  tag:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      git tag -a "v${next}" -m "Release v${next}"
+    on_success: push
+    on_failure: {message: "Failed to create annotated tag v{{.states.compute_version.Output}}"}
+
+  push:
+    type: step
+    command: |
+      set -eu
+      next="{{.states.compute_version.Output}}"
+      git push origin HEAD
+      git push origin "v${next}"
+    on_success: done
+    on_failure: {message: "Push to origin failed; commit and tag remain local. Resolve and run: git push origin HEAD && git push origin v{{.states.compute_version.Output}}", status: 3}
+
+  done:
+    type: terminal
+    status: success
