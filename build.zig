@@ -421,16 +421,6 @@ pub fn build(b: *std.Build) void {
 
     // cli module tests (F017) — registry tests run via exe_unit_tests (main.zig imports registry.zig)
 
-    const arg_mapper_test_module = b.createModule(.{
-        .root_source_file = b.path("src/cli/arg_mapper.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    arg_mapper_test_module.addImport("mcp", mcp_dep.module("mcp"));
-    const arg_mapper_unit_tests = b.addTest(.{ .root_module = arg_mapper_test_module });
-    const run_arg_mapper_unit_tests = b.addRunArtifact(arg_mapper_unit_tests);
-    test_step.dependOn(&run_arg_mapper_unit_tests.step);
-
     const output_test_module = b.createModule(.{
         .root_source_file = b.path("src/cli/output.zig"),
         .target = target,
@@ -455,6 +445,7 @@ pub fn build(b: *std.Build) void {
     });
     upgrade_test_module.addImport("output.zig", output_test_module);
     upgrade_test_module.addImport("../version.zig", version_module);
+    upgrade_test_module.addImport("cli", cli_dep.module("cli"));
     const upgrade_unit_tests = b.addTest(.{ .root_module = upgrade_test_module });
     const run_upgrade_unit_tests = b.addRunArtifact(upgrade_unit_tests);
     test_step.dependOn(&run_upgrade_unit_tests.step);

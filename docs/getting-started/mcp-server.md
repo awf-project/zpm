@@ -18,7 +18,7 @@ Supported platforms: Linux (x86_64, arm64) and macOS (x86_64, arm64).
 After installation, verify it works:
 
 ```bash
-zpm --version
+zpm version
 ```
 
 Once installed, skip ahead to [Initialize a Project](#2-initialize-a-project).
@@ -214,17 +214,11 @@ The server echoes back your message.
 ## Troubleshooting
 
 **Client can't find `zpm`:** GUI apps like Claude Desktop don't always inherit your shell `PATH`. If the client logs show `ENOENT` or "command not found", use an absolute path in the config (e.g., `"command": "/usr/local/bin/zpm"` or `"/home/you/.local/bin/zpm"`).
-
-**Tools don't appear in the client:** Check the client's MCP logs — most tools expose a log panel or file. Verify `zpm --version` works in the same environment the client runs from, then restart the client after editing its config.
-
+**Tools don't appear in the client:** Check the client's MCP logs — most tools expose a log panel or file. Verify `zpm version` works in the same environment the client runs from, then restart the client after editing its config.
 **"No project directory found" error:** The client likely spawns `zpm serve` from a working directory that has no `.zpm/` above it. Run `zpm init` in your project root, then either launch the client from that directory or add `"cwd": "/absolute/path/to/project"` to the server entry.
-
 **Server doesn't respond (manual testing):** Make sure stdin/stdout are properly connected. The server closes cleanly when stdin reaches EOF.
-
 **Invalid JSON (manual testing):** The MCP protocol is strict about JSON-RPC 2.0 compliance — check your request format.
-
 **Unknown command error:** If you see "unknown command", check that you're using a valid subcommand (e.g., `zpm init`, `zpm serve`). Run `zpm --help` for a list of available commands.
-
 
 ## Next Steps
 

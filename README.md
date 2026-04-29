@@ -57,11 +57,11 @@ The built binary is located at `zig-out/bin/zpm`.
 ### CLI Usage
 
 ```bash
-# Display help (also: zpm --help, zpm -h)
-zpm
+# Display help (zpm with no args also prints help, but exits 1)
+zpm --help
 
-# Show version (also: zpm -v)
-zpm --version
+# Show version (use the subcommand; --version/-v fall through to help)
+zpm version
 
 # Initialize a project directory
 zpm init
@@ -74,9 +74,9 @@ zpm upgrade
 zpm upgrade --channel dev --dry-run
 
 # Invoke MCP tools directly from the shell
-zpm remember-fact "task_status(f017, done)"
-zpm query-logic "task_status(X, done)" --format json
-zpm save-snapshot "before-deploy"
+zpm remember-fact --fact "task_status(f017, done)"
+zpm query-logic --goal "task_status(X, done)" --format json
+zpm save-snapshot --name "before-deploy"
 ```
 
 See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.

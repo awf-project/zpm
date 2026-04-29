@@ -28,6 +28,7 @@ test: ## Run unit tests
 functional-test: build ## Run end-to-end MCP protocol tests
 	bash tests/functional_mcp_server_test.sh
 	bash tests/functional_upgrade_test.sh
+	bash tests/functional_cli_test.sh
 
 upgrade-test: build ## Run upgrade end-to-end tests
 	bash tests/functional_upgrade_test.sh
