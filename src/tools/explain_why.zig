@@ -36,11 +36,15 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    var provability = engine.query(fact) catch return mcp.tools.ToolError.ExecutionFailed;
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_fact = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_fact);
+
+    var provability = engine.query(qualified_fact) catch return mcp.tools.ToolError.ExecutionFailed;
     defer provability.deinit();
     const proven = provability.solutions.len > 0;
 
-    const json_str = buildExplainJson(allocator, engine, fact, proven, max_depth_opt) catch return mcp.tools.ToolError.OutOfMemory;
+    const json_str = buildExplainJson(allocator, engine, qualified_fact, proven, max_depth_opt) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(json_str);
 
     return mcp.tools.textResult(allocator, json_str) catch return mcp.tools.ToolError.OutOfMemory;

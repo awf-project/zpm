@@ -4,6 +4,7 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const engine_mod = @import("../prolog/engine.zig");
+const Engine = engine_mod.Engine;
 const term_utils = @import("term_utils");
 const validation = @import("tool_validation");
 const Term = engine_mod.Term;
@@ -12,6 +13,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("assumption", "The assumption name to retract", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -35,19 +37,23 @@ fn unknownAssumption(allocator: std.mem.Allocator, assumption: []const u8) mcp.t
     return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
-    if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
-
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
-
-    const query_str = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+/// Core TMS retraction: retract an assumption and propagate removal of orphaned facts.
+/// Returns the number of orphaned facts retracted, or an error.
+/// Used by both retract_assumption and retract_assumptions handlers.
+pub fn retractOneAssumption(
+    allocator: std.mem.Allocator,
+    engine: *Engine,
+    pm: ?*PersistenceManager,
+    assumption: []const u8,
+    memory_name: []const u8,
+) mcp.tools.ToolError!usize {
+    const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(raw_query);
+    const query_str = context.qualifyClause(allocator, memory_name, raw_query) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
     var qr = engine.query(query_str) catch return mcp.tools.ToolError.ExecutionFailed;
     defer qr.deinit();
-
-    if (qr.solutions.len == 0) return unknownAssumption(allocator, assumption);
 
     var fact_strings: std.ArrayList([]u8) = .empty;
     defer {
@@ -64,14 +70,18 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
     }
 
-    const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    const raw_retract = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(raw_retract);
+    const retract_pattern = context.qualifyClause(allocator, memory_name, raw_retract) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
 
     var orphan_facts: std.ArrayList([]const u8) = .empty;
     defer orphan_facts.deinit(allocator);
 
     for (fact_strings.items) |fact_str| {
-        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
+        const raw_check = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
+        defer allocator.free(raw_check);
+        const check_query = context.qualifyClause(allocator, memory_name, raw_check) catch continue;
         defer allocator.free(check_query);
 
         const has_other = blk: {
@@ -85,31 +95,70 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         }
     }
 
-    // Journal-first AND atomic: build all WAL entries, write them as a single
-    // batch, THEN mutate the engine. A partial batch would replay a half-
-    // retracted state (TMS link gone, orphan facts still asserted).
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
+    var qualified_orphans: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (qualified_orphans.items) |s| allocator.free(s);
+        qualified_orphans.deinit(allocator);
+    }
+    for (orphan_facts.items) |fact_str| {
+        const qualified_orphan = context.qualifyClause(allocator, memory_name, fact_str) catch {
+            qualified_orphans.append(allocator, allocator.dupe(u8, fact_str) catch continue) catch continue;
+            continue;
+        };
+        qualified_orphans.append(allocator, qualified_orphan) catch {
+            allocator.free(qualified_orphan);
+            continue;
+        };
+    }
+
+    engine.retractAll(retract_pattern) catch {};
+    for (qualified_orphans.items) |qualified_orphan| {
+        engine.retractAll(qualified_orphan) catch {};
+    }
+
+    if (pm) |mgr| {
         var entries: std.ArrayList(JournalEntry) = .empty;
         defer entries.deinit(allocator);
         const ts = std.time.timestamp();
         entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
-        for (orphan_facts.items) |fact_str| {
-            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = fact_str }) catch return mcp.tools.ToolError.OutOfMemory;
+        for (qualified_orphans.items) |qualified_orphan| {
+            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = qualified_orphan }) catch return mcp.tools.ToolError.OutOfMemory;
         }
-        pm.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
+        mgr.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
-    engine.retractAll(retract_pattern) catch {};
-    for (orphan_facts.items) |fact_str| {
-        engine.retractAll(fact_str) catch {};
-    }
+    return orphan_facts.items.len;
+}
 
-    const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, orphan_facts.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
+pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+    const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
+    if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
+
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
+    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+
+    // Check if assumption exists before attempting retraction
+    const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(raw_query);
+    const query_str = context.qualifyClause(allocator, memory_name, raw_query) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(query_str);
+
+    var qr = engine.query(query_str) catch return mcp.tools.ToolError.ExecutionFailed;
+    defer qr.deinit();
+    if (qr.solutions.len == 0) return unknownAssumption(allocator, assumption);
+
+    const orphan_count = try retractOneAssumption(allocator, engine, target_pm, assumption, memory_name);
+
+    const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, orphan_count }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler retracts assumption and removes unjustified fact" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

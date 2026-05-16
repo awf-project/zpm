@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **F021**: Segmented memories — named, isolated knowledge segments backed by Trealla Prolog modules
+  - Four new MCP tools: `create_memory`, `mount_memory`, `unmount_memory`, `list_memories`
+  - Optional `memory` parameter on all 20 knowledge/reasoning tools for targeting specific segments
+  - CLI subcommand group: `zpm memory create|mount|unmount|list`
+  - `--memory` flag on existing CLI tool subcommands
+  - Read-only mount mode (`ro`) to prevent accidental mutations
+  - Dual-scope storage: project-local (`.zpm/kb/`) and global (`$XDG_DATA_HOME/zpm/kb/`)
+  - Per-memory WAL and snapshot persistence with independent rotation
+  - Cross-memory queries via Prolog module qualification syntax (`module:predicate(Args)`)
+  - Auto-creation and auto-mount of `default` memory on boot for backward compatibility
+
+### Breaking Changes
+- **Knowledge base directory layout changed.** Persistence now uses `.zpm/kb/<name>/` per memory segment instead of the flat `.zpm/kb/` + `.zpm/data/` layout. Existing knowledge bases are not auto-migrated. Run `rm -rf .zpm/` and `zpm init` to reinitialize.
+
 ## [0.3.0] - 2026-04-29
 
 ## [0.2.1] - 2026-04-22

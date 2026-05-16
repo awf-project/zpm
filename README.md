@@ -4,7 +4,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init`, `serve`, `upgrade`, and all 22 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- CLI entrypoint with `init`, `serve`, `upgrade`, and all 26 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
@@ -19,6 +19,8 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
 - Knowledge base persistence: durable storage via write-ahead journal and snapshots with automatic recovery
+- Named memory segments for domain-isolated knowledge bases with independent WAL/snapshot persistence, read-only mount mode, project and global scope, and cross-memory queries via Prolog module qualification
+- Persistent mount manifest (`.zpm/mounts.json`) for durable memory configuration across CLI invocations
 - Documentation site with Hugo/Thulite (Doks) and GitHub Pages auto-deployment
 - Zero external runtime dependencies (statically linked, including Prolog library)
 
@@ -77,6 +79,14 @@ zpm upgrade --channel dev --dry-run
 zpm remember-fact --fact "task_status(f017, done)"
 zpm query-logic --goal "task_status(X, done)" --format json
 zpm save-snapshot --name "before-deploy"
+
+# Manage memory segments
+zpm memory create feature_auth
+zpm memory mount feature_auth --mode ro
+zpm memory create shared_profiles --scope global
+zpm memory list
+zpm remember-fact --fact "task_done(login)" --memory feature_auth
+zpm query-logic --goal "task_done(X)" --memory feature_auth
 ```
 
 See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.
@@ -113,28 +123,32 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `assume_fact` | Assert a fact under a named assumption with automatic justification tracking | `assumption` (string, required), `fact` (string, required) |
-| `clear_context` | Clear all facts from the knowledge base matching a pattern | `category` (string, required) |
-| `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required) |
+| `assume_fact` | Assert a fact under a named assumption with automatic justification tracking | `assumption` (string, required), `fact` (string, required), `memory` (string, optional) |
+| `clear_context` | Clear all facts from the knowledge base matching a pattern | `category` (string, required), `memory` (string, optional) |
+| `create_memory` | Create a named memory segment backed by a dedicated Prolog module | `name` (string, required), `scope` (string, optional) |
+| `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required), `memory` (string, optional) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
-| `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional) |
-| `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required) |
-| `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required) |
-| `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required) |
-| `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | (no required arguments) |
+| `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional), `memory` (string, optional) |
+| `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required), `memory` (string, optional) |
+| `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required), `memory` (string, optional) |
+| `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required), `memory` (string, optional) |
+| `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | `memory` (string, optional) |
 | `get_persistence_status` | Query the persistence layer status including journal size, last snapshot, and operational mode | (no required arguments) |
-| `list_assumptions` | List all currently active assumptions and their associated facts | (no required arguments) |
-| `list_snapshots` | List all available knowledge base snapshots with metadata | (no required arguments) |
-| `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required) |
-| `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required) |
-| `restore_snapshot` | Restore knowledge base from a named snapshot and replay subsequent journal entries | `name` (string, required) |
-| `retract_assumption` | Retract a named assumption and propagate its removal through the knowledge base | `assumption` (string, required) |
-| `retract_assumptions` | Retract all assumptions matching a glob-style pattern | `pattern` (string, required) |
-| `save_snapshot` | Create a named point-in-time snapshot of the knowledge base | `name` (string, required) |
-| `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required) |
-| `update_fact` | Atomically replace an existing fact (retract old, assert new) | `old_fact` (string, required), `new_fact` (string, required) |
-| `upsert_fact` | Replace a fact matching functor+first arg, or insert if not found | `fact` (string, required) |
-| `verify_consistency` | Check knowledge base for integrity violations | `scope` (string, optional) |
+| `list_assumptions` | List all currently active assumptions and their associated facts | `memory` (string, optional) |
+| `list_memories` | List all discoverable memories with scope, mount status, and mode | (no required arguments) |
+| `list_snapshots` | List all available knowledge base snapshots with metadata | `memory` (string, optional) |
+| `mount_memory` | Mount a named memory segment for use, optionally in read-only mode | `name` (string, required), `mode` (string, optional) |
+| `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required), `memory` (string, optional) |
+| `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required), `memory` (string, optional) |
+| `restore_snapshot` | Restore knowledge base from a named snapshot and replay subsequent journal entries | `name` (string, required), `memory` (string, optional) |
+| `retract_assumption` | Retract a named assumption and propagate its removal through the knowledge base | `assumption` (string, required), `memory` (string, optional) |
+| `retract_assumptions` | Retract all assumptions matching a glob-style pattern | `pattern` (string, required), `memory` (string, optional) |
+| `save_snapshot` | Create a named point-in-time snapshot of the knowledge base | `name` (string, required), `memory` (string, optional) |
+| `trace_dependency` | Trace transitive dependencies from a start node using path/2 rules | `start_node` (string, required), `memory` (string, optional) |
+| `unmount_memory` | Unmount a named memory, flushing WAL and freeing resources | `name` (string, required) |
+| `update_fact` | Atomically replace an existing fact (retract old, assert new) | `old_fact` (string, required), `new_fact` (string, required), `memory` (string, optional) |
+| `upsert_fact` | Replace a fact matching functor+first arg, or insert if not found | `fact` (string, required), `memory` (string, optional) |
+| `verify_consistency` | Check knowledge base for integrity violations | `scope` (string, optional), `memory` (string, optional) |
 
 ## Documentation
 

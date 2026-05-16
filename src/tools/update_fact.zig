@@ -4,12 +4,14 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("old_fact", "The existing Prolog fact to retract", true);
     _ = try schema.addString("new_fact", "The new Prolog fact to assert in its place", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -36,27 +38,37 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         return mcp.tools.errorResult(allocator, "new_fact must not contain rule syntax") catch return mcp.tools.ToolError.OutOfMemory;
     }
 
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retract, .clause = old_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = new_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
+    const qualified_old = context.qualifyClause(allocator, memory_name, old_fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_old);
+    const qualified_new = context.qualifyClause(allocator, memory_name, new_fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_new);
 
-    engine.retractFact(old_fact) catch {
+    engine.retractFact(qualified_old) catch {
         const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{old_fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
-    engine.assertFact(new_fact) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.assertFact(qualified_new) catch return mcp.tools.ToolError.ExecutionFailed;
+
+    if (target_pm) |pm| {
+        const ts = std.time.timestamp();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retract, .clause = qualified_old }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_new }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
 
     const msg = std.fmt.allocPrint(allocator, "Updated: {s}", .{new_fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler atomically retracts old fact and asserts new fact" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -189,12 +201,14 @@ test "handler returns ExecutionFailed when journal write fails on double-op" {
     const result = handler(allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 
+    // Both engine operations succeeded before the journal write failed, so the
+    // engine reflects the update (safe data loss on restart, not corruption).
     var qr_old = try engine.query("journal_fail_update(alpha, v1).");
     defer qr_old.deinit();
-    try std.testing.expectEqual(@as(usize, 1), qr_old.solutions.len);
+    try std.testing.expectEqual(@as(usize, 0), qr_old.solutions.len);
     var qr_new = try engine.query("journal_fail_update(alpha, v2).");
     defer qr_new.deinit();
-    try std.testing.expectEqual(@as(usize, 0), qr_new.solutions.len);
+    try std.testing.expectEqual(@as(usize, 1), qr_new.solutions.len);
 }
 
 test "handler journals old_fact and new_fact as atomic group to WAL" {

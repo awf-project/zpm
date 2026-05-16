@@ -43,7 +43,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const goal = std.fmt.allocPrint(allocator, "path(X, {s})", .{start_node}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(goal);
 
-    var query_result = engine.query(goal) catch {
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_goal = context.qualifyClause(allocator, memory_name, goal) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_goal);
+
+    var query_result = engine.query(qualified_goal) catch {
         return mcp.tools.errorResult(allocator, "Query execution failed") catch return mcp.tools.ToolError.OutOfMemory;
     };
     defer query_result.deinit();

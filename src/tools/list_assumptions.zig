@@ -15,11 +15,14 @@ pub const tool = mcp.tools.Tool{
 };
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    _ = args;
-
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    var qr = engine.query("tms_justification(_, A)") catch {
+    const query_str = "tms_justification(_, A)";
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_query);
+
+    var qr = engine.query(qualified_query) catch {
         return buildResponse(allocator, &.{});
     };
     defer qr.deinit();

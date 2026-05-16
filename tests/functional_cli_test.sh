@@ -99,4 +99,119 @@ case "$CLI_OUTPUT" in
     *) red "  FAIL: JSON output does not begin with { or [: '$CLI_OUTPUT'"; FAIL=$((FAIL+1)) ;;
 esac
 
+# Feature: F021
+# --- Memory management CLI tests ---
+
+echo "Test: zpm memory create --name creates a named memory module (F021/US1)"
+MEM_LIFECYCLE_DIR=$(make_zpm_dir)
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli memory create --name feature_auth
+popd >/dev/null
+assert_exit_code "zpm memory create exits 0" "$CLI_EXIT" 0
+
+echo "Test: zpm memory list shows created memory (F021/US1)"
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli memory list
+popd >/dev/null
+assert_exit_code "zpm memory list exits 0" "$CLI_EXIT" 0
+assert_contains "zpm memory list contains feature_auth" "$CLI_OUTPUT" "feature_auth"
+
+echo "Test: zpm memory mount --name mounts a named memory module (F021/US1)"
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli memory mount --name feature_auth
+popd >/dev/null
+assert_exit_code "zpm memory mount exits 0" "$CLI_EXIT" 0
+
+echo "Test: zpm remember-fact --memory targets named segment (F021/US2)"
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli remember-fact --fact 'task_done(login)' --memory feature_auth
+popd >/dev/null
+assert_exit_code "zpm remember-fact --memory exits 0" "$CLI_EXIT" 0
+
+echo "Test: zpm query-logic --memory queries named segment (F021/US2)"
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli query-logic --goal 'task_done(X)' --memory feature_auth
+popd >/dev/null
+assert_exit_code "zpm query-logic --memory exits 0" "$CLI_EXIT" 0
+assert_contains "zpm query-logic --memory returns binding" "$CLI_OUTPUT" "login"
+
+echo "Test: zpm memory unmount --name unmounts a named memory module (F021/US1)"
+pushd "$MEM_LIFECYCLE_DIR" >/dev/null
+capture_cli memory unmount --name feature_auth
+popd >/dev/null
+assert_exit_code "zpm memory unmount exits 0" "$CLI_EXIT" 0
+
+# Feature: F022
+# --- Persistent mount manifest (.zpm/mounts.json) ---
+
+echo "Test: mount mode survives CLI restart (F022/US1)"
+F022_MODE_DIR=$(make_zpm_dir)
+pushd "$F022_MODE_DIR" >/dev/null
+"$BINARY" memory create --name ref_kb >/dev/null 2>&1 || true
+"$BINARY" memory unmount --name ref_kb >/dev/null 2>&1 || true
+"$BINARY" memory mount --name ref_kb --mode ro >/dev/null 2>&1 || true
+capture_cli memory list
+popd >/dev/null
+assert_exit_code "memory list exits 0 after restart" "$CLI_EXIT" 0
+assert_contains "ref_kb appears in memory list after restart" "$CLI_OUTPUT" "ref_kb"
+assert_contains "ref_kb mode=ro preserved after restart" "$CLI_OUTPUT" "mode=ro"
+MANIFEST_MODE=$(jq -r --arg n ref_kb '.mounts[] | select(.name == $n) | .mode' "$F022_MODE_DIR/.zpm/mounts.json")
+assert_equals "manifest persists ro mode for ref_kb" "ro" "$MANIFEST_MODE"
+
+echo "Test: unmount survives CLI restart, disk directory preserved (F022/US1, SC-002)"
+F022_UNMOUNT_DIR=$(make_zpm_dir)
+pushd "$F022_UNMOUNT_DIR" >/dev/null
+"$BINARY" memory create --name temp_work >/dev/null 2>&1 || true
+"$BINARY" memory unmount --name temp_work >/dev/null 2>&1 || true
+capture_cli memory list
+popd >/dev/null
+assert_exit_code "memory list exits 0" "$CLI_EXIT" 0
+assert_not_contains "temp_work absent from memory list after restart" "$CLI_OUTPUT" "temp_work"
+assert_true "temp_work kb directory preserved on disk" test -d "$F022_UNMOUNT_DIR/.zpm/kb/temp_work"
+MANIFEST_ENTRY=$(jq -r --arg n temp_work '.mounts[] | select(.name == $n) | .name' "$F022_UNMOUNT_DIR/.zpm/mounts.json")
+assert_equals "manifest excludes unmounted temp_work" "" "$MANIFEST_ENTRY"
+
+echo "Test: global-scope memory writes absolute manifest entry reachable from another cwd (F022/US2, SC-003)"
+F022_GLOBAL_DIR=$(make_zpm_dir)
+F022_XDG=$(mktemp -d)
+TEMP_DIRS+=("$F022_XDG")
+export XDG_DATA_HOME="$F022_XDG"
+pushd "$F022_GLOBAL_DIR" >/dev/null
+"$BINARY" memory create --name shared_xx --scope global >/dev/null 2>&1 || true
+popd >/dev/null
+GLOBAL_SCOPE=$(jq -r --arg n shared_xx '.mounts[] | select(.name == $n) | .scope' "$F022_GLOBAL_DIR/.zpm/mounts.json")
+assert_equals "manifest entry scope is global" "global" "$GLOBAL_SCOPE"
+GLOBAL_PATH=$(jq -r --arg n shared_xx '.mounts[] | select(.name == $n) | .path' "$F022_GLOBAL_DIR/.zpm/mounts.json")
+case "$GLOBAL_PATH" in
+    /*) green "  PASS: manifest entry path is absolute"; PASS=$((PASS+1)) ;;
+    *)  red "  FAIL: manifest path is not absolute: '$GLOBAL_PATH'"; FAIL=$((FAIL+1)) ;;
+esac
+assert_contains "absolute path lives under XDG_DATA_HOME" "$GLOBAL_PATH" "$F022_XDG"
+assert_true "global memory directory exists at absolute path" test -d "$GLOBAL_PATH"
+F022_GLOBAL_DIR_B=$(make_zpm_dir)
+SHARED_ENTRY_JSON=$(jq -c --arg n shared_xx '.mounts[] | select(.name == $n)' "$F022_GLOBAL_DIR/.zpm/mounts.json")
+cat > "$F022_GLOBAL_DIR_B/.zpm/mounts.json" <<JSON
+{"version": 1, "mounts": [{"name":"default","path":".zpm/kb/default","scope":"project","mode":"rw"}, $SHARED_ENTRY_JSON]}
+JSON
+pushd "$F022_GLOBAL_DIR_B" >/dev/null
+capture_cli memory list
+popd >/dev/null
+assert_exit_code "memory list in second cwd exits 0" "$CLI_EXIT" 0
+assert_contains "shared_xx is mounted from absolute path in second cwd" "$CLI_OUTPUT" "shared_xx"
+unset XDG_DATA_HOME
+
+echo "Test: first boot with no mounts.json generates one from kb/ scan (F022/US3, SC-004)"
+F022_MIGRATE_DIR=$(make_zpm_dir)
+mkdir -p "$F022_MIGRATE_DIR/.zpm/kb/feature_alpha" "$F022_MIGRATE_DIR/.zpm/kb/feature_beta"
+assert_true "no mounts.json pre-boot" test ! -e "$F022_MIGRATE_DIR/.zpm/mounts.json"
+pushd "$F022_MIGRATE_DIR" >/dev/null
+capture_cli memory list
+popd >/dev/null
+assert_exit_code "memory list exits 0 on first boot" "$CLI_EXIT" 0
+assert_true "mounts.json was created by migration" test -f "$F022_MIGRATE_DIR/.zpm/mounts.json"
+for NAME in default feature_alpha feature_beta; do
+    FOUND=$(jq -r --arg n "$NAME" '.mounts[] | select(.name == $n) | .name' "$F022_MIGRATE_DIR/.zpm/mounts.json")
+    assert_equals "migrated manifest includes $NAME" "$NAME" "$FOUND"
+done
+
 test_summary

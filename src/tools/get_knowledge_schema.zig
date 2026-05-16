@@ -2,6 +2,7 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
+const validation = @import("tool_validation");
 
 pub const tool = mcp.tools.Tool{
     .name = "get_knowledge_schema",
@@ -23,7 +24,6 @@ const PredicateEntry = struct {
 };
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    _ = args;
     const engine = context.getEngine() orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
@@ -33,7 +33,12 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         entries.deinit(allocator);
     }
 
-    var schema_result = engine.query("current_predicate(F/A),functor(H,F,A),predicate_property(H,dynamic)") catch {
+    const query_str = "current_predicate(F/A),functor(H,F,A),predicate_property(H,dynamic)";
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_query);
+
+    var schema_result = engine.query(qualified_query) catch {
         const json = buildSchemaJson(allocator, entries.items) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(json);
         return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;
@@ -53,7 +58,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
             else => continue,
         };
         if (isBuiltin(name_raw)) continue;
-        if (!isValidAtomName(name_raw)) continue;
+        if (!validation.isValidAtomName(name_raw)) continue;
 
         const name = allocator.dupe(u8, name_raw) catch return mcp.tools.ToolError.OutOfMemory;
         errdefer allocator.free(name);
@@ -86,20 +91,6 @@ fn isBuiltin(name: []const u8) bool {
     // Trealla declares portray/1 dynamic at engine init; hide it from schema.
     if (std.mem.eql(u8, name, "portray")) return true;
     return false;
-}
-
-/// Validates that a predicate name is a safe Prolog atom: lowercase start, then [a-zA-Z0-9_].
-/// Rejects names containing parentheses, commas, operators, or other injection-prone characters.
-fn isValidAtomName(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (name[0] < 'a' or name[0] > 'z') return false;
-    for (name[1..]) |c| {
-        switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_' => {},
-            else => return false,
-        }
-    }
-    return true;
 }
 
 fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) ![]u8 {

@@ -146,7 +146,7 @@ QUERY_INVALID_INPUT="${INIT_REQ}
 RESPONSE=$(send_mcp "$QUERY_INVALID_INPUT")
 QUERY_INVALID_LINE=$(echo "$RESPONSE" | grep '"id":22')
 
-assert_contains "invalid syntax returns empty array" "$QUERY_INVALID_LINE" '"isError":false'
+assert_contains "invalid syntax returns error" "$QUERY_INVALID_LINE" '"isError":true'
 
 # --- Test 13: trace_dependency returns reachable nodes for transitive dependency chain ---
 echo "Test: trace_dependency tool invocation with transitive dependencies"
@@ -1838,5 +1838,177 @@ run_dual_transport_scenario "get_persistence_status via dual transport" \
     "get-persistence-status" \
     "$DUAL_PERSIST_MCP_83" \
     _t83_assert || true
+
+# Feature: F021
+# --- Test: tools/list includes memory management tools ---
+echo "Test: tools/list includes memory management tools (F021)"
+TOOLSLIST_F021="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1000,\"method\":\"tools/list\",\"params\":{}}"
+RESPONSE=$(send_mcp "$TOOLSLIST_F021")
+TOOLS_MEM_LINE=$(echo "$RESPONSE" | grep '"id":1000')
+for TOOL_NAME in create_memory mount_memory unmount_memory list_memories; do
+    assert_contains "tools/list includes $TOOL_NAME (F021)" "$TOOLS_MEM_LINE" "\"name\":\"$TOOL_NAME\""
+done
+
+# --- Test: MCP memory lifecycle with WAL round-trip (F021/US1) ---
+echo "Test: MCP memory lifecycle with WAL round-trip (F021/US1)"
+LIFECYCLE_DIR=$(mktemp -d)
+LIFECYCLE_WRITE="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1001,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1002,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1003,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"seg_item(wal_entry)\",\"memory\":\"test_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1004,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"test_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1005,\"method\":\"tools/call\",\"params\":{\"name\":\"unmount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}"
+RESPONSE=$(send_mcp_persist "$LIFECYCLE_WRITE" "$LIFECYCLE_DIR")
+LIFECYCLE_CREATE_LINE=$(echo "$RESPONSE" | grep '"id":1001')
+LIFECYCLE_MOUNT_LINE=$(echo "$RESPONSE" | grep '"id":1002')
+LIFECYCLE_ASSERT_LINE=$(echo "$RESPONSE" | grep '"id":1003')
+LIFECYCLE_QUERY_LINE=$(echo "$RESPONSE" | grep '"id":1004')
+LIFECYCLE_UNMOUNT_LINE=$(echo "$RESPONSE" | grep '"id":1005')
+assert_contains "lifecycle: create_memory test_seg returns success" "$LIFECYCLE_CREATE_LINE" '"isError":false'
+assert_contains "lifecycle: mount_memory test_seg returns success" "$LIFECYCLE_MOUNT_LINE" '"isError":false'
+assert_contains "lifecycle: remember_fact into test_seg returns success" "$LIFECYCLE_ASSERT_LINE" '"isError":false'
+assert_contains "lifecycle: query_logic from test_seg returns wal_entry" "$LIFECYCLE_QUERY_LINE" 'wal_entry'
+assert_contains "lifecycle: unmount_memory test_seg returns success" "$LIFECYCLE_UNMOUNT_LINE" '"isError":false'
+
+LIFECYCLE_READ="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1006,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1007,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"test_seg\"}}}"
+RESPONSE=$(send_mcp_persist "$LIFECYCLE_READ" "$LIFECYCLE_DIR")
+LIFECYCLE_REMOUNT_LINE=$(echo "$RESPONSE" | grep '"id":1006')
+LIFECYCLE_REPLAY_LINE=$(echo "$RESPONSE" | grep '"id":1007')
+assert_contains "lifecycle: remount test_seg after restart returns success" "$LIFECYCLE_REMOUNT_LINE" '"isError":false'
+assert_contains "lifecycle: WAL round-trip restores wal_entry after remount" "$LIFECYCLE_REPLAY_LINE" 'wal_entry'
+rm -rf "$LIFECYCLE_DIR"
+
+# --- Test: MCP memory isolation between segments (F021/US2) ---
+echo "Test: MCP memory isolation between segments (F021/US2)"
+ISOLATION_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1010,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"memory_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1011,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"memory_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1012,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"isolated_item(in_a)\",\"memory\":\"memory_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1013,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"isolated_item(X)\",\"memory\":\"memory_a\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1014,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"isolated_item(X)\"}}}"
+RESPONSE=$(send_mcp "$ISOLATION_INPUT")
+ISO_A_LINE=$(echo "$RESPONSE" | grep '"id":1013')
+ISO_DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":1014')
+assert_contains "isolation: query from memory_a finds in_a" "$ISO_A_LINE" 'in_a'
+assert_not_contains "isolation: query from default does not find in_a" "$ISO_DEFAULT_LINE" 'in_a'
+
+# --- Test: MCP read-only mount rejects mutations (F021/US3) ---
+echo "Test: MCP read-only mount rejects mutations (F021/US3)"
+READONLY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1020,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1021,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"ro_seg\",\"mode\":\"ro\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1022,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"forbidden(write)\",\"memory\":\"ro_seg\"}}}"
+RESPONSE=$(send_mcp "$READONLY_INPUT")
+RO_MOUNT_LINE=$(echo "$RESPONSE" | grep '"id":1021')
+RO_WRITE_LINE=$(echo "$RESPONSE" | grep '"id":1022')
+assert_contains "read-only: mount_memory with ro mode returns success" "$RO_MOUNT_LINE" '"isError":false'
+assert_contains "read-only: remember_fact into ro segment returns isError true" "$RO_WRITE_LINE" '"isError":true'
+
+# --- Test: MCP backward compat — no memory param uses default (F021/US4) ---
+echo "Test: MCP backward compat — remember_fact and query_logic without memory param (F021/US4)"
+COMPAT_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1030,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"compat_item(present)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1031,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"compat_item(X)\"}}}"
+RESPONSE=$(send_mcp "$COMPAT_INPUT")
+COMPAT_ASSERT_LINE=$(echo "$RESPONSE" | grep '"id":1030')
+COMPAT_QUERY_LINE=$(echo "$RESPONSE" | grep '"id":1031')
+assert_contains "backward compat: remember_fact without memory param returns success" "$COMPAT_ASSERT_LINE" '"isError":false'
+assert_contains "backward compat: query_logic without memory param finds compat_item" "$COMPAT_QUERY_LINE" 'present'
+
+# --- Test: MCP create_memory rejects invalid name (F021/US5) ---
+echo "Test: MCP create_memory with invalid name returns error (F021/US5)"
+INVALID_NAME_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1040,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"my-memory\"}}}"
+RESPONSE=$(send_mcp "$INVALID_NAME_INPUT")
+INVALID_NAME_LINE=$(echo "$RESPONSE" | grep '"id":1040')
+assert_contains "create_memory with hyphenated name returns isError true" "$INVALID_NAME_LINE" '"isError":true'
+
+# --- Test: MCP list_memories returns JSON array with default and mounted memories (F021/US6) ---
+echo "Test: MCP list_memories returns default and mounted memories (F021/US6)"
+LIST_MEM_DIR=$(mktemp -d)
+LIST_MEM_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1050,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"listed_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1051,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"listed_seg\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1052,\"method\":\"tools/call\",\"params\":{\"name\":\"list_memories\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp_persist "$LIST_MEM_INPUT" "$LIST_MEM_DIR")
+LIST_MEM_LINE=$(echo "$RESPONSE" | grep '"id":1052')
+assert_contains "list_memories returns success" "$LIST_MEM_LINE" '"isError":false'
+assert_contains "list_memories includes default memory" "$LIST_MEM_LINE" 'default'
+assert_contains "list_memories includes mounted listed_seg" "$LIST_MEM_LINE" 'listed_seg'
+rm -rf "$LIST_MEM_DIR"
+
+# --- Test: MCP cross-memory query with module qualification (F021/US7) ---
+echo "Test: MCP cross-memory query with module qualification (F021/US7)"
+CROSS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1060,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"feature_auth\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1061,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"feature_auth\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1062,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(login, done)\",\"memory\":\"feature_auth\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":1063,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature_auth:task_status(X, done)\"}}}"
+RESPONSE=$(send_mcp "$CROSS_INPUT")
+CROSS_ASSERT_LINE=$(echo "$RESPONSE" | grep '"id":1062')
+CROSS_QUERY_LINE=$(echo "$RESPONSE" | grep '"id":1063')
+assert_contains "cross-memory: remember_fact into feature_auth returns success" "$CROSS_ASSERT_LINE" '"isError":false'
+assert_contains "cross-memory: qualified query feature_auth:task_status returns login" "$CROSS_QUERY_LINE" 'login'
+
+# --- Test: Dual-transport memory lifecycle (F021/US1) ---
+echo "Test: run_dual_transport_scenario - memory lifecycle via both transports (F021/US1)"
+_assert_memory_lifecycle() {
+    local output="$1" transport="${2:-transport}"
+    assert_contains "[$transport] memory lifecycle: seg item t84 present in output" "$output" 'seg_item_t84'
+}
+
+DUAL_MEM_WRITE="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":900,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":901,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":902,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"seg_item(seg_item_t84)\",\"memory\":\"seg_t84\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":903,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"seg_t84\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":904,\"method\":\"tools/call\",\"params\":{\"name\":\"unmount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}"
+
+DUAL_MEM_READ="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":910,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":911,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"seg_t84\"}}}"
+
+run_dual_transport_scenario \
+    "memory lifecycle create+mount+assert+query+unmount+remount+query" \
+    "memory create --name seg_t84 && memory mount --name seg_t84 && remember-fact --fact seg_item(seg_item_t84) --memory seg_t84 && query-logic --goal seg_item(X) --memory seg_t84 && memory unmount --name seg_t84 && memory mount --name seg_t84 && query-logic --goal seg_item(X) --memory seg_t84" \
+    "$DUAL_MEM_WRITE" \
+    "_assert_memory_lifecycle" \
+    "$DUAL_MEM_READ" || true
+
+# Feature: F022
+# --- MCP/CLI coherence: mount via MCP, list via CLI in a separate process ---
+
+echo "Test: mount_memory via MCP visible to subsequent CLI invocation (F022/US4)"
+F022_COHERE_DIR=$(mktemp -d)
+
+F022_COHERE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":1999,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"from_mcp\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2000,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"from_mcp\",\"mode\":\"ro\"}}}"
+F022_COHERE_MCP=$(send_mcp_persist "$F022_COHERE_INPUT" "$F022_COHERE_DIR")
+F022_COHERE_MCP_LINE=$(echo "$F022_COHERE_MCP" | grep '"id":2000')
+assert_contains "MCP mount_memory returns success" "$F022_COHERE_MCP_LINE" '"isError":false'
+assert_true "MCP wrote manifest entry for from_mcp" \
+    bash -c "jq -e '.mounts[] | select(.name == \"from_mcp\")' '$F022_COHERE_DIR/.zpm/mounts.json' >/dev/null"
+
+F022_COHERE_CLI=$(cd "$F022_COHERE_DIR" && timeout "$TIMEOUT" "$BINARY" memory list 2>&1 || true)
+assert_contains "CLI memory list (separate process) sees MCP-mounted from_mcp" "$F022_COHERE_CLI" "from_mcp"
+assert_contains "CLI memory list shows mode=ro for MCP-mounted entry" "$F022_COHERE_CLI" "mode=ro"
+
+rm -rf "$F022_COHERE_DIR"
 
 test_summary

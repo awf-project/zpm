@@ -32,7 +32,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const query_str = std.fmt.allocPrint(allocator, "tms_justification({s}, A)", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
-    var qr = engine.query(query_str) catch {
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_query);
+
+    var qr = engine.query(qualified_query) catch {
         return buildResponse(allocator, false, &.{}, "unknown");
     };
     defer qr.deinit();

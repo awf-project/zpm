@@ -58,6 +58,8 @@ pub const QueryResult = struct {
 
 /// Process-wide counter for temp file names in loadString.
 var g_src_counter = std.atomic.Value(u32).init(0);
+/// Process-wide ref count for live Engine instances sharing g_tpl_lib.
+var g_engine_count = std.atomic.Value(u32).init(0);
 
 pub const Engine = struct {
     gpa: std.heap.GeneralPurposeAllocator(.{}),
@@ -84,6 +86,7 @@ pub const Engine = struct {
             std.heap.page_allocator.destroy(self);
             return EngineError.InitFailed;
         }
+        _ = g_engine_count.fetchAdd(1, .monotonic);
         ffi.set_quiet(self.handle.?);
         // Declare predicates used for runtime assertion as dynamic so Trealla
         // accepts assertions without raising existence_error(procedure, ...).
@@ -124,7 +127,9 @@ pub const Engine = struct {
         ;
         self.loadString(preload) catch {
             ffi.pl_destroy(self.handle.?);
-            ffi.g_tpl_lib = null;
+            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
+                ffi.g_tpl_lib = null;
+            }
             self.declared_dynamic.deinit();
             _ = self.gpa.deinit();
             std.heap.page_allocator.destroy(self);
@@ -140,7 +145,9 @@ pub const Engine = struct {
     pub fn deinit(self: *Engine) void {
         if (self.handle) |h| {
             ffi.pl_destroy(h);
-            ffi.g_tpl_lib = null;
+            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
+                ffi.g_tpl_lib = null;
+            }
         }
         var it = self.declared_dynamic.iterator();
         while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
@@ -155,7 +162,9 @@ pub const Engine = struct {
         if (self.handle) |h| {
             ffi.pl_destroy(h);
             self.handle = null;
-            ffi.g_tpl_lib = null;
+            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
+                ffi.g_tpl_lib = null;
+            }
         }
     }
 
@@ -232,7 +241,8 @@ pub const Engine = struct {
             "catch((read_term_from_atom('{s}.', ZpmG_, [variable_names(ZpmV_)])," ++
                 " findall(ZpmV_, call(ZpmG_), ZpmS_)," ++
                 " zpm_emit_solutions(ZpmS_))," ++
-                " _, write('[]')).",
+                " ZpmErr," ++
+                " (ZpmErr = error(syntax_error(_),_) -> write(zpm_query_error) ; write('[]'))).",
             .{escaped},
             0,
         ) catch return EngineError.OutOfMemory;
@@ -350,13 +360,12 @@ pub const Engine = struct {
                 _ = self.evalSilently(code);
                 continue;
             }
-            var args_buf: std.io.Writer.Allocating = .init(self.allocator);
-            defer args_buf.deinit();
-            const w = &args_buf.writer;
-            w.writeAll("_") catch return EngineError.OutOfMemory;
+            var args_buf = std.ArrayList(u8).empty;
+            defer args_buf.deinit(self.allocator);
+            args_buf.appendSlice(self.allocator, "_") catch return EngineError.OutOfMemory;
             var i: usize = 1;
-            while (i < arity) : (i += 1) w.writeAll(",_") catch return EngineError.OutOfMemory;
-            const args = args_buf.toOwnedSlice() catch return EngineError.OutOfMemory;
+            while (i < arity) : (i += 1) args_buf.appendSlice(self.allocator, ",_") catch return EngineError.OutOfMemory;
+            const args = args_buf.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory;
             defer self.allocator.free(args);
             const code = std.fmt.allocPrintSentinel(
                 self.allocator,
@@ -464,7 +473,7 @@ pub const Engine = struct {
 
         self.scanDynamicDirectives(source);
 
-        const pid = std.os.linux.getpid();
+        const pid = std.c.getpid();
         const counter = g_src_counter.fetchAdd(1, .monotonic);
         const tmppath = std.fmt.allocPrintSentinel(
             self.allocator,
@@ -750,6 +759,12 @@ fn parseQueryJson(
     if (trimmed.len == 0)
         return QueryResult{ .solutions = &.{}, .allocator = allocator };
 
+    // Sentinel written by the catch/3 handler when the Prolog goal has a
+    // syntax error (read_term_from_atom fails). Return QueryFailed so callers
+    // can surface a proper error result instead of silently returning [].
+    if (std.mem.startsWith(u8, trimmed, "zpm_query_error"))
+        return EngineError.QueryFailed;
+
     // Trealla's pl_eval in command mode appends a dump_vars summary after
     // our written JSON (e.g. "[[]]   ZpmG_ = true, ZpmV_ = [], ZpmS_ = [[]].").
     // Slice off everything past the first balanced top-level bracket pair.
@@ -836,11 +851,24 @@ pub fn parseHeadFunctorArity(clause: []const u8) ?HeadFunctorArity {
 
     if (std.mem.startsWith(u8, s, ":-")) return null;
 
-    const head = if (std.mem.indexOf(u8, s, ":-")) |idx|
+    const head_raw = if (std.mem.indexOf(u8, s, ":-")) |idx|
         std.mem.trim(u8, s[0..idx], " \t\n\r")
     else
         s;
-    if (head.len == 0) return null;
+    if (head_raw.len == 0) return null;
+
+    // Strip module prefix (mod:pred → pred) from unquoted terms so
+    // declareDynamic receives the bare functor name.
+    const head = head: {
+        if (head_raw[0] != '\'') {
+            if (std.mem.indexOf(u8, head_raw, ":")) |colon| {
+                const stripped = head_raw[colon + 1 ..];
+                if (stripped.len == 0) return null;
+                break :head stripped;
+            }
+        }
+        break :head head_raw;
+    };
 
     // Skip single-quoted functors so `'Mod:Name'(...)` isn't split wrongly.
     var i: usize = 0;
@@ -1267,4 +1295,49 @@ test "iterateDeclaredDynamic includes predicate from loadString dynamic directiv
         if (std.mem.eql(u8, entry.key_ptr.*, "rule/3")) found = true;
     }
     try testing.expect(found);
+}
+
+test "parseHeadFunctorArity strips module prefix from qualified term" {
+    const result = parseHeadFunctorArity("feature_auth:task_status(login, done)");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("task_status", result.?.functor);
+    try testing.expectEqual(@as(usize, 2), result.?.arity);
+}
+
+test "parseHeadFunctorArity strips module prefix from zero-arity qualified term" {
+    const result = parseHeadFunctorArity("my_mod:flag");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("flag", result.?.functor);
+    try testing.expectEqual(@as(usize, 0), result.?.arity);
+}
+
+test "parseHeadFunctorArity handles unqualified term unchanged" {
+    const result = parseHeadFunctorArity("task_status(login, done)");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("task_status", result.?.functor);
+    try testing.expectEqual(@as(usize, 2), result.?.arity);
+}
+
+test "g_engine_count increments and decrements correctly across Engine lifecycle" {
+    // Verify that the ref count tracks Engine init/deinit correctly.
+    // Trealla is process-global and does not support simultaneous instances,
+    // so we test sequential create/destroy pairs.
+    const before = g_engine_count.load(.monotonic);
+
+    const e1 = try Engine.init(.{});
+    const after_init = g_engine_count.load(.monotonic);
+    try testing.expectEqual(before + 1, after_init);
+
+    e1.deinit();
+    const after_deinit = g_engine_count.load(.monotonic);
+    try testing.expectEqual(before, after_deinit);
+
+    // A second engine can be created after the first is destroyed.
+    const e2 = try Engine.init(.{});
+    defer e2.deinit();
+    try testing.expect(ffi.g_tpl_lib != null);
+    try e2.assertFact("multi_engine_test(ok).");
+    var qr = try e2.query("multi_engine_test(X)");
+    defer qr.deinit();
+    try testing.expectEqual(@as(usize, 1), qr.solutions.len);
 }

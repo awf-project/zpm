@@ -4,12 +4,15 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const validation = @import("tool_validation");
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("fact", "The Prolog fact to assert under the assumption", true);
     _ = try schema.addString("assumption", "The assumption name (lowercase, alphanumeric with underscores)", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -41,43 +44,54 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         return mcp.tools.errorResult(allocator, "assume_fact: fact must not contain rule syntax") catch return mcp.tools.ToolError.OutOfMemory;
     }
 
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const justification = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(justification);
 
+    const qualified_fact = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_fact);
+
+    const qualified_justification = context.qualifyClause(allocator, memory_name, justification) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_justification);
+
     // Check idempotency first so the journal mirrors the engine ops —
     // assertz appends, so journaling unconditionally would double the
     // justification at replay time.
     const already_justified = blk: {
-        var qr = engine.query(justification) catch break :blk false;
+        var qr = engine.query(qualified_justification) catch break :blk false;
         defer qr.deinit();
         break :blk qr.solutions.len > 0;
     };
 
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-        if (!already_justified) {
-            pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = justification }) catch return mcp.tools.ToolError.ExecutionFailed;
-        }
-    }
-
-    engine.assertFact(fact) catch {
+    engine.assertFact(qualified_fact) catch {
         const msg = std.fmt.allocPrint(allocator, "assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (!already_justified) {
-        engine.assertFact(justification) catch return mcp.tools.ToolError.ExecutionFailed;
+        engine.assertFact(qualified_justification) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+
+    if (target_pm) |pm| {
+        const ts = std.time.timestamp();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+        if (!already_justified) {
+            pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_justification }) catch return mcp.tools.ToolError.ExecutionFailed;
+        }
     }
 
     const msg = std.fmt.allocPrint(allocator, "Assumed: {s} under assumption '{s}'", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler asserts fact under assumption and returns confirmation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -242,4 +256,97 @@ test "handler journals fact and tms_justification as atomic group to WAL" {
     try std.testing.expect(std.mem.indexOf(u8, content, "deployed(app, prod)") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "baseline") != null);
+}
+
+test "assume_fact.handler with named memory asserts qualified fact and journals to memory PM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const test_seg_path = try std.fmt.allocPrint(allocator, "{s}/test_seg", .{dir_path});
+    defer allocator.free(test_seg_path);
+    try std.fs.makeDirAbsolute(test_seg_path);
+
+    var test_seg_dir = try std.fs.openDirAbsolute(test_seg_path, .{});
+    defer test_seg_dir.close();
+    var kfile = try test_seg_dir.createFile("knowledge.pl", .{});
+    defer kfile.close();
+    try kfile.writeAll(":- module(test_seg, []).\n");
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("test_seg", test_seg_path, .project, .rw, engine);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "assumption_test(scenario)" });
+    try obj.put("assumption", .{ .string = "test_context" });
+    try obj.put("memory", .{ .string = "test_seg" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var qr = try engine.query("test_seg:assumption_test(scenario).");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+
+    var jcontent_buf: [2048]u8 = undefined;
+    const jcontent = try tmp.dir.readFile("test_seg/journal.wal", &jcontent_buf);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "test_seg:assumption_test(scenario)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "tms_justification") != null);
+}
+
+test "assume_fact.handler without memory param asserts unqualified fact and journals to default PM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "config_option(debug, enabled)" });
+    try obj.put("assumption", .{ .string = "user_settings" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var qr = try engine.query("config_option(debug, enabled).");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+
+    var jcontent_buf: [2048]u8 = undefined;
+    const jcontent = try tmp.dir.readFile("journal.wal", &jcontent_buf);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "config_option(debug, enabled)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "tms_justification") != null);
 }

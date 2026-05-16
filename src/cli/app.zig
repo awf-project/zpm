@@ -5,6 +5,7 @@ const tool_command = @import("tool_command.zig");
 const init_cli = @import("init.zig");
 const serve_cli = @import("serve.zig");
 const upgrade_cli = @import("upgrade.zig");
+const memory_cli = @import("memory.zig");
 const version = @import("../version.zig").version;
 
 /// Build the top-level cli.App for zpm.
@@ -29,7 +30,7 @@ fn versionAction() anyerror!void {
 
 fn assembleCommands(runner: *cli.AppRunner) ![]cli.Command {
     const defs = registry.tool_defs_for_app;
-    var tmp: [defs.len + 4]cli.Command = undefined;
+    var tmp: [defs.len + 5]cli.Command = undefined;
 
     tmp[0] = cli.Command{
         .name = "init",
@@ -47,21 +48,22 @@ fn assembleCommands(runner: *cli.AppRunner) ![]cli.Command {
         .description = .{ .one_line = "Print zpm version and exit" },
         .target = .{ .action = .{ .exec = versionAction } },
     };
+    tmp[4] = try memory_cli.buildCommand(runner);
 
     // Static dispatch on each comptime-known def — required because
     // ToolCommand(def) is a distinct type per def.
     inline for (defs, 0..) |def, i| {
-        tmp[4 + i] = try tool_command.ToolCommand(def).build(runner);
+        tmp[5 + i] = try tool_command.ToolCommand(def).build(runner);
     }
     return runner.allocCommands(tmp[0..]);
 }
 
-test "buildApp returns app with 26 subcommands" {
+test "buildApp returns app with 31 subcommands" {
     var runner = try cli.AppRunner.init(std.testing.allocator);
     defer runner.deinit();
     const app = try buildApp(&runner);
     try std.testing.expect(app.command.target == .subcommands);
-    try std.testing.expectEqual(@as(usize, 26), app.command.target.subcommands.len);
+    try std.testing.expectEqual(@as(usize, 31), app.command.target.subcommands.len);
 }
 
 test "buildApp first four subcommands are init, serve, upgrade, version" {
@@ -75,6 +77,16 @@ test "buildApp first four subcommands are init, serve, upgrade, version" {
     try std.testing.expectEqualStrings("version", subs[3].name);
 }
 
+test "buildApp fifth subcommand is the memory group with 4 subcommands" {
+    var runner = try cli.AppRunner.init(std.testing.allocator);
+    defer runner.deinit();
+    const app = try buildApp(&runner);
+    const subs = app.command.target.subcommands;
+    try std.testing.expectEqualStrings("memory", subs[4].name);
+    try std.testing.expect(subs[4].target == .subcommands);
+    try std.testing.expectEqual(@as(usize, 4), subs[4].target.subcommands.len);
+}
+
 test "buildApp tool subcommands match registry kebab names" {
     var runner = try cli.AppRunner.init(std.testing.allocator);
     defer runner.deinit();
@@ -82,7 +94,7 @@ test "buildApp tool subcommands match registry kebab names" {
     const subs = app.command.target.subcommands;
     const defs = registry.all();
     for (defs, 0..) |def, i| {
-        try std.testing.expectEqualStrings(def.cli_name, subs[4 + i].name);
+        try std.testing.expectEqualStrings(def.cli_name, subs[5 + i].name);
     }
 }
 
@@ -91,7 +103,7 @@ test "buildApp every tool subcommand has --format option" {
     defer runner.deinit();
     const app = try buildApp(&runner);
     const subs = app.command.target.subcommands;
-    var idx: usize = 4;
+    var idx: usize = 5;
     while (idx < subs.len) : (idx += 1) {
         const opts = subs[idx].options orelse return error.MissingOptions;
         var found = false;

@@ -85,7 +85,8 @@ test_summary() {
 
 send_mcp_persist() {
     local input="$1" dir="$2"
-    mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb"
+    mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb" "$dir/.zpm/kb/default"
+    printf ':- module(default, []).\n' > "$dir/.zpm/kb/default/knowledge.pl"
     (cd "$dir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 }
 

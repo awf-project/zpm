@@ -4,11 +4,13 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("fact", "The Prolog fact to retract (e.g. 'parent(tom, bob)')", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -30,20 +32,31 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     if (fact.len == 0) return mcp.tools.errorResult(allocator, "Fact must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
+
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retract, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-    engine.retractFact(fact) catch {
+
+    const qualified = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified);
+
+    engine.retractFact(qualified) catch {
         const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
+
+    if (target_pm) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retract, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
     const msg = std.fmt.allocPrint(allocator, "Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler retracts existing fact and returns confirmation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -183,9 +196,11 @@ test "handler returns ExecutionFailed when journal write fails" {
     const result = handler(allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 
+    // The engine retraction succeeded before the journal write failed, so the
+    // fact is absent from the engine (safe data loss on restart, not corruption).
     var qr = try engine.query("journal_fail_forget(x).");
     defer qr.deinit();
-    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+    try std.testing.expectEqual(@as(usize, 0), qr.solutions.len);
 }
 
 test "handler returns ExecutionFailed when engine is unavailable" {

@@ -4,6 +4,9 @@ zig-cache/
 .zig-cache/
 *.o
 
+# Standalone test/debug binaries left at repo root (e.g. `zig test foo.zig`)
+/test_*
+
 # IDE
 *.swp
 *.swo

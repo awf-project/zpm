@@ -11,10 +11,12 @@ pub const ProjectPaths = struct {
     allocator: std.mem.Allocator,
     data_dir: []const u8,
     kb_dir: []const u8,
+    manifest_path: []const u8,
 
     pub fn deinit(self: ProjectPaths) void {
         self.allocator.free(self.data_dir);
         self.allocator.free(self.kb_dir);
+        self.allocator.free(self.manifest_path);
     }
 };
 
@@ -50,10 +52,13 @@ pub fn discover(allocator: std.mem.Allocator, cwd: []const u8) (ProjectError || 
             errdefer allocator.free(data_dir);
             const kb_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/kb", .{current});
             errdefer allocator.free(kb_dir);
+            const manifest_path = try std.fmt.allocPrint(allocator, "{s}/.zpm/mounts.json", .{current});
+            errdefer allocator.free(manifest_path);
             return ProjectPaths{
                 .allocator = allocator,
                 .data_dir = data_dir,
                 .kb_dir = kb_dir,
+                .manifest_path = manifest_path,
             };
         }
 
@@ -138,6 +143,36 @@ test "discover finds .zpm in parent directory when invoked from nested subdirect
 
     try std.testing.expect(std.mem.startsWith(u8, paths.data_dir, parent));
     try std.testing.expect(std.mem.endsWith(u8, paths.data_dir, "/.zpm/data"));
+}
+
+test "discover populates manifest_path ending with /.zpm/mounts.json" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.makeDir(".zpm/data");
+    try tmp.dir.makeDir(".zpm/kb");
+
+    var cwd_buf: [4096]u8 = undefined;
+    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+
+    const paths = try discover(std.testing.allocator, cwd);
+    defer paths.deinit();
+
+    try std.testing.expect(std.mem.endsWith(u8, paths.manifest_path, "/.zpm/mounts.json"));
+}
+
+test "ProjectPaths.deinit frees manifest_path without leaks" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.makeDir(".zpm/data");
+    try tmp.dir.makeDir(".zpm/kb");
+
+    var cwd_buf: [4096]u8 = undefined;
+    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+
+    const paths = try discover(std.testing.allocator, cwd);
+    paths.deinit();
 }
 
 test "initProject creates .zpm directory structure with kb and data subdirectories" {
