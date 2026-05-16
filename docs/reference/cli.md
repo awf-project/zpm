@@ -131,6 +131,96 @@ zpm upgrade --channel dev
 
 **Read-Only Filesystems:** If the running binary lives on a path without write permission (e.g., `/usr/local/bin` without sudo), the command surfaces the permission error and suggests re-running with elevated privileges.
 
+### `memory`
+
+Manage named memory segments for domain-isolated knowledge bases.
+
+```bash
+zpm memory <subcommand> [OPTIONS]
+```
+
+Memory segments are independent Prolog modules with their own WAL and snapshot persistence. Use them to isolate knowledge by domain (e.g., one memory per feature branch, per agent, or per concern).
+
+#### `memory create`
+
+Create a new named memory segment.
+
+```bash
+zpm memory create --name <name> [--scope project|global]
+```
+
+Creates the on-disk directory structure (`.zpm/kb/<name>/`) with an empty `knowledge.pl` module header. The memory is automatically mounted on the next command invocation (see Auto-mount below).
+
+The name must be a valid Prolog atom: lowercase letter followed by alphanumeric characters and underscores.
+
+| Flag | Description |
+|------|-------------|
+| `--name` | **(required)** Memory name |
+| `--scope` | `project` (default) or `global` |
+
+#### `memory mount`
+
+Mount an existing memory segment with a specific mode, updating the persistent manifest.
+
+```bash
+zpm memory mount --name <name> [--mode rw|ro]
+```
+
+Loads the knowledge base, replays the WAL, and updates `.zpm/mounts.json` so the memory is mounted with the specified mode on all subsequent CLI invocations. Default mode is `rw` (read-write); use `--mode ro` to prevent mutations.
+
+This command is useful for:
+- Mounting an unmounted memory (previously removed via `memory unmount`)
+- Changing a memory's mode from `rw` to `ro` or vice versa
+- Ensuring a memory is mounted in a subsequent invocation after being explicitly unmounted
+
+| Flag | Description |
+|------|-------------|
+| `--name` | **(required)** Memory name to mount |
+| `--mode` | `rw` (default) or `ro` |
+
+#### `memory unmount`
+
+Unmount a mounted memory, flushing its WAL and freeing resources.
+
+```bash
+zpm memory unmount --name <name>
+```
+
+The `default` memory cannot be unmounted. Unmounting removes the memory from the persistent manifest (`.zpm/mounts.json`), so it will not be mounted on the next CLI invocation unless explicitly remounted with `memory mount`.
+
+| Flag | Description |
+|------|-------------|
+| `--name` | **(required)** Memory name to unmount |
+
+#### `memory list`
+
+List all currently mounted memories with their scope and mode.
+
+```bash
+zpm memory list
+```
+
+#### Auto-mount
+
+Each CLI invocation is a separate process. At startup, `initBootstrap` reads the persistent mount manifest (`.zpm/mounts.json`) and mounts every memory listed in it. On first boot, if the manifest does not exist, zpm scans `.zpm/kb/` for subdirectories and generates the manifest with all discovered memories (as read-write, project scope).
+
+This means:
+- After `memory create`, the memory is automatically added to the manifest and usable on all subsequent invocations
+- `memory mount --mode ro` updates the manifest so the memory is mounted read-only on subsequent invocations (no need to repeat the command)
+- `memory unmount` removes the memory from the manifest, so it will not be mounted on the next invocation
+- All mount decisions persist across CLI invocations without manual intervention
+
+**Examples:**
+```bash
+# Create and use an isolated memory for a feature
+zpm memory create --name feature_auth
+zpm remember-fact --fact "task_done(login)" --memory feature_auth
+zpm query-logic --goal "task_done(X)" --memory feature_auth
+
+# Mount in read-only mode for safe consultation
+zpm memory mount --name project_kb --mode ro
+```
+
 ### Tool Subcommands
 
 Every MCP tool is available as a CLI subcommand using kebab-case (e.g. `remember_fact` → `remember-fact`). Tool invocations share the same bootstrap as `zpm serve` — they discover the nearest `.zpm/`, load the knowledge base, run the handler, and exit.
@@ -142,6 +232,8 @@ zpm <tool-name> [<positional>] [--flag value ...] [--format json|text]
 Tool fields are passed as `--kebab-case` flags by default — `remember_fact.fact` becomes `--fact`, `explain_why.max_depth` becomes `--max-depth`, and so on. Two tools take a positional first argument as a historical exception: `define-rule` accepts the rule head positionally, and `assume-fact` accepts the fact positionally. Every other tool's required and optional fields use `--<flag> <value>` syntax. The full tool roster lives in [MCP Tools Reference](mcp-tools.md); each entry documents its fields.
 
 Every tool subcommand also accepts `--format json|text`. The default (`text`) prints the tool's native output (queries already emit JSON, writes emit human-readable confirmations). `--format json` produces a JSON array whose elements are the raw `text` field of each result block, e.g. `["Asserted: parent(tom, bob)"]` for a write or `["[{\"X\":\"tom\"}]"]` for a query. Note that query output is doubly encoded — the inner string is itself JSON; pipe through `jq -r '.[]'` and parse the unwrapped string if you need structured access.
+
+All knowledge and reasoning tool subcommands also accept `--memory <name>` to target a specific mounted memory segment instead of the default. When omitted, operations target the `default` memory. Mutation commands (`remember-fact`, `define-rule`, `forget-fact`, etc.) return an error if the target memory is mounted read-only.
 
 **Examples:**
 
@@ -166,13 +258,18 @@ zpm restore-snapshot --name "before-upgrade"
 # Truth maintenance: fact is positional, assumption is a flag
 zpm assume-fact "requires_reboot(host)" --assumption "deploy_plan_v2"
 zpm list-assumptions
+
+# Target a specific memory segment
+zpm remember-fact --fact "auth_done(oauth)" --memory feature_auth
+zpm query-logic --goal "auth_done(X)" --memory feature_auth
 ```
 
 **Discovering Commands:**
 
 ```bash
-zpm --help                  # Lists init, serve, upgrade, version, and every tool subcommand
+zpm --help                  # Lists init, serve, upgrade, memory, version, and every tool subcommand
 zpm query-logic --help      # Shows the tool's flags (and any positional argument)
+zpm memory --help           # Lists memory subcommands (create, mount, unmount, list)
 ```
 
 Help is generated from each tool's registry entry; adding a new MCP tool automatically produces a matching CLI entry with no manual documentation regeneration (NFR-004).
@@ -254,7 +351,7 @@ zpm serve &           # Should start without blocking terminal
 
 The CLI layer is split across several modules for clear separation of concerns:
 
-1. **Registry** (`src/cli/registry.zig`) — All 22 MCP tools, each with a `ParamSpec` array describing its CLI shape (kind, required, positional, kebab name)
+1. **Registry** (`src/cli/registry.zig`) — All 26 MCP tools (including 4 memory management tools), each with a `ParamSpec` array describing its CLI shape (kind, required, positional, kebab name)
 2. **Tool Command Generator** (`src/cli/tool_command.zig`) — Comptime generic `ToolCommand(comptime def)` that synthesizes a `cli.Command` per registry entry, including its options, positional args, and exec thunk
 3. **App Assembler** (`src/cli/app.zig`) — Builds the top-level `cli.App` with the `init`, `serve`, `upgrade`, and `version` subcommands plus every generated tool command
 4. **Bootstrap** (`src/cli/bootstrap.zig`) — Shared initialization: discover `.zpm/`, load knowledge base, start Prolog engine

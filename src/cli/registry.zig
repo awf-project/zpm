@@ -23,6 +23,10 @@ const save_snapshot = @import("../tools/save_snapshot.zig");
 const restore_snapshot = @import("../tools/restore_snapshot.zig");
 const list_snapshots = @import("../tools/list_snapshots.zig");
 const get_persistence_status = @import("../tools/get_persistence_status.zig");
+const create_memory = @import("../tools/create_memory.zig");
+const mount_memory = @import("../tools/mount_memory.zig");
+const unmount_memory = @import("../tools/unmount_memory.zig");
+const list_memories = @import("../tools/list_memories.zig");
 
 pub const ParamKind = enum { string, integer };
 
@@ -61,7 +65,11 @@ fn buildGetPersistenceStatus(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
     return get_persistence_status.tool;
 }
 
-const tool_defs: [22]ToolDef = .{
+fn buildListMemories(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
+    return list_memories.tool;
+}
+
+const tool_defs: [26]ToolDef = .{
     .{
         .cli_name = "echo",
         .mcp_name = "echo",
@@ -78,6 +86,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &remember_fact.tool,
         .params = &.{
             .{ .mcp_key = "fact", .help = "A Prolog fact to assert (e.g. 'parent(tom, bob)')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -88,6 +97,7 @@ const tool_defs: [22]ToolDef = .{
         .params = &.{
             .{ .mcp_key = "head", .help = "The head of the Prolog rule (e.g. 'grandparent(X, Z)')", .required = true, .positional = true },
             .{ .mcp_key = "body", .help = "The body of the Prolog rule (e.g. 'parent(X, Y), parent(Y, Z)')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -97,6 +107,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &query_logic.tool,
         .params = &.{
             .{ .mcp_key = "goal", .help = "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -106,6 +117,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &trace_dependency.tool,
         .params = &.{
             .{ .mcp_key = "start_node", .help = "The reference atom whose dependents are traced", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -115,6 +127,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &verify_consistency.tool,
         .params = &.{
             .{ .mcp_key = "scope", .help = "Optional scope pattern for filtering violation predicates", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -125,6 +138,7 @@ const tool_defs: [22]ToolDef = .{
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to explain (e.g. 'grandparent(tom, jim)')", .required = true },
             .{ .mcp_key = "max_depth", .help = "Maximum proof tree depth (default: unlimited)", .required = false, .kind = .integer },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -141,6 +155,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &forget_fact.tool,
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to retract (e.g. 'parent(tom, bob)')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -150,6 +165,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &clear_context.tool,
         .params = &.{
             .{ .mcp_key = "category", .help = "A Prolog term pattern passed to retractall/1 (e.g. 'task_status(_,_)')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -160,6 +176,7 @@ const tool_defs: [22]ToolDef = .{
         .params = &.{
             .{ .mcp_key = "old_fact", .help = "The existing Prolog fact to retract", .required = true },
             .{ .mcp_key = "new_fact", .help = "The new Prolog fact to assert in its place", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -169,6 +186,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &upsert_fact.tool,
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to upsert (replaces clauses with same functor and first arg)", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -179,6 +197,7 @@ const tool_defs: [22]ToolDef = .{
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to assert under the assumption", .required = true, .positional = true },
             .{ .mcp_key = "assumption", .help = "The assumption name (lowercase, alphanumeric with underscores)", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -188,6 +207,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &retract_assumption.tool,
         .params = &.{
             .{ .mcp_key = "assumption", .help = "The assumption name to retract", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -197,6 +217,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &get_belief_status.tool,
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to check belief status for", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -206,6 +227,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &get_justification.tool,
         .params = &.{
             .{ .mcp_key = "assumption", .help = "The assumption name to get justifications for", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -213,7 +235,9 @@ const tool_defs: [22]ToolDef = .{
         .mcp_name = "list_assumptions",
         .description = "Return all registered named assumptions",
         .build = &buildListAssumptions,
-        .params = &.{},
+        .params = &.{
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+        },
     },
     .{
         .cli_name = "retract-assumptions",
@@ -222,6 +246,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &retract_assumptions.tool,
         .params = &.{
             .{ .mcp_key = "pattern", .help = "Glob-style pattern to match assumption names (e.g. 'hyp_*')", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -231,6 +256,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &save_snapshot.tool,
         .params = &.{
             .{ .mcp_key = "name", .help = "The name for the snapshot file", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -240,6 +266,7 @@ const tool_defs: [22]ToolDef = .{
         .build = &restore_snapshot.tool,
         .params = &.{
             .{ .mcp_key = "name", .help = "The name of the snapshot to restore", .required = true },
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
         },
     },
     .{
@@ -247,13 +274,51 @@ const tool_defs: [22]ToolDef = .{
         .mcp_name = "list_snapshots",
         .description = "List all available knowledge base snapshots",
         .build = &buildListSnapshots,
-        .params = &.{},
+        .params = &.{
+            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+        },
     },
     .{
         .cli_name = "get-persistence-status",
         .mcp_name = "get_persistence_status",
         .description = "Query persistence subsystem health and status",
         .build = &buildGetPersistenceStatus,
+        .params = &.{},
+    },
+    .{
+        .cli_name = "create-memory",
+        .mcp_name = "create_memory",
+        .description = "Create a new named memory module with an isolated Prolog namespace",
+        .build = &create_memory.tool,
+        .params = &.{
+            .{ .mcp_key = "name", .help = "Memory name (lowercase, alphanumeric with underscores)", .required = true },
+            .{ .mcp_key = "scope", .help = "Memory scope: project or global (default: project)", .required = false },
+        },
+    },
+    .{
+        .cli_name = "mount-memory",
+        .mcp_name = "mount_memory",
+        .description = "Mount an existing named memory module into the active engine",
+        .build = &mount_memory.tool,
+        .params = &.{
+            .{ .mcp_key = "name", .help = "Memory name to mount", .required = true },
+            .{ .mcp_key = "mode", .help = "Mount mode: rw or ro (default: rw)", .required = false },
+        },
+    },
+    .{
+        .cli_name = "unmount-memory",
+        .mcp_name = "unmount_memory",
+        .description = "Unmount a named memory module from the active engine",
+        .build = &unmount_memory.tool,
+        .params = &.{
+            .{ .mcp_key = "name", .help = "Memory name to unmount", .required = true },
+        },
+    },
+    .{
+        .cli_name = "list-memories",
+        .mcp_name = "list_memories",
+        .description = "List all known memory modules with their scope, mode, and mount status",
+        .build = &buildListMemories,
         .params = &.{},
     },
 };
@@ -267,9 +332,9 @@ pub fn all() []const ToolDef {
     return &tool_defs;
 }
 
-test "all returns 22 tool definitions" {
+test "all returns 26 tool definitions" {
     const tools = all();
-    try std.testing.expectEqual(@as(usize, 22), tools.len);
+    try std.testing.expectEqual(@as(usize, 26), tools.len);
 }
 
 test "echo build returns tool with mcp name echo" {
@@ -302,27 +367,79 @@ test "params declared for representative tools" {
     const tools = all();
     for (tools) |def| {
         if (std.mem.eql(u8, def.cli_name, "remember-fact")) {
-            try std.testing.expectEqual(@as(usize, 1), def.params.len);
+            try std.testing.expectEqual(@as(usize, 2), def.params.len);
             try std.testing.expectEqualStrings("fact", def.params[0].mcp_key);
             try std.testing.expect(def.params[0].required);
             try std.testing.expectEqual(ParamKind.string, def.params[0].kind);
+            try std.testing.expectEqualStrings("memory", def.params[1].mcp_key);
+            try std.testing.expect(!def.params[1].required);
         } else if (std.mem.eql(u8, def.cli_name, "define-rule")) {
-            try std.testing.expectEqual(@as(usize, 2), def.params.len);
+            try std.testing.expectEqual(@as(usize, 3), def.params.len);
             try std.testing.expectEqualStrings("head", def.params[0].mcp_key);
             try std.testing.expect(def.params[0].positional);
             try std.testing.expectEqualStrings("body", def.params[1].mcp_key);
             try std.testing.expect(!def.params[1].positional);
+            try std.testing.expectEqualStrings("memory", def.params[2].mcp_key);
         } else if (std.mem.eql(u8, def.cli_name, "explain-why")) {
-            try std.testing.expectEqual(@as(usize, 2), def.params.len);
+            try std.testing.expectEqual(@as(usize, 3), def.params.len);
             try std.testing.expectEqualStrings("max_depth", def.params[1].mcp_key);
             try std.testing.expectEqual(ParamKind.integer, def.params[1].kind);
             try std.testing.expect(!def.params[1].required);
+            try std.testing.expectEqualStrings("memory", def.params[2].mcp_key);
         } else if (std.mem.eql(u8, def.cli_name, "list-assumptions")) {
-            try std.testing.expectEqual(@as(usize, 0), def.params.len);
+            try std.testing.expectEqual(@as(usize, 1), def.params.len);
+            try std.testing.expectEqualStrings("memory", def.params[0].mcp_key);
         } else if (std.mem.eql(u8, def.cli_name, "assume-fact")) {
-            try std.testing.expectEqual(@as(usize, 2), def.params.len);
+            try std.testing.expectEqual(@as(usize, 3), def.params.len);
             try std.testing.expectEqualStrings("fact", def.params[0].mcp_key);
             try std.testing.expect(def.params[0].positional);
+            try std.testing.expectEqualStrings("memory", def.params[2].mcp_key);
+        }
+    }
+}
+
+test "all 19 knowledge/reasoning tools and list_snapshots have memory param" {
+    const knowledge_tools = &[_][]const u8{
+        "remember-fact",      "upsert-fact",         "assume-fact",
+        "forget-fact",        "update-fact",         "query-logic",
+        "define-rule",        "explain-why",         "trace-dependency",
+        "retract-assumption", "retract-assumptions", "list-assumptions",
+        "get-belief-status",  "get-justification",   "verify-consistency",
+        "clear-context",      "save-snapshot",       "restore-snapshot",
+        "list-snapshots",
+    };
+    const tools = all();
+    for (knowledge_tools) |expected_name| {
+        var found = false;
+        for (tools) |def| {
+            if (std.mem.eql(u8, def.cli_name, expected_name)) {
+                found = true;
+                var has_memory = false;
+                for (def.params) |p| {
+                    if (std.mem.eql(u8, p.mcp_key, "memory")) {
+                        has_memory = true;
+                        try std.testing.expect(!p.required);
+                    }
+                }
+                try std.testing.expect(has_memory);
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+}
+
+test "echo and get_persistence_status do not have memory param" {
+    const excluded_tools = &[_][]const u8{ "echo", "get-persistence-status" };
+    const tools = all();
+    for (excluded_tools) |expected_name| {
+        for (tools) |def| {
+            if (std.mem.eql(u8, def.cli_name, expected_name)) {
+                for (def.params) |p| {
+                    try std.testing.expect(!std.mem.eql(u8, p.mcp_key, "memory"));
+                }
+                break;
+            }
         }
     }
 }

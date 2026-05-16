@@ -4,6 +4,7 @@ const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const Term = engine_mod.Term;
 const Solution = engine_mod.Solution;
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
@@ -32,7 +33,23 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     if (goal.len == 0) return mcp.tools.errorResult(allocator, "Goal must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    var query_result = engine.query(goal) catch {
+    const memory_name = context.resolveMemoryName(args);
+    if (!std.mem.eql(u8, memory_name, "default")) {
+        const reg = context.getMemoryRegistryAs(MemoryRegistry);
+        if (reg) |r| {
+            if (r.getMounted(memory_name) == null) {
+                const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
+                return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+            }
+        } else {
+            const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
+            return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+        }
+    }
+    const qualified_goal = context.qualifyClause(allocator, memory_name, goal) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_goal);
+
+    var query_result = engine.query(qualified_goal) catch {
         return mcp.tools.errorResult(allocator, "Query execution failed") catch return mcp.tools.ToolError.OutOfMemory;
     };
     defer query_result.deinit();
@@ -186,4 +203,119 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     const result = handler(allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+}
+
+test "named memory query routes to qualified goal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    // Create the knowledge.pl file required by registry.mount
+    var kfile = try tmp.dir.createFile("knowledge.pl", .{});
+    defer kfile.close();
+    try kfile.writeAll(":- module(feature_auth, []).\n");
+
+    // Fact exists only in the feature_auth module namespace, not globally.
+    // Without memory dispatch the unqualified search returns [] — this test fails RED.
+    try engine.loadString(
+        \\:- module(feature_auth, []).
+        \\:- dynamic(task_status/2).
+        \\task_status(auth_check, done).
+        \\
+    );
+
+    var registry = MemoryRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", dir_path, .project, .ro, engine);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("goal", .{ .string = "task_status(X, done)" });
+    try obj.put("memory", .{ .string = "feature_auth" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    const text = result.content[0].text.text;
+    try std.testing.expect(!std.mem.eql(u8, text, "[]"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "auth_check") != null);
+}
+
+test "default memory uses unqualified goal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    try engine.assertFact("task_status(deploy_v1, done)");
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("goal", .{ .string = "task_status(X, done)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    const text = result.content[0].text.text;
+    try std.testing.expect(!std.mem.eql(u8, text, "[]"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "deploy_v1") != null);
+}
+
+test "handler returns error result when goal is malformed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("goal", .{ .string = "(((" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(result.is_error);
+}
+
+test "handler returns error result when named memory is not mounted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("goal", .{ .string = "task_status(X, done)" });
+    try obj.put("memory", .{ .string = "nonexistent_module" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(result.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "not mounted") != null);
 }

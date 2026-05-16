@@ -164,7 +164,9 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
         }
 
         fn exec() anyerror!void {
-            const allocator = std.heap.page_allocator;
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const allocator = arena.allocator();
 
             var ctx = bootstrap.initBootstrap(allocator) catch |err| {
                 std.debug.print("zpm {s}: {s}. Run 'zpm init' first.\n", .{ def.cli_name, @errorName(err) });
@@ -172,9 +174,18 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
             };
             defer ctx.deinit();
             context.setPersistenceManager(@ptrCast(&ctx.pm));
+            defer context.clearPersistenceManager();
+            context.setMemoryRegistry(@ptrCast(&ctx.registry));
+            defer context.clearMemoryRegistry();
+            context.setMountManifest(@ptrCast(&ctx.manifest));
+            defer context.clearMountManifest();
+            context.setKbDir(ctx.paths.kb_dir);
+            defer context.clearKbDir();
+            defer context.clearEngine();
 
             // Build the JSON args object from set slots.
             var obj = std.json.ObjectMap.init(allocator);
+            defer obj.deinit();
             inline for (def.params) |p| {
                 switch (p.kind) {
                     .string => {

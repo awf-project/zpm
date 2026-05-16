@@ -10,6 +10,7 @@ Welcome to zpm documentation. Choose your path:
 
 ## For Users
 
+- **[Memory Segments](user-guide/memory-segments.md)** — Manage isolated knowledge domains with named memory segments
 - **[Schema Discovery](user-guide/schema-discovery.md)** — Explore predicates in the knowledge base
 - **[Fact Update and Upsert](user-guide/fact-update-upsert.md)** — Replace facts atomically or insert if missing
 - **[Quality Checks](user-guide/quality-checks.md)** — Verify consistency and explain reasoning chains

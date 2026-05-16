@@ -2,16 +2,17 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
-const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const engine_mod = @import("../prolog/engine.zig");
+const Engine = engine_mod.Engine;
 const term_utils = @import("term_utils");
 const validation = @import("tool_validation");
-const Term = engine_mod.Term;
+const retract_assumption = @import("retract_assumption.zig");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("pattern", "Glob-style pattern to match assumption names (e.g. 'hyp_*')", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -51,70 +52,21 @@ fn retractAssumptionJournaled(
     engine: *engine_mod.Engine,
     pm: ?*PersistenceManager,
     assumption: []const u8,
+    memory_name: []const u8,
 ) mcp.tools.ToolError!void {
-    const query_str = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(query_str);
-
-    var qr = engine.query(query_str) catch return;
-    defer qr.deinit();
-
-    var fact_strings: std.ArrayList([]u8) = .empty;
-    defer {
-        for (fact_strings.items) |s| allocator.free(s);
-        fact_strings.deinit(allocator);
-    }
-
-    for (qr.solutions) |solution| {
-        const fact_term = solution.bindings.get("F") orelse continue;
-        const fact_str = term_utils.termToString(allocator, fact_term) catch continue;
-        fact_strings.append(allocator, fact_str) catch {
-            allocator.free(fact_str);
-            continue;
-        };
-    }
-
-    const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(retract_pattern);
-
-    var orphan_facts: std.ArrayList([]const u8) = .empty;
-    defer orphan_facts.deinit(allocator);
-
-    for (fact_strings.items) |fact_str| {
-        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
-        defer allocator.free(check_query);
-
-        const has_other = blk: {
-            var check_qr = engine.query(check_query) catch break :blk false;
-            defer check_qr.deinit();
-            break :blk check_qr.solutions.len > 0;
-        };
-
-        if (!has_other) {
-            orphan_facts.append(allocator, fact_str) catch continue;
-        }
-    }
-
-    // Journal-first: flush the full WAL batch before any engine mutation.
-    if (pm) |mgr| {
-        var entries: std.ArrayList(JournalEntry) = .empty;
-        defer entries.deinit(allocator);
-        const ts = std.time.timestamp();
-        entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
-        for (orphan_facts.items) |fact_str| {
-            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = fact_str }) catch return mcp.tools.ToolError.OutOfMemory;
-        }
-        mgr.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-
-    engine.retractAll(retract_pattern) catch {};
-    for (orphan_facts.items) |fact_str| {
-        engine.retractAll(fact_str) catch {};
-    }
+    _ = retract_assumption.retractOneAssumption(allocator, engine, pm, assumption, memory_name) catch {};
 }
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const pattern = mcp.tools.getString(args, "pattern") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!validation.isValidGlobPattern(pattern)) return mcp.tools.ToolError.InvalidArguments;
+
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
@@ -124,7 +76,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         matching.deinit(allocator);
     }
 
-    var list_qr = engine.query("tms_justification(_,A)") catch {
+    const list_query = context.qualifyClause(allocator, memory_name, "tms_justification(_,A)") catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(list_query);
+    var list_qr = engine.query(list_query) catch {
         const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': 0 assumption(s) removed", .{pattern}) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(msg);
         return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -154,17 +108,14 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         };
     }
 
-    const pm = context.getPersistenceManagerAs(PersistenceManager);
     for (matching.items) |assumption| {
-        retractAssumptionJournaled(allocator, engine, pm, assumption) catch {};
+        retractAssumptionJournaled(allocator, engine, target_pm, assumption, memory_name) catch {};
     }
 
     const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler retracts all assumptions matching pattern" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

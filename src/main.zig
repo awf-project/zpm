@@ -48,5 +48,5 @@ test "server registers all tools" {
         try server.addTool(try def.build(arena.allocator()));
     }
 
-    try std.testing.expectEqual(@as(usize, 22), server.tools.count());
+    try std.testing.expectEqual(@as(usize, 26), server.tools.count());
 }

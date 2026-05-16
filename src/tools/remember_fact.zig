@@ -3,11 +3,14 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("fact", "A Prolog fact to assert (e.g. 'parent(tom, bob)')", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -29,24 +32,35 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     if (fact.len == 0) return mcp.tools.errorResult(allocator, "Fact must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
+
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-    engine.assertFact(fact) catch {
+
+    const qualified = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified);
+
+    engine.assertFact(qualified) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
-    if (std.fmt.allocPrint(allocator, "zpm_source({s}, interactive).", .{fact})) |sc| {
+
+    if (target_pm) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
+    if (std.fmt.allocPrint(allocator, "zpm_source({s}, interactive).", .{fact}) catch null) |sc| {
         defer allocator.free(sc);
         engine.assertFact(sc) catch {};
-    } else |_| {}
+    }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler asserts valid fact and returns confirmation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -190,9 +204,11 @@ test "handler returns ExecutionFailed when journal write fails" {
     const result = handler(allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 
+    // The engine assertion succeeded before the journal write failed, so the
+    // fact is present in the engine (safe data loss on restart, not corruption).
     var qr = try engine.query("journal_fail_fact(x).");
     defer qr.deinit();
-    try std.testing.expectEqual(@as(usize, 0), qr.solutions.len);
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
 }
 
 test "handler returns error result for invalid Prolog syntax" {
@@ -211,4 +227,134 @@ test "handler returns error result for invalid Prolog syntax" {
     const result = try handler(allocator, args);
 
     try std.testing.expect(result.is_error);
+}
+
+test "remember_fact.handler with named memory asserts qualified fact and journals to memory PM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    defer allocator.free(feature_path);
+    try std.fs.makeDirAbsolute(feature_path);
+
+    var feature_dir = try std.fs.openDirAbsolute(feature_path, .{});
+    defer feature_dir.close();
+    var kfile = try feature_dir.createFile("knowledge.pl", .{});
+    defer kfile.close();
+    try kfile.writeAll(":- module(feature_auth, []).\n");
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", feature_path, .project, .rw, engine);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "enabled(darkmode)" });
+    try obj.put("memory", .{ .string = "feature_auth" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var qr = try engine.query("feature_auth:enabled(darkmode).");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+
+    var jcontent_buf: [2048]u8 = undefined;
+    const jcontent = try tmp.dir.readFile("feature_auth/journal.wal", &jcontent_buf);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "feature_auth:enabled(darkmode)") != null);
+}
+
+test "remember_fact.handler without memory param asserts unqualified fact and journals to default PM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    defer pm.deinit();
+    context.setPersistenceManager(&pm);
+    defer context.clearPersistenceManager();
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "user_preference(theme, light)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var qr = try engine.query("user_preference(theme, light).");
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
+
+    var jcontent_buf: [1024]u8 = undefined;
+    const jcontent = try tmp.dir.readFile("journal.wal", &jcontent_buf);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "user_preference(theme, light)") != null);
+}
+
+test "remember_fact.handler with read-only memory returns error with read-only message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const engine = try Engine.init(.{});
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const ro_path = try std.fmt.allocPrint(allocator, "{s}/ro_mem", .{dir_path});
+    defer allocator.free(ro_path);
+    try std.fs.makeDirAbsolute(ro_path);
+
+    var ro_dir = try std.fs.openDirAbsolute(ro_path, .{});
+    defer ro_dir.close();
+    var kfile = try ro_dir.createFile("knowledge.pl", .{});
+    defer kfile.close();
+    try kfile.writeAll(":- module(ro_mem, []).\n");
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("ro_mem", ro_path, .project, .ro, engine);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("fact", .{ .string = "protected(data)" });
+    try obj.put("memory", .{ .string = "ro_mem" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(allocator, args);
+    try std.testing.expect(result.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "read-only") != null);
 }

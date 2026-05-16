@@ -4,11 +4,13 @@ const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("fact", "The Prolog fact to upsert (replaces existing clauses matching same functor and first argument)", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -34,19 +36,31 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         return mcp.tools.errorResult(allocator, "fact must not contain rule syntax") catch return mcp.tools.ToolError.OutOfMemory;
     }
 
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const pattern = buildUpsertPattern(allocator, fact) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(pattern);
 
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        const ts = std.time.timestamp();
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
+    const qualified_pattern = context.qualifyClause(allocator, memory_name, pattern) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_pattern);
+    const qualified_fact = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_fact);
 
-    engine.retractAll(pattern) catch return mcp.tools.ToolError.ExecutionFailed;
-    engine.assertFact(fact) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.retractAll(qualified_pattern) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.assertFact(qualified_fact) catch return mcp.tools.ToolError.ExecutionFailed;
+
+    if (target_pm) |pm| {
+        const ts = std.time.timestamp();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = qualified_pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
 
     const msg = std.fmt.allocPrint(allocator, "Upserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -95,8 +109,6 @@ fn buildUpsertPattern(allocator: std.mem.Allocator, fact: []const u8) ![]const u
     try pattern.append(allocator, ')');
     return pattern.toOwnedSlice(allocator);
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler inserts fact when no prior matching fact exists" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

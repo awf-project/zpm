@@ -2,6 +2,7 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
+const isValidAtomName = @import("tool_validation").isValidAtomName;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
@@ -34,13 +35,19 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         violations.deinit(allocator);
     }
 
-    const query_str = if (scope) |s|
-        std.fmt.allocPrint(allocator, "integrity_violation_{s}(X)", .{s}) catch return mcp.tools.ToolError.OutOfMemory
-    else
-        allocator.dupe(u8, "integrity_violation(X)") catch return mcp.tools.ToolError.OutOfMemory;
+    const query_str = if (scope) |s| blk: {
+        if (!isValidAtomName(s)) {
+            return mcp.tools.errorResult(allocator, "Invalid scope name") catch return mcp.tools.ToolError.OutOfMemory;
+        }
+        break :blk std.fmt.allocPrint(allocator, "integrity_violation_{s}(X)", .{s}) catch return mcp.tools.ToolError.OutOfMemory;
+    } else allocator.dupe(u8, "integrity_violation(X)") catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
-    var query_result = engine.query(query_str) catch {
+    const memory_name = context.resolveMemoryName(args);
+    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_query);
+
+    var query_result = engine.query(qualified_query) catch {
         const json = buildViolationsJson(allocator, violations.items) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(json);
         return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;

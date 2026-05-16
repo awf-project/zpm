@@ -8,7 +8,7 @@ title: "MCP Tools Reference"
 - **Transport**: STDIO (stdin/stdout)
 - **Protocol version**: `2025-11-25`
 - **Server name**: `zpm`
-- **Server version**: `0.2.1`
+- **Server version**: `0.4.0`
 
 ## Server Capabilities
 
@@ -35,6 +35,24 @@ Clients discover available tools by sending a `tools/list` request after the ini
 ```json
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ```
+
+## Memory Parameter
+
+Most knowledge and reasoning tools accept an optional `memory` parameter that targets a specific named memory segment. When omitted, the `default` memory is used (backward compatible).
+
+```json
+{
+  "name": "remember_fact",
+  "arguments": {
+    "fact": "task_done(login)",
+    "memory": "feature_auth"
+  }
+}
+```
+
+Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an error if the target memory is mounted read-only. The following tools support the `memory` parameter: `remember_fact`, `upsert_fact`, `assume_fact`, `forget_fact`, `update_fact`, `query_logic`, `define_rule`, `explain_why`, `trace_dependency`, `retract_assumption`, `retract_assumptions`, `list_assumptions`, `get_belief_status`, `get_justification`, `verify_consistency`, `clear_context`, `get_knowledge_schema`, `save_snapshot`, `restore_snapshot`, `list_snapshots`.
+
+Excluded tools: `echo` (no knowledge base interaction) and `get_persistence_status` (reports global persistence layer status).
 
 ## Overview
 
@@ -2042,6 +2060,394 @@ If the persistence manager is unavailable:
 {
   "jsonrpc": "2.0",
   "id": 23,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ExecutionFailed",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+## Create Memory Tool
+
+**Name:** `create_memory`
+
+**Description:** Create a new named memory segment backed by a dedicated Prolog module. Creates the on-disk directory and `knowledge.pl` module header. Does not mount the memory.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 24,
+  "method": "tools/call",
+  "params": {
+    "name": "create_memory",
+    "arguments": {
+      "name": "feature_auth",
+      "scope": "project"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "A valid Prolog atom (snake_case) naming the memory segment"
+    },
+    "scope": {
+      "type": "string",
+      "description": "The scope of the memory segment: \"project\" (default) or \"global\""
+    }
+  },
+  "required": ["name"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 24,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Created memory 'feature_auth' (project scope)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `name` argument is missing, null, empty, or not a valid Prolog atom:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 24,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the memory name already exists:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 24,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Memory 'feature_auth' already exists",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Mount Memory Tool
+
+**Name:** `mount_memory`
+
+**Description:** Mount an existing memory segment, loading its snapshot and replaying its WAL. Once mounted, the memory can be targeted by knowledge tools via the `memory` parameter.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 25,
+  "method": "tools/call",
+  "params": {
+    "name": "mount_memory",
+    "arguments": {
+      "name": "feature_auth",
+      "mode": "rw"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the memory segment to mount"
+    },
+    "mode": {
+      "type": "string",
+      "description": "Mount mode: \"rw\" (default, read-write) or \"ro\" (read-only)"
+    }
+  },
+  "required": ["name"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 25,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Mounted memory 'feature_auth' (rw)"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `name` argument is missing, null, empty, or not a valid Prolog atom:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 25,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the memory is already mounted or does not exist:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 25,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Memory 'feature_auth' is already mounted",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Unmount Memory Tool
+
+**Name:** `unmount_memory`
+
+**Description:** Unmount a mounted memory segment, flushing its WAL to disk and unloading the Prolog module. The `default` memory cannot be unmounted.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 26,
+  "method": "tools/call",
+  "params": {
+    "name": "unmount_memory",
+    "arguments": {
+      "name": "feature_auth"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the memory segment to unmount"
+    }
+  },
+  "required": ["name"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 26,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Unmounted memory 'feature_auth'"
+      }
+    ]
+  }
+}
+```
+
+### Response (Error)
+
+If the `name` argument is missing, null, empty, or not a valid Prolog atom:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 26,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the memory is not mounted or the name is "default":
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 26,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cannot unmount the default memory",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+---
+
+## List Memories Tool
+
+**Name:** `list_memories`
+
+**Description:** List all discoverable memory segments (mounted and unmounted) across project and global scopes. Returns name, scope, mount status, and mode for each memory.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 27,
+  "method": "tools/call",
+  "params": {
+    "name": "list_memories",
+    "arguments": {}
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": []
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 27,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"memories\":[{\"name\":\"default\",\"scope\":\"project\",\"mounted\":true,\"mode\":\"rw\"},{\"name\":\"feature_auth\",\"scope\":\"project\",\"mounted\":false,\"mode\":null}]}"
+      }
+    ]
+  }
+}
+```
+
+Each memory entry includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Memory segment name |
+| `scope` | string | `"project"` or `"global"` |
+| `mounted` | boolean | Whether the memory is currently mounted |
+| `mode` | string or null | `"rw"`, `"ro"`, or `null` if not mounted |
+
+### Response (Error)
+
+If discovery fails:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 27,
   "result": {
     "content": [
       {

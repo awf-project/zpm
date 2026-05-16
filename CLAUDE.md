@@ -58,6 +58,8 @@ docs/
 - Include inline tests in every tool handler file covering: happy path, null args, missing keys
 - Test entry point behavior through functional integration tests (`tests/functional_mcp_server_test.sh`) since `main()` contains blocking I/O
 - `make test` runs inline Zig tests; `make functional-test` runs end-to-end protocol validation
+- Isolate unit tests from system environment; mock XDG_DATA_HOME and other paths in test blocks
+- Include inline tests for CLI exec wrapper functions; extend coverage requirements beyond tool handlers
 
 ## Common Pitfalls
 
@@ -68,10 +70,13 @@ docs/
 - Always generate unique temp filenames with thread ID or atomic counter, not just PID; concurrent calls with same PID cause race conditions
 - Always implement timeout enforcement with actual timers and cancellation; config validation alone does not enforce limits
 - Always test resource unavailability in tool handlers; verify ExecutionFailed is returned when critical dependencies (engine, memory allocations) are null
+- Never commit test executables or build artifacts; add to .gitignore with source comments
 
 ## Review Standards
 
 - Never mark spec requirements complete without verifying actual implementation; requirement validation must check enforcement, not just partial satisfaction
+- Remove all stub function implementations before merging; use TODO(#issue) comments only for explicitly deferred work
+- Synchronize task status in implementation plans with actual code state before merging; never leave tasks marked BLOCKED or in-progress after completion
 
 ## ZPM Knowledge Base Usage
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -29,9 +30,17 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
-    const pm = context.getPersistenceManagerAs(PersistenceManager) orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    pm.restoreSnapshot(engine, name) catch return mcp.tools.ToolError.ExecutionFailed;
+    const memory_name = context.resolveMemoryName(args);
+    const reg = context.getMemoryRegistryAs(MemoryRegistry);
+    var target_pm: ?*PersistenceManager = null;
+    if (reg) |r| {
+        if (r.getMounted(memory_name)) |entry| target_pm = &entry.pm;
+    }
+    if (target_pm == null) target_pm = context.getPersistenceManagerAs(PersistenceManager);
+    if (target_pm == null) return mcp.tools.ToolError.ExecutionFailed;
+
+    target_pm.?.restoreSnapshot(engine, name) catch return mcp.tools.ToolError.ExecutionFailed;
 
     const msg = std.fmt.allocPrint(allocator, "Snapshot '{s}' restored successfully.", .{name}) catch
         return mcp.tools.ToolError.ExecutionFailed;

@@ -3,12 +3,14 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit();
     _ = try schema.addString("head", "The head of the Prolog rule (e.g. 'grandparent(X, Z)')", true);
     _ = try schema.addString("body", "The body of the Prolog rule (e.g. 'parent(X, Y), parent(Y, Z)')", true);
+    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build();
 
     return .{
@@ -32,21 +34,33 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     if (head.len == 0) return mcp.tools.errorResult(allocator, "Head must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const body = mcp.tools.getString(args, "body") orelse return mcp.tools.ToolError.InvalidArguments;
     if (body.len == 0) return mcp.tools.errorResult(allocator, "Body must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
+
+    const mem = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = mem.memory_name;
+    const target_pm = mem.pm;
+
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
     const rule = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
-    if (context.getPersistenceManagerAs(PersistenceManager)) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = rule }) catch return mcp.tools.ToolError.ExecutionFailed;
-    }
-    engine.assert(rule) catch {
+    defer allocator.free(rule);
+
+    const qualified_rule = context.qualifyClause(allocator, memory_name, rule) catch return mcp.tools.ToolError.OutOfMemory;
+    defer allocator.free(qualified_rule);
+
+    engine.assert(qualified_rule) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
+
+    if (target_pm) |pm| {
+        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = qualified_rule }) catch return mcp.tools.ToolError.ExecutionFailed;
+    }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
-
-const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler asserts valid rule and returns confirmation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

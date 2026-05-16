@@ -1,6 +1,7 @@
 const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 
 pub const tool = mcp.tools.Tool{
@@ -16,11 +17,16 @@ pub const tool = mcp.tools.Tool{
 };
 
 pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    _ = args;
+    const memory_name = context.resolveMemoryName(args);
+    const reg = context.getMemoryRegistryAs(MemoryRegistry);
+    var target_pm: ?*PersistenceManager = null;
+    if (reg) |r| {
+        if (r.getMounted(memory_name)) |entry| target_pm = &entry.pm;
+    }
+    if (target_pm == null) target_pm = context.getPersistenceManagerAs(PersistenceManager);
+    if (target_pm == null) return mcp.tools.ToolError.ExecutionFailed;
 
-    const pm = context.getPersistenceManagerAs(PersistenceManager) orelse return mcp.tools.ToolError.ExecutionFailed;
-
-    const snaps = pm.listSnapshots(allocator) catch return mcp.tools.ToolError.ExecutionFailed;
+    const snaps = target_pm.?.listSnapshots(allocator) catch return mcp.tools.ToolError.ExecutionFailed;
     defer {
         for (snaps) |s| allocator.free(s);
         allocator.free(snaps);
