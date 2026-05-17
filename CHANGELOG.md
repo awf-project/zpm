@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **F022**: `get_kb_overview` MCP tool and CLI subcommand — single-call JSON snapshot of the entire knowledge base
+  - Reports predicates with samples, assumptions, snapshots, persistence health, and mounted memory segments in one response
+  - `sample_size` parameter (default `2`, clamped to `[0, 50]`); `0` returns predicates with empty `samples` arrays
+  - Budget enforcement: payload capped at 64 KiB by progressively reducing `sample_size`; sets `truncated: true` when applied
+  - `mounts` section reports `name`, `scope`, and `mode` of every mounted segment, sorted lexicographically for stable output
+  - Available via MCP (`get_kb_overview`) and CLI (`zpm get-kb-overview [--sample-size N]`)
 - **F021**: Segmented memories — named, isolated knowledge segments backed by Trealla Prolog modules
   - Four new MCP tools: `create_memory`, `mount_memory`, `unmount_memory`, `list_memories`
   - Optional `memory` parameter on all 20 knowledge/reasoning tools for targeting specific segments
@@ -19,7 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Cross-memory queries via Prolog module qualification syntax (`module:predicate(Args)`)
   - Auto-creation and auto-mount of `default` memory on boot for backward compatibility
 
+### Fixed
+- Snapshots and mutations targeting the `default` memory now route through the global `PersistenceManager` instead of the segment-local one. Previously, `save_snapshot` wrote `.pl` files to `.zpm/kb/default/` and `remember_fact` journaled to `.zpm/kb/default/journal.wal`, while `initBootstrap` restored from `.zpm/data/` — causing facts and snapshots on `default` to silently disappear across restarts.
+
 ### Breaking Changes
+- **`mount_memory` is now idempotent.** Calling it on an already-mounted segment returns success instead of raising `MemoryError.AlreadyMounted`. Required because `create_memory` writes the segment to the manifest and bootstrap auto-mounts it on subsequent invocations, which made an explicit `mount_memory` step fail spuriously in CLI lifecycles. Clients that previously relied on `is_error: true` to detect double-mounts will silently see success instead.
 - **Knowledge base directory layout changed.** Persistence now uses `.zpm/kb/<name>/` per memory segment instead of the flat `.zpm/kb/` + `.zpm/data/` layout. Existing knowledge bases are not auto-migrated. Run `rm -rf .zpm/` and `zpm init` to reinitialize.
 
 ## [0.3.0] - 2026-04-29

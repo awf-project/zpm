@@ -104,21 +104,38 @@ pub fn clearKbDir() void {
     kb_dir = null;
 }
 
+/// Sentinel name for the global, always-mounted default memory.
+///
+/// Mutations and snapshots targeting this name bypass the per-segment
+/// `PersistenceManager` from the `MemoryRegistry` and route to the global PM
+/// instead. This preserves consistency with `initBootstrap`, which restores
+/// from the global WAL (`.zpm/data/`) and snapshot dir (`.zpm/kb/`). The
+/// segment PM that the registry creates for "default" has a stale
+/// `snapshot_dir` (`.zpm/kb/default/`), which is the wrong canonical location.
+///
+/// Any new tool that resolves a PersistenceManager from a memory name MUST
+/// honor this bypass — use `isDefaultMemory(name)` to gate the registry lookup.
+pub const default_memory_name = "default";
+
+pub fn isDefaultMemory(name: []const u8) bool {
+    return std.mem.eql(u8, name, default_memory_name);
+}
+
 pub fn resolveMemoryName(args: ?std.json.Value) []const u8 {
-    const a = args orelse return "default";
+    const a = args orelse return default_memory_name;
     const obj = switch (a) {
         .object => |o| o,
-        else => return "default",
+        else => return default_memory_name,
     };
-    const val = obj.get("memory") orelse return "default";
+    const val = obj.get("memory") orelse return default_memory_name;
     return switch (val) {
-        .string => |s| if (s.len == 0) "default" else s,
-        else => "default",
+        .string => |s| if (s.len == 0) default_memory_name else s,
+        else => default_memory_name,
     };
 }
 
 pub fn qualifyClause(allocator: std.mem.Allocator, memory_name: []const u8, clause: []const u8) ![]const u8 {
-    if (std.mem.eql(u8, memory_name, "default")) return allocator.dupe(u8, clause);
+    if (isDefaultMemory(memory_name)) return allocator.dupe(u8, clause);
     return std.fmt.allocPrint(allocator, "{s}:{s}", .{ memory_name, clause });
 }
 
@@ -139,15 +156,16 @@ pub fn resolveWritableMemory(
     const memory_name = resolveMemoryName(args);
     const reg = getMemoryRegistryAs(MemoryRegistry);
 
-    if (reg) |r| {
-        if (r.getMounted(memory_name)) |entry| {
-            if (entry.mode == .ro) {
-                return .{ .tool_result = mcp.tools.errorResult(allocator, "Memory is read-only") catch return mcp.tools.ToolError.OutOfMemory };
+    // See `default_memory_name` doc for the bypass rationale.
+    if (!isDefaultMemory(memory_name)) {
+        if (reg) |r| {
+            if (r.getMounted(memory_name)) |entry| {
+                if (entry.mode == .ro) {
+                    return .{ .tool_result = mcp.tools.errorResult(allocator, "Memory is read-only") catch return mcp.tools.ToolError.OutOfMemory };
+                }
+                return .{ .resolved = .{ .memory_name = memory_name, .pm = &entry.pm } };
             }
-            return .{ .resolved = .{ .memory_name = memory_name, .pm = &entry.pm } };
         }
-    }
-    if (!std.mem.eql(u8, memory_name, "default")) {
         const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
         return .{ .tool_result = mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory };
     }

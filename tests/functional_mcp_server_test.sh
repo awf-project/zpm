@@ -27,7 +27,7 @@ TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 
 assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo back the input message"'
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
-for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status; do
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview; do
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
 done
 
@@ -2010,5 +2010,65 @@ assert_contains "CLI memory list (separate process) sees MCP-mounted from_mcp" "
 assert_contains "CLI memory list shows mode=ro for MCP-mounted entry" "$F022_COHERE_CLI" "mode=ro"
 
 rm -rf "$F022_COHERE_DIR"
+
+# --- Test: get_kb_overview on empty KB returns empty predicates (F022) ---
+echo "Test: Empty KB get_kb_overview"
+OVERVIEW_EMPTY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2100,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$OVERVIEW_EMPTY_INPUT")
+OVERVIEW_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":2100')
+
+assert_contains "empty KB overview returns success" "$OVERVIEW_EMPTY_LINE" '"isError":false'
+assert_contains "empty KB overview has predicates array" "$OVERVIEW_EMPTY_LINE" '\"predicates\":[]'
+assert_contains "empty KB overview has persistence field" "$OVERVIEW_EMPTY_LINE" '\"persistence\":'
+assert_contains "empty KB overview has mounts field" "$OVERVIEW_EMPTY_LINE" '\"mounts\":'
+
+# --- Test: get_kb_overview on populated KB returns predicate metadata (F022) ---
+echo "Test: Populated KB get_kb_overview"
+OVERVIEW_POPULATED_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(tom,bob)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2201,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$OVERVIEW_POPULATED_INPUT")
+OVERVIEW_POPULATED_LINE=$(echo "$RESPONSE" | grep '"id":2201')
+
+assert_contains "populated KB overview returns success" "$OVERVIEW_POPULATED_LINE" '"isError":false'
+assert_contains "populated KB overview includes functor parent" "$OVERVIEW_POPULATED_LINE" '\"functor\":\"parent\"'
+assert_contains "populated KB overview includes arity 2" "$OVERVIEW_POPULATED_LINE" '\"arity\":2'
+assert_contains "populated KB overview includes count 1" "$OVERVIEW_POPULATED_LINE" '\"count\":1'
+assert_contains "populated KB overview includes sample parent(tom,bob)" "$OVERVIEW_POPULATED_LINE" 'parent(tom,bob)'
+
+# --- Test: get_kb_overview with sample_size:0 suppresses samples (F022) ---
+echo "Test: get_kb_overview sample_size:0"
+OVERVIEW_S0_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2300,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alpha,beta)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2301,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(gamma,delta)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2302,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{\"sample_size\":0}}}"
+RESPONSE=$(send_mcp "$OVERVIEW_S0_INPUT")
+OVERVIEW_S0_LINE=$(echo "$RESPONSE" | grep '"id":2302')
+
+assert_contains "sample_size:0 overview returns success" "$OVERVIEW_S0_LINE" '"isError":false'
+assert_contains "sample_size:0 overview has empty samples" "$OVERVIEW_S0_LINE" '\"samples\":[]'
+assert_contains "sample_size:0 overview has count 2" "$OVERVIEW_S0_LINE" '\"count\":2'
+
+# --- Test: get_kb_overview with sample_size:5 and rule returns kind rule or both (F022) ---
+echo "Test: get_kb_overview sample_size:5 with rule"
+OVERVIEW_RULE_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2400,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(a,b)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2401,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(b,c)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2402,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"ancestor(X,Y)\",\"body\":\"parent(X,Y)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2403,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{\"sample_size\":5}}}"
+RESPONSE=$(send_mcp "$OVERVIEW_RULE_INPUT")
+OVERVIEW_RULE_LINE=$(echo "$RESPONSE" | grep '"id":2403')
+
+assert_contains "sample_size:5 with rule overview returns success" "$OVERVIEW_RULE_LINE" '"isError":false'
+ANCESTOR_KIND=$(echo "$OVERVIEW_RULE_LINE" | jq -r '.result.content[0].text | fromjson | .predicates[] | select(.functor == "ancestor") | .kind' 2>/dev/null || echo "")
+assert_true "sample_size:5 with rule includes kind:rule or kind:both" \
+    bash -c "[ \"$ANCESTOR_KIND\" = rule ] || [ \"$ANCESTOR_KIND\" = both ]"
+PARENT_SAMPLE_COUNT=$(echo "$OVERVIEW_RULE_LINE" | jq -r '.result.content[0].text | fromjson | .predicates[] | select(.functor == "parent") | .samples | length' 2>/dev/null || echo 99)
+assert_true "sample_size:5 parent samples count <= 5" test "${PARENT_SAMPLE_COUNT:-99}" -le 5
 
 test_summary

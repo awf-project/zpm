@@ -72,6 +72,8 @@ docs/
 - Always test resource unavailability in tool handlers; verify ExecutionFailed is returned when critical dependencies (engine, memory allocations) are null
 - Never commit test executables or build artifacts; add to .gitignore with source comments
 
+- Never replace spec-mandated implementation patterns with approximations or optimizations; required algorithms, serialization formats, and error handling must be implemented exactly
+
 ## Review Standards
 
 - Never mark spec requirements complete without verifying actual implementation; requirement validation must check enforcement, not just partial satisfaction

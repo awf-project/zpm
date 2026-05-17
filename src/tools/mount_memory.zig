@@ -106,22 +106,35 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
-    reg.mount(name, disk_path, scope, mode, engine) catch |err| {
-        const msg = switch (err) {
-            error.AlreadyMounted => std.fmt.allocPrint(allocator, "Memory already mounted: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
-            else => std.fmt.allocPrint(allocator, "Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
+    const already_mounted = blk: {
+        reg.mount(name, disk_path, scope, mode, engine) catch |err| switch (err) {
+            error.AlreadyMounted => break :blk true,
+            else => {
+                const msg = std.fmt.allocPrint(allocator, "Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+                return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+            },
         };
-        return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+        break :blk false;
     };
 
-    if (context.getMountManifestAs(MountManifest)) |manifest| {
-        writeManifestEntry(allocator, manifest, name, disk_path, scope, mode) catch |err| {
-            reg.unmount(name) catch {};
-            return err;
-        };
+    if (!already_mounted) {
+        if (context.getMountManifestAs(MountManifest)) |manifest| {
+            writeManifestEntry(allocator, manifest, name, disk_path, scope, mode) catch |err| {
+                reg.unmount(name) catch {};
+                return err;
+            };
+        }
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Memory mounted: {s} ({s})", .{ name, mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
+    // Report the *effective* mode. When already-mounted, the segment keeps its
+    // original mode regardless of what the caller passed — surfacing the
+    // request's mode would mislead clients into thinking they changed it.
+    const effective_mode_str = if (already_mounted) blk: {
+        const entry = reg.getMounted(name) orelse break :blk mode_str;
+        break :blk @tagName(entry.mode);
+    } else mode_str;
+
+    const msg = std.fmt.allocPrint(allocator, "Memory mounted: {s} ({s})", .{ name, effective_mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -173,7 +186,12 @@ test "mount_memory handler with valid name mounts memory" {
     try std.testing.expect(!result.is_error);
 }
 
-test "mount_memory handler returns error for already-mounted memory" {
+test "mount_memory handler is idempotent for already-mounted memory" {
+    // mount_memory is idempotent: mounting an already-mounted segment returns
+    // success (exit 0) instead of an error.  This matches the semantics exposed
+    // by `zpm memory create` which writes a manifest entry that causes the
+    // segment to be auto-mounted on the next CLI invocation; a subsequent
+    // explicit `zpm memory mount` must therefore not fail.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -194,6 +212,7 @@ test "mount_memory handler returns error for already-mounted memory" {
     defer context.clearMemoryRegistry();
     context.setKbDir(dir_path);
     defer context.clearKbDir();
+    context.clearMountManifest();
 
     try tmp.dir.makeDir("dup_mem");
     var sub = try tmp.dir.openDir("dup_mem", .{});
@@ -208,8 +227,9 @@ test "mount_memory handler returns error for already-mounted memory" {
     try obj.put("name", .{ .string = "dup_mem" });
     const args = std.json.Value{ .object = obj };
 
+    // Second mount must succeed (idempotent), not return is_error=true.
     const result = try handler(allocator, args);
-    try std.testing.expect(result.is_error);
+    try std.testing.expect(!result.is_error);
 }
 
 test "mount_memory handler returns error for non-existent memory" {

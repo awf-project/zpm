@@ -27,6 +27,7 @@ const create_memory = @import("../tools/create_memory.zig");
 const mount_memory = @import("../tools/mount_memory.zig");
 const unmount_memory = @import("../tools/unmount_memory.zig");
 const list_memories = @import("../tools/list_memories.zig");
+const get_kb_overview = @import("../tools/get_kb_overview.zig");
 
 pub const ParamKind = enum { string, integer };
 
@@ -69,7 +70,7 @@ fn buildListMemories(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
     return list_memories.tool;
 }
 
-const tool_defs: [26]ToolDef = .{
+const tool_defs: [27]ToolDef = .{
     .{
         .cli_name = "echo",
         .mcp_name = "echo",
@@ -321,6 +322,15 @@ const tool_defs: [26]ToolDef = .{
         .build = &buildListMemories,
         .params = &.{},
     },
+    .{
+        .cli_name = "get-kb-overview",
+        .mcp_name = "get_kb_overview",
+        .description = "Single-call overview of the knowledge base: predicates, assumptions, snapshots, persistence",
+        .build = &get_kb_overview.tool,
+        .params = &.{
+            .{ .mcp_key = "sample_size", .help = "Max sample clauses to return per predicate (default 2, clamped to [0, 50])", .required = false, .kind = .integer },
+        },
+    },
 };
 
 /// Comptime-friendly view of the registry, used by app.zig to inline-instantiate
@@ -332,9 +342,9 @@ pub fn all() []const ToolDef {
     return &tool_defs;
 }
 
-test "all returns 26 tool definitions" {
+test "all returns 27 tool definitions" {
     const tools = all();
-    try std.testing.expectEqual(@as(usize, 26), tools.len);
+    try std.testing.expectEqual(@as(usize, 27), tools.len);
 }
 
 test "echo build returns tool with mcp name echo" {
@@ -442,4 +452,44 @@ test "echo and get_persistence_status do not have memory param" {
             }
         }
     }
+}
+
+test "get-kb-overview build returns tool with mcp name get_kb_overview" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for (tool_defs) |def| {
+        if (std.mem.eql(u8, def.cli_name, "get-kb-overview")) {
+            const t = try def.build(arena.allocator());
+            try std.testing.expectEqualStrings("get_kb_overview", t.name);
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "get-kb-overview ToolDef has sample_size integer param not required" {
+    const tools = all();
+    for (tools) |def| {
+        if (std.mem.eql(u8, def.cli_name, "get-kb-overview")) {
+            try std.testing.expectEqual(@as(usize, 1), def.params.len);
+            try std.testing.expectEqualStrings("sample_size", def.params[0].mcp_key);
+            try std.testing.expectEqual(ParamKind.integer, def.params[0].kind);
+            try std.testing.expect(!def.params[0].required);
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "get-kb-overview does not have memory param" {
+    const tools = all();
+    for (tools) |def| {
+        if (std.mem.eql(u8, def.cli_name, "get-kb-overview")) {
+            for (def.params) |p| {
+                try std.testing.expect(!std.mem.eql(u8, p.mcp_key, "memory"));
+            }
+            return;
+        }
+    }
+    return error.ToolNotFound;
 }
