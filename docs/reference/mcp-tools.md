@@ -52,7 +52,7 @@ Most knowledge and reasoning tools accept an optional `memory` parameter that ta
 
 Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an error if the target memory is mounted read-only. The following tools support the `memory` parameter: `remember_fact`, `upsert_fact`, `assume_fact`, `forget_fact`, `update_fact`, `query_logic`, `define_rule`, `explain_why`, `trace_dependency`, `retract_assumption`, `retract_assumptions`, `list_assumptions`, `get_belief_status`, `get_justification`, `verify_consistency`, `clear_context`, `get_knowledge_schema`, `save_snapshot`, `restore_snapshot`, `list_snapshots`.
 
-Excluded tools: `echo` (no knowledge base interaction) and `get_persistence_status` (reports global persistence layer status).
+Excluded tools: `echo` (no knowledge base interaction), `get_persistence_status` (reports global persistence layer status), and `get_kb_overview` (snapshots the currently active engine database; namespace-scoped filtering is deferred).
 
 ## Overview
 
@@ -707,6 +707,133 @@ If the `fact` argument is missing, null, or empty:
   }
 }
 ```
+
+## Get KB Overview Tool
+
+**Name:** `get_kb_overview`
+
+**Description:** Return a single-call JSON snapshot of the knowledge base: every user-defined predicate (with functor, arity, kind, clause count, and sample clauses as Prolog term strings), the active assumptions, persisted snapshots metadata, persistence layer health, and mounted memory segments. Replaces the chained sequence of `get_knowledge_schema` + `list_assumptions` + `list_snapshots` + `get_persistence_status` + `list_memories` with one round-trip. Read-only; namespace-scoped filtering is deferred — the overview always reflects the currently active engine database.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "method": "tools/call",
+  "params": {
+    "name": "get_kb_overview",
+    "arguments": {
+      "sample_size": 2
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "sample_size": {
+      "type": "integer",
+      "description": "Number of sample clauses per predicate (default: 2, max: 50)"
+    }
+  },
+  "required": []
+}
+```
+
+The `sample_size` argument is optional. Values below `0` are clamped to `0`; values above `50` are clamped to `50`. When omitted, defaults to `2`.
+
+### Response (Success — Populated KB)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"predicates\":[{\"functor\":\"parent\",\"arity\":2,\"kind\":\"fact\",\"count\":2,\"samples\":[\"parent(tom, bob)\",\"parent(bob, sue)\"]},{\"functor\":\"ancestor\",\"arity\":2,\"kind\":\"rule\",\"count\":1,\"samples\":[\"ancestor(X, Y) :- parent(X, Y)\"]}],\"assumptions\":{\"count\":1,\"names\":[\"infra_healthy\"]},\"snapshots\":{\"count\":1,\"latest\":\"before_refactor\",\"latest_at\":\"2026-05-17T10:42:11Z\"},\"persistence\":{\"wal_pending\":2,\"healthy\":true},\"mounts\":{\"available\":true,\"count\":1,\"items\":[{\"name\":\"default\",\"scope\":\"project\",\"mode\":\"rw\"}]},\"truncated\":false}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success — Empty KB)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"predicates\":[],\"assumptions\":{\"count\":0,\"names\":[]},\"snapshots\":{\"count\":0,\"latest\":null,\"latest_at\":null},\"persistence\":{\"wal_pending\":0,\"healthy\":false},\"mounts\":{\"available\":false,\"count\":0,\"items\":[]},\"truncated\":false}"
+      }
+    ]
+  }
+}
+```
+
+### Response Schema
+
+Top-level fields in the embedded JSON:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `predicates` | array | One entry per user-defined predicate; builtins and system predicates are excluded |
+| `predicates[].functor` | string | Predicate functor name |
+| `predicates[].arity` | integer | Number of arguments |
+| `predicates[].kind` | string | `"fact"` — all clauses have a `true` body; `"rule"` — all clauses have a non-trivial body; `"both"` — predicate contains at least one fact and at least one rule |
+| `predicates[].count` | integer | Total number of clauses |
+| `predicates[].samples` | array of string | Up to `sample_size` clauses, rendered as Prolog term strings (`head` for facts, `head :- body` for rules); empty when `sample_size: 0` |
+| `assumptions.count` | integer | Number of active assumptions |
+| `assumptions.names` | array of string | Sorted, deduplicated assumption identifiers |
+| `snapshots.count` | integer | Number of persisted snapshots |
+| `snapshots.latest` | string \| null | Most recently created snapshot name (lexicographic ordering), or `null` if none |
+| `snapshots.latest_at` | string \| null | ISO-8601 UTC timestamp of the latest snapshot file's mtime, or `null` if none |
+| `persistence.wal_pending` | integer | Count of unflushed WAL journal entries (best-effort scan) |
+| `persistence.healthy` | boolean | `true` when the persistence manager is active; `false` when degraded, disabled, or unavailable |
+| `mounts.available` | boolean | `true` when the memory registry is initialized; `false` when it is not yet set up |
+| `mounts.count` | integer | Number of currently mounted memory segments |
+| `mounts.items` | array | One entry per mounted segment; empty when `mounts.available` is `false` or no segments are mounted |
+| `mounts.items[].name` | string | Mount name (a valid Prolog atom) |
+| `mounts.items[].scope` | string | `"project"` — scoped to the current project; `"global"` — shared across projects |
+| `mounts.items[].mode` | string | `"rw"` — read-write; `"ro"` — read-only |
+| `truncated` | boolean | `true` when the response exceeded the internal 64 KiB budget and samples were trimmed; the tool favors breadth (reducing samples across all predicates) over depth |
+
+### Response (Error)
+
+If the Prolog engine is not initialized:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Prolog engine is not initialized",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+The tool never raises an error for `null`/missing arguments, an empty KB, missing snapshots, or a degraded persistence layer — it returns a valid envelope with zero counts and `persistence.healthy: false` instead.
 
 ## Get Knowledge Schema Tool
 
@@ -2459,3 +2586,134 @@ If discovery fails:
   }
 }
 ```
+
+---
+
+## Get KB Overview Tool
+
+**Name:** `get_kb_overview`
+
+**Description:** Return a single-call JSON snapshot of the zpm knowledge base, including predicates with sample clauses, active assumptions, available snapshots, and persistence layer health.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "method": "tools/call",
+  "params": {
+    "name": "get_kb_overview",
+    "arguments": {
+      "sample_size": 2
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "sample_size": {
+      "type": "integer",
+      "description": "Number of sample clauses per predicate (default: 2, max: 50). Set to 0 to suppress samples."
+    }
+  },
+  "required": []
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"predicates\":[{\"name\":\"task_status\",\"arity\":2,\"kind\":\"fact\",\"count\":5,\"samples\":[\"task_status(f017, done)\",\"task_status(f020, pending)\"]},{\"name\":\"depends_on\",\"arity\":2,\"kind\":\"both\",\"count\":3,\"samples\":[\"depends_on(X, Y) :- task_status(X, active)\",\"depends_on(f017, f016)\"]}],\"assumptions\":[{\"name\":\"user_context\",\"facts\":[\"user_id(alice)\",\"session_token(xyz123)\"]},{\"name\":\"experiment_mode\",\"facts\":[\"debug_enabled(true)\"]}],\"snapshots\":[{\"name\":\"before_deploy\",\"timestamp\":1685678900},{\"name\":\"after_migration\",\"timestamp\":1685678950}],\"persistence\":{\"status\":\"active\",\"journal_size_bytes\":2048,\"last_snapshot\":\"after_migration\",\"last_checkpoint_epoch\":1685678950},\"truncated\":false}"
+      }
+    ]
+  }
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `predicates` | array | List of user-defined predicates in the knowledge base |
+| `predicates[].name` | string | Predicate name (functor) |
+| `predicates[].arity` | number | Predicate arity |
+| `predicates[].kind` | string | `"fact"`, `"rule"`, or `"both"` |
+| `predicates[].count` | number | Total number of clauses (facts + rules) |
+| `predicates[].samples` | array | Up to `sample_size` sample clauses (suppressed if `sample_size: 0`) |
+| `assumptions` | array | List of active assumptions in the truth maintenance system |
+| `assumptions[].name` | string | Assumption identifier |
+| `assumptions[].facts` | array | Facts supported by this assumption |
+| `snapshots` | array | List of available knowledge base snapshots |
+| `snapshots[].name` | string | Snapshot name |
+| `snapshots[].timestamp` | number | Unix epoch timestamp of snapshot creation |
+| `persistence` | object | Persistence layer health status |
+| `persistence.status` | string | `"active"`, `"degraded"`, or `"offline"` |
+| `persistence.journal_size_bytes` | number | Write-ahead journal size in bytes |
+| `persistence.last_snapshot` | string | Name of the most recent snapshot (or null) |
+| `persistence.last_checkpoint_epoch` | number | Unix epoch of the last checkpoint |
+| `truncated` | boolean | True if the response was truncated due to size limits (total output capped at 64 KB) |
+
+### Usage Examples
+
+#### Get overview with default samples (2 clauses per predicate)
+
+```bash
+zpm get-kb-overview
+```
+
+#### Get overview with extended samples (5 clauses per predicate)
+
+```bash
+zpm get-kb-overview --sample-size 5
+```
+
+#### Get overview without samples (for large knowledge bases)
+
+```bash
+zpm get-kb-overview --sample-size 0
+```
+
+### Response (Error)
+
+If the Prolog engine is not initialized or unavailable:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 28,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Prolog engine is not initialized",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Notes
+
+- Built-in predicates (those starting with `$`, containing `:`, or named `tms_justification`, `zpm_source`, `portray`) are excluded from the overview.
+- Sample clauses are formatted as they appear in the knowledge base (facts as atoms, rules as `Head :- Body`).
+- The knowledge base is queried once, making this tool efficient even for large knowledge bases.
+- Output is truncated at 64 KB. Use `sample_size: 0` to reduce output size for very large knowledge bases.

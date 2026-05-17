@@ -214,4 +214,30 @@ for NAME in default feature_alpha feature_beta; do
     assert_equals "migrated manifest includes $NAME" "$NAME" "$FOUND"
 done
 
+# Feature: F022 — get-kb-overview CLI subcommand
+
+echo "Test: zpm get-kb-overview CLI subcommand responds with valid JSON over STDIO"
+capture_cli_in_zpm_dir get-kb-overview
+assert_exit_code "exit 0" "$CLI_EXIT" 0
+case "$CLI_OUTPUT" in
+    \{*) green "  PASS: get-kb-overview output begins with {"; PASS=$((PASS+1)) ;;
+    *) red "  FAIL: get-kb-overview output does not begin with {: '$CLI_OUTPUT'"; FAIL=$((FAIL+1)) ;;
+esac
+assert_contains "JSON contains predicates field" "$CLI_OUTPUT" '"predicates"'
+assert_contains "JSON contains assumptions field" "$CLI_OUTPUT" '"assumptions"'
+assert_contains "JSON contains truncated field" "$CLI_OUTPUT" '"truncated"'
+assert_contains "JSON contains mounts field" "$CLI_OUTPUT" '"mounts"'
+
+echo "Test: zpm get-kb-overview --sample-size 0 returns predicates with empty samples arrays and truncated: false"
+KBO_SAMPLE_DIR=$(make_zpm_dir)
+pushd "$KBO_SAMPLE_DIR" >/dev/null
+capture_cli remember-fact --fact 'kbo_test_pred(a,b)'
+capture_cli remember-fact --fact 'kbo_test_pred(c,d)'
+capture_cli get-kb-overview --sample-size 0
+popd >/dev/null
+assert_exit_code "get-kb-overview --sample-size 0 exits 0" "$CLI_EXIT" 0
+assert_contains "predicates include kbo_test_pred" "$CLI_OUTPUT" "kbo_test_pred"
+assert_contains "samples arrays are empty" "$CLI_OUTPUT" '"samples":[]'
+assert_contains "truncated is false" "$CLI_OUTPUT" '"truncated":false'
+
 test_summary

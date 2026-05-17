@@ -35,7 +35,10 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     const reg = context.getMemoryRegistryAs(MemoryRegistry);
     var target_pm: ?*PersistenceManager = null;
     if (reg) |r| {
-        if (r.getMounted(memory_name)) |entry| target_pm = &entry.pm;
+        // See `context.default_memory_name` for the bypass rationale.
+        if (!context.isDefaultMemory(memory_name)) {
+            if (r.getMounted(memory_name)) |entry| target_pm = &entry.pm;
+        }
     }
     if (target_pm == null) target_pm = context.getPersistenceManagerAs(PersistenceManager);
     if (target_pm == null) return mcp.tools.ToolError.ExecutionFailed;

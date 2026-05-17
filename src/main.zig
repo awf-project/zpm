@@ -48,5 +48,8 @@ test "server registers all tools" {
         try server.addTool(try def.build(arena.allocator()));
     }
 
-    try std.testing.expectEqual(@as(usize, 26), server.tools.count());
+    // Derive expected count from the registry so this test stays in sync
+    // automatically when tools are added or removed.
+    const expected = comptime registry.all().len;
+    try std.testing.expectEqual(@as(usize, expected), server.tools.count());
 }

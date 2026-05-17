@@ -581,6 +581,26 @@ pub fn build(b: *std.Build) void {
 
     // memory CLI subcommand group tests (F021)
     // Tests run via exe_unit_tests: main.zig → app.zig → memory.zig
+
+    // get_kb_overview tool tests (F022)
+    const get_kb_overview_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/get_kb_overview.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    get_kb_overview_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    get_kb_overview_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    get_kb_overview_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    get_kb_overview_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    get_kb_overview_test_module.addImport("../memory/registry.zig", registry_test_module);
+    // term_utils is not imported by get_kb_overview.zig — omitted intentionally.
+    get_kb_overview_test_module.addImport("tool_validation", validation_module);
+    const get_kb_overview_unit_tests = b.addTest(.{
+        .root_module = get_kb_overview_test_module,
+    });
+    linkFfi(get_kb_overview_unit_tests, trealla);
+    const run_get_kb_overview_unit_tests = b.addRunArtifact(get_kb_overview_unit_tests);
+    test_step.dependOn(&run_get_kb_overview_unit_tests.step);
 }
 
 fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {

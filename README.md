@@ -4,7 +4,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init`, `serve`, `upgrade`, and all 26 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- CLI entrypoint with `init`, `serve`, `upgrade`, and all 27 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
@@ -132,6 +132,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required), `memory` (string, optional) |
 | `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required), `memory` (string, optional) |
 | `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required), `memory` (string, optional) |
+| `get_kb_overview` | Single-call snapshot of the knowledge base: user predicates with sample clauses, assumptions, snapshots, and persistence health | `sample_size` (integer, optional) |
 | `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | `memory` (string, optional) |
 | `get_persistence_status` | Query the persistence layer status including journal size, last snapshot, and operational mode | (no required arguments) |
 | `list_assumptions` | List all currently active assumptions and their associated facts | `memory` (string, optional) |

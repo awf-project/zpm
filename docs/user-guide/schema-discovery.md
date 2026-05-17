@@ -96,6 +96,7 @@ This indicates the engine failed to initialize. Check server logs for details.
 
 ## See Also
 
+- [Knowledge Base Overview](knowledge-base-overview.md) — Get a comprehensive snapshot with samples and assumptions
 - [MCP Tools Reference](../reference/mcp-tools.md) — Full tool specifications
 - [Quality Checks](quality-checks.md) — Verify consistency and explain reasoning chains
 - [Prolog Engine Reference](../reference/prolog-engine.md) — Query syntax and semantics

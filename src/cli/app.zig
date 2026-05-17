@@ -58,12 +58,19 @@ fn assembleCommands(runner: *cli.AppRunner) ![]cli.Command {
     return runner.allocCommands(tmp[0..]);
 }
 
-test "buildApp returns app with 31 subcommands" {
+test "versionAction returns without error" {
+    try versionAction();
+}
+
+test "buildApp returns app with correct number of subcommands" {
     var runner = try cli.AppRunner.init(std.testing.allocator);
     defer runner.deinit();
     const app = try buildApp(&runner);
     try std.testing.expect(app.command.target == .subcommands);
-    try std.testing.expectEqual(@as(usize, 31), app.command.target.subcommands.len);
+    // 5 fixed subcommands (init, serve, upgrade, version, memory) + one per registry entry.
+    // Derived from the registry so this test stays in sync automatically.
+    const expected = comptime registry.tool_defs_for_app.len + 5;
+    try std.testing.expectEqual(@as(usize, expected), app.command.target.subcommands.len);
 }
 
 test "buildApp first four subcommands are init, serve, upgrade, version" {
