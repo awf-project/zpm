@@ -4,7 +4,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init`, `serve`, `upgrade`, and all 27 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- CLI entrypoint with `init`, `serve`, `upgrade`, and all 28 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
@@ -129,6 +129,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `define_rule` | Assert a Prolog rule into the knowledge base | `head` (string, required), `body` (string, required), `memory` (string, optional) |
 | `echo` | Returns the provided message (health-check) | `message` (string, required) |
 | `explain_why` | Trace proof tree for a fact and return structured deduction chain | `fact` (string, required), `max_depth` (integer, optional), `memory` (string, optional) |
+| `find_predicate_references` | Locate all usage sites of a Prolog predicate in the knowledge base | `functor` (string, required), `arity` (integer, optional), `memory` (string, optional), `include_cross_memory_refs` (boolean, optional) |
 | `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required), `memory` (string, optional) |
 | `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required), `memory` (string, optional) |
 | `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required), `memory` (string, optional) |

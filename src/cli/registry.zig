@@ -28,6 +28,7 @@ const mount_memory = @import("../tools/mount_memory.zig");
 const unmount_memory = @import("../tools/unmount_memory.zig");
 const list_memories = @import("../tools/list_memories.zig");
 const get_kb_overview = @import("../tools/get_kb_overview.zig");
+const find_predicate_references = @import("../tools/find_predicate_references.zig");
 
 pub const ParamKind = enum { string, integer };
 
@@ -70,7 +71,7 @@ fn buildListMemories(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
     return list_memories.tool;
 }
 
-const tool_defs: [27]ToolDef = .{
+const tool_defs: [28]ToolDef = .{
     .{
         .cli_name = "echo",
         .mcp_name = "echo",
@@ -331,6 +332,18 @@ const tool_defs: [27]ToolDef = .{
             .{ .mcp_key = "sample_size", .help = "Max sample clauses to return per predicate (default 2, clamped to [0, 50])", .required = false, .kind = .integer },
         },
     },
+    .{
+        .cli_name = "find-predicate-references",
+        .mcp_name = "find_predicate_references",
+        .description = "Find all clauses referencing a target predicate, walking rule bodies for meta-call nesting",
+        .build = &find_predicate_references.tool,
+        .params = &.{
+            .{ .mcp_key = "functor", .help = "Predicate functor name", .required = true },
+            .{ .mcp_key = "arity", .help = "Predicate arity (optional, omit to match all arities)", .required = false, .kind = .integer },
+            .{ .mcp_key = "memory", .help = "Memory segment name (optional, defaults to 'default')", .required = false },
+            .{ .mcp_key = "include_cross_memory_refs", .help = "Include cross-memory references (optional, defaults to true)", .required = false, .kind = .string }, // CLI path sends "true"/"false" string; MCP path sends JSON boolean directly
+        },
+    },
 };
 
 /// Comptime-friendly view of the registry, used by app.zig to inline-instantiate
@@ -342,9 +355,9 @@ pub fn all() []const ToolDef {
     return &tool_defs;
 }
 
-test "all returns 27 tool definitions" {
+test "all returns 28 tool definitions" {
     const tools = all();
-    try std.testing.expectEqual(@as(usize, 27), tools.len);
+    try std.testing.expectEqual(@as(usize, 28), tools.len);
 }
 
 test "echo build returns tool with mcp name echo" {
@@ -488,6 +501,42 @@ test "get-kb-overview does not have memory param" {
             for (def.params) |p| {
                 try std.testing.expect(!std.mem.eql(u8, p.mcp_key, "memory"));
             }
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "find-predicate-references build returns tool with mcp name find_predicate_references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for (tool_defs) |def| {
+        if (std.mem.eql(u8, def.cli_name, "find-predicate-references")) {
+            const t = try def.build(arena.allocator());
+            try std.testing.expectEqualStrings("find_predicate_references", t.name);
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "find-predicate-references ToolDef has 4 params with correct kinds and requirements" {
+    const tools = all();
+    for (tools) |def| {
+        if (std.mem.eql(u8, def.cli_name, "find-predicate-references")) {
+            try std.testing.expectEqual(@as(usize, 4), def.params.len);
+            try std.testing.expectEqualStrings("functor", def.params[0].mcp_key);
+            try std.testing.expect(def.params[0].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[0].kind);
+            try std.testing.expectEqualStrings("arity", def.params[1].mcp_key);
+            try std.testing.expect(!def.params[1].required);
+            try std.testing.expectEqual(ParamKind.integer, def.params[1].kind);
+            try std.testing.expectEqualStrings("memory", def.params[2].mcp_key);
+            try std.testing.expect(!def.params[2].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[2].kind);
+            try std.testing.expectEqualStrings("include_cross_memory_refs", def.params[3].mcp_key);
+            try std.testing.expect(!def.params[3].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[3].kind);
             return;
         }
     }

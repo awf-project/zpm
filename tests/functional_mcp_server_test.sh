@@ -27,7 +27,7 @@ TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 
 assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo back the input message"'
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
-for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview; do
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview find_predicate_references; do
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
 done
 
@@ -2070,5 +2070,29 @@ assert_true "sample_size:5 with rule includes kind:rule or kind:both" \
     bash -c "[ \"$ANCESTOR_KIND\" = rule ] || [ \"$ANCESTOR_KIND\" = both ]"
 PARENT_SAMPLE_COUNT=$(echo "$OVERVIEW_RULE_LINE" | jq -r '.result.content[0].text | fromjson | .predicates[] | select(.functor == "parent") | .samples | length' 2>/dev/null || echo 99)
 assert_true "sample_size:5 parent samples count <= 5" test "${PARENT_SAMPLE_COUNT:-99}" -le 5
+
+# --- Test: find_predicate_references discovers rule body references (F024) ---
+echo "Test: find_predicate_references with rule body reference"
+FIND_REF_SEED_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2500,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f016, in_progress)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2501,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"active_work(X)\",\"body\":\"task_status(X, in_progress)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2502,\"method\":\"tools/call\",\"params\":{\"name\":\"find_predicate_references\",\"arguments\":{\"functor\":\"task_status\",\"arity\":2}}}"
+RESPONSE=$(send_mcp "$FIND_REF_SEED_INPUT")
+FIND_REF_LINE=$(echo "$RESPONSE" | grep '"id":2502')
+
+assert_contains "find_predicate_references returns success" "$FIND_REF_LINE" '"isError":false'
+assert_contains "find_predicate_references response contains active_work head" "$FIND_REF_LINE" 'active_work'
+assert_contains "find_predicate_references response contains task_status in body" "$FIND_REF_LINE" 'task_status'
+
+# --- Test: find_predicate_references missing required functor argument returns error (F024) ---
+echo "Test: find_predicate_references missing functor argument error"
+FIND_REF_MISSING_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2503,\"method\":\"tools/call\",\"params\":{\"name\":\"find_predicate_references\",\"arguments\":{}}}"
+RESPONSE=$(send_mcp "$FIND_REF_MISSING_INPUT")
+FIND_REF_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":2503')
+
+assert_contains "find_predicate_references missing functor returns isError true" "$FIND_REF_MISSING_LINE" '"isError":true'
 
 test_summary

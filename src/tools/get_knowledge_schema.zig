@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const validation = @import("tool_validation");
+const clause_utils = @import("tool_clause_utils");
 
 pub const tool = mcp.tools.Tool{
     .name = "get_knowledge_schema",
@@ -57,15 +58,15 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
             .atom => |s| std.fmt.parseInt(i64, s, 10) catch continue,
             else => continue,
         };
-        if (isBuiltin(name_raw)) continue;
+        if (clause_utils.isBuiltin(name_raw)) continue;
         if (!validation.isValidAtomName(name_raw)) continue;
 
         const name = allocator.dupe(u8, name_raw) catch return mcp.tools.ToolError.OutOfMemory;
         errdefer allocator.free(name);
 
-        const fact_count = countClauses(engine, allocator, name, arity, "true") catch
+        const fact_count = clause_utils.countClauses(engine, allocator, name, arity, "true") catch
             return mcp.tools.ToolError.ExecutionFailed;
-        const all_count = countClauses(engine, allocator, name, arity, "_") catch
+        const all_count = clause_utils.countClauses(engine, allocator, name, arity, "_") catch
             return mcp.tools.ToolError.ExecutionFailed;
         const rule_count = if (all_count > fact_count) all_count - fact_count else 0;
 
@@ -82,46 +83,6 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
-fn isBuiltin(name: []const u8) bool {
-    if (name.len == 0) return true;
-    if (name[0] == '$') return true;
-    if (std.mem.indexOf(u8, name, ":") != null) return true;
-    if (std.mem.eql(u8, name, "tms_justification")) return true;
-    if (std.mem.eql(u8, name, "zpm_source")) return true;
-    // Trealla declares portray/1 dynamic at engine init; hide it from schema.
-    if (std.mem.eql(u8, name, "portray")) return true;
-    return false;
-}
-
-fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-    const w = &aw.writer;
-    try w.writeAll("clause(");
-    try w.writeAll(name);
-    if (arity > 0) {
-        try w.writeByte('(');
-        var i: i64 = 0;
-        while (i < arity) : (i += 1) {
-            if (i > 0) try w.writeByte(',');
-            try w.writeByte('_');
-        }
-        try w.writeByte(')');
-    }
-    try w.writeByte(',');
-    try w.writeAll(body);
-    try w.writeByte(')');
-    return aw.toOwnedSlice();
-}
-
-fn countClauses(engine: *engine_mod.Engine, allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) !usize {
-    const query_str = try buildClauseQuery(allocator, name, arity, body);
-    defer allocator.free(query_str);
-    var result = try engine.query(query_str);
-    defer result.deinit();
-    return result.solutions.len;
-}
-
 fn buildSchemaJson(allocator: std.mem.Allocator, entries: []const PredicateEntry) ![]u8 {
     var aw: std.io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
@@ -130,12 +91,7 @@ fn buildSchemaJson(allocator: std.mem.Allocator, entries: []const PredicateEntry
     try w.writeAll("{\"predicates\":[");
     for (entries, 0..) |entry, i| {
         if (i > 0) try w.writeByte(',');
-        const pred_type: []const u8 = if (entry.fact_count > 0 and entry.rule_count > 0)
-            "both"
-        else if (entry.rule_count > 0)
-            "rule"
-        else
-            "fact";
+        const pred_type = clause_utils.predicateKind(entry.fact_count, entry.rule_count);
         const count = entry.fact_count + entry.rule_count;
         try w.writeAll("{\"name\":");
         try std.json.Stringify.value(entry.name, .{}, w);
