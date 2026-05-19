@@ -708,6 +708,212 @@ If the `fact` argument is missing, null, or empty:
 }
 ```
 
+## Find Predicate References Tool
+
+**Name:** `find_predicate_references`
+
+**Description:** Locate all usage sites of a Prolog predicate within the knowledge base. Returns every clause body containing the target predicate, the count of direct facts matching the predicate's functor/arity, TMS assumptions referencing the predicate, and module-qualified references from other memory segments. Essential for safe refactoring and understanding predicate dependencies.
+
+**Annotations:**
+- Read-only: ✓
+- Idempotent: ✓
+- Non-destructive: ✓
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "tools/call",
+  "params": {
+    "name": "find_predicate_references",
+    "arguments": {
+      "functor": "task_status",
+      "arity": 2,
+      "memory": "default"
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "functor": {
+      "type": "string",
+      "description": "The predicate functor to search for (e.g. \"task_status\")"
+    },
+    "arity": {
+      "type": "integer",
+      "description": "The arity of the predicate (optional; when omitted, matches all arities of the functor)"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Memory segment to search: a named segment, \"default\" for the default memory, or \"__all__\" to scan every mounted memory (default: \"default\")"
+    },
+    "include_cross_memory_refs": {
+      "type": "boolean",
+      "description": "Include module-qualified references from other memory segments in the response (default: true)"
+    }
+  },
+  "required": ["functor"]
+}
+```
+
+### Response (Success — References Found)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"target\":\"task_status/2\",\"memory\":\"default\",\"rules\":[{\"head\":\"active_work(X)\",\"body\":\"task_status(X, in_progress)\",\"memory\":\"default\"}],\"direct_facts_count\":2,\"facts_referenced_in_assumptions\":[{\"assumption\":\"sprint_planning\",\"fact\":\"task_status(f024, done)\",\"memory\":\"default\"}],\"cross_memory_refs\":[]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success — No References)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"target\":\"nonexistent_predicate\",\"memory\":\"default\",\"rules\":[],\"direct_facts_count\":0,\"facts_referenced_in_assumptions\":[],\"cross_memory_refs\":[]}"
+      }
+    ]
+  }
+}
+```
+
+### Response (Success — Cross-Memory References)
+
+When `memory: "__all__"` and `include_cross_memory_refs: true`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"target\":\"task_status/2\",\"memory\":\"__all__\",\"rules\":[{\"head\":\"active_work(X)\",\"body\":\"task_status(X, in_progress)\",\"memory\":\"default\"},{\"head\":\"critical_tasks(X)\",\"body\":\"audit:task_status(X, critical)\",\"memory\":\"audit\"}],\"direct_facts_count\":3,\"facts_referenced_in_assumptions\":[],\"cross_memory_refs\":[{\"head\":\"check_external(X)\",\"body\":\"monitoring:task_status(X, blocked)\",\"memory\":\"reporting\",\"qualifier\":\"monitoring\"}]}"
+      }
+    ]
+  }
+}
+```
+
+### Response Schema
+
+Top-level fields in the embedded JSON:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target` | string | The search target formatted as `"functor/arity"` when arity is provided, or `"functor"` when omitted |
+| `memory` | string | The requested memory scope: a segment name, `"default"`, or `"__all__"` |
+| `rules` | array | One entry per rule whose body contains the target predicate; each entry has `head`, `body`, and `memory` fields |
+| `rules[].head` | string | The rule head as a Prolog term string |
+| `rules[].body` | string | The rule body as a Prolog term string |
+| `rules[].memory` | string | The originating memory segment |
+| `direct_facts_count` | integer | Count of facts with the target functor/arity (facts have a trivial body of `true`) |
+| `facts_referenced_in_assumptions` | array | One entry per TMS assumption referencing the target predicate; each entry has `assumption`, `fact`, and `memory` fields |
+| `facts_referenced_in_assumptions[].assumption` | string | The assumption label (hypothesis name) |
+| `facts_referenced_in_assumptions[].fact` | string | The assumed fact term as a Prolog term string |
+| `facts_referenced_in_assumptions[].memory` | string | The originating memory segment |
+| `cross_memory_refs` | array | One entry per module-qualified reference (e.g., `other_seg:predicate(...)`) found in another memory segment; each entry has `head`, `body`, `memory`, and `qualifier` fields; empty unless `include_cross_memory_refs: true` |
+| `cross_memory_refs[].head` | string | The rule head as a Prolog term string |
+| `cross_memory_refs[].body` | string | The rule body as a Prolog term string |
+| `cross_memory_refs[].memory` | string | The memory segment that **owns** the referencing rule (the segment being scanned) |
+| `cross_memory_refs[].qualifier` | string | The module name used in the cross-memory call (the segment being referenced, e.g. `"default"` in `default:task_status(X, done)`) |
+
+### Response (Error)
+
+If the `functor` argument is missing or not a string:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the `functor` contains invalid characters or is not a valid Prolog atom:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the `memory` parameter names a segment that is not mounted:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Memory not mounted: unknown_segment",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+If the `arity` argument is negative or not an integer:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
 ## Get KB Overview Tool
 
 **Name:** `get_kb_overview`

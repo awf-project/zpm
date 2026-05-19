@@ -133,6 +133,31 @@ pub fn build(b: *std.Build) void {
     const run_validation_unit_tests = b.addRunArtifact(validation_unit_tests);
     test_step.dependOn(&run_validation_unit_tests.step);
 
+    // tool_clause_utils shared module: isBuiltin filter + buildClauseQuery
+    // helper shared by get_knowledge_schema, get_kb_overview, and F024.
+    const clause_utils_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/clause_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    clause_utils_module.addImport("../prolog/engine.zig", engine_test_module);
+    const clause_utils_exe_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/clause_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    clause_utils_exe_module.addImport("../prolog/engine.zig", engine_test_module);
+    exe_module.addImport("tool_clause_utils", clause_utils_exe_module);
+    const clause_utils_unit_tests = b.addTest(.{
+        .root_module = clause_utils_module,
+    });
+    // clause_utils imports engine.zig (which uses Trealla FFI); without
+    // linkFfi the linker tries the system default path and fails on
+    // crt1.o:.sframe on toolchains with incomplete SFRAME relocation support.
+    linkFfi(clause_utils_unit_tests, trealla);
+    const run_clause_utils_unit_tests = b.addRunArtifact(clause_utils_unit_tests);
+    test_step.dependOn(&run_clause_utils_unit_tests.step);
+
     // snapshot persistence module (F010) — declared early for tool test dependencies
     const snapshot_test_module = b.createModule(.{
         .root_source_file = b.path("src/persistence/snapshot.zig"),
@@ -595,12 +620,34 @@ pub fn build(b: *std.Build) void {
     get_kb_overview_test_module.addImport("../memory/registry.zig", registry_test_module);
     // term_utils is not imported by get_kb_overview.zig — omitted intentionally.
     get_kb_overview_test_module.addImport("tool_validation", validation_module);
+    get_kb_overview_test_module.addImport("tool_clause_utils", clause_utils_module);
     const get_kb_overview_unit_tests = b.addTest(.{
         .root_module = get_kb_overview_test_module,
     });
     linkFfi(get_kb_overview_unit_tests, trealla);
     const run_get_kb_overview_unit_tests = b.addRunArtifact(get_kb_overview_unit_tests);
     test_step.dependOn(&run_get_kb_overview_unit_tests.step);
+
+    // find_predicate_references tool tests (F024)
+    const find_predicate_references_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/find_predicate_references.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    find_predicate_references_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    find_predicate_references_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    find_predicate_references_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    find_predicate_references_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    find_predicate_references_test_module.addImport("../memory/registry.zig", registry_test_module);
+    find_predicate_references_test_module.addImport("tool_validation", validation_module);
+    find_predicate_references_test_module.addImport("tool_clause_utils", clause_utils_module);
+    find_predicate_references_test_module.addImport("term_utils", term_utils_module);
+    const find_predicate_references_unit_tests = b.addTest(.{
+        .root_module = find_predicate_references_test_module,
+    });
+    linkFfi(find_predicate_references_unit_tests, trealla);
+    const run_find_predicate_references_unit_tests = b.addRunArtifact(find_predicate_references_unit_tests);
+    test_step.dependOn(&run_find_predicate_references_unit_tests.step);
 }
 
 fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {

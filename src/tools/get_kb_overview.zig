@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const validation = @import("tool_validation");
+const clause_utils = @import("tool_clause_utils");
 const manager_mod = @import("../persistence/manager.zig");
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
@@ -125,18 +126,13 @@ fn buildJson(allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, 
                 .atom => |s| std.fmt.parseInt(i64, s, 10) catch continue,
                 else => continue,
             };
-            if (isBuiltin(name_raw)) continue;
+            if (clause_utils.isBuiltin(name_raw)) continue;
             if (!validation.isValidAtomName(name_raw)) continue;
 
-            const fact_count = countClauses(engine, allocator, name_raw, arity, "true") catch continue;
-            const all_count = countClauses(engine, allocator, name_raw, arity, "_") catch continue;
+            const fact_count = clause_utils.countClauses(engine, allocator, name_raw, arity, "true") catch continue;
+            const all_count = clause_utils.countClauses(engine, allocator, name_raw, arity, "_") catch continue;
             const rule_count = if (all_count > fact_count) all_count - fact_count else 0;
-            const kind: []const u8 = if (fact_count > 0 and rule_count > 0)
-                "both"
-            else if (rule_count > 0)
-                "rule"
-            else
-                "fact";
+            const kind = clause_utils.predicateKind(fact_count, rule_count);
             const total_count = fact_count + rule_count;
 
             var samples: std.ArrayList([]u8) = .empty;
@@ -184,54 +180,6 @@ fn buildJson(allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, 
     try buf.appendSlice(allocator, if (truncated) ",\"truncated\":true}" else ",\"truncated\":false}");
 
     return buf.toOwnedSlice(allocator);
-}
-
-/// Returns true for predicate names that should be excluded from the overview.
-/// Filtered predicates fall into three categories:
-///   - Empty name or `$`-prefixed: Trealla internal builtins injected into the
-///     dynamic database during engine initialisation.
-///   - Module-qualified names (containing `:`): cross-module references that
-///     are not user-defined facts/rules.
-///   - ZPM infrastructure predicates: `tms_justification` (TMS bookkeeping),
-///     `zpm_source` (WAL provenance tag), `portray` (Prolog print hook). These
-///     appear as dynamic predicates but are ZPM internals, not user knowledge.
-fn isBuiltin(name: []const u8) bool {
-    if (name.len == 0) return true;
-    if (name[0] == '$') return true;
-    if (std.mem.indexOf(u8, name, ":") != null) return true;
-    if (std.mem.eql(u8, name, "tms_justification")) return true;
-    if (std.mem.eql(u8, name, "zpm_source")) return true;
-    if (std.mem.eql(u8, name, "portray")) return true;
-    return false;
-}
-
-fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-    const w = &aw.writer;
-    try w.writeAll("clause(");
-    try w.writeAll(name);
-    if (arity > 0) {
-        try w.writeByte('(');
-        var i: i64 = 0;
-        while (i < arity) : (i += 1) {
-            if (i > 0) try w.writeByte(',');
-            try w.writeByte('_');
-        }
-        try w.writeByte(')');
-    }
-    try w.writeByte(',');
-    try w.writeAll(body);
-    try w.writeByte(')');
-    return aw.toOwnedSlice();
-}
-
-fn countClauses(engine: *Engine, allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) !usize {
-    const query_str = try buildClauseQuery(allocator, name, arity, body);
-    defer allocator.free(query_str);
-    var result = try engine.query(query_str);
-    defer result.deinit();
-    return result.solutions.len;
 }
 
 fn collectSamples(
