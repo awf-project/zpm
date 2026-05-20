@@ -158,6 +158,28 @@ pub fn build(b: *std.Build) void {
     const run_clause_utils_unit_tests = b.addRunArtifact(clause_utils_unit_tests);
     test_step.dependOn(&run_clause_utils_unit_tests.step);
 
+    // predicate_types shared module (F025) — RuleRef/AssumptionRef/CrossMemoryRef types
+    // and bodyContainsTarget/detectCrossMemoryRefs walkers shared by F024 and F025.
+    const predicate_types_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/predicate_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    predicate_types_module.addImport("../prolog/engine.zig", engine_test_module);
+    const predicate_types_exe_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/predicate_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    predicate_types_exe_module.addImport("../prolog/engine.zig", engine_test_module);
+    exe_module.addImport("tool_predicate_types", predicate_types_exe_module);
+    const predicate_types_unit_tests = b.addTest(.{
+        .root_module = predicate_types_module,
+    });
+    linkFfi(predicate_types_unit_tests, trealla);
+    const run_predicate_types_unit_tests = b.addRunArtifact(predicate_types_unit_tests);
+    test_step.dependOn(&run_predicate_types_unit_tests.step);
+
     // snapshot persistence module (F010) — declared early for tool test dependencies
     const snapshot_test_module = b.createModule(.{
         .root_source_file = b.path("src/persistence/snapshot.zig"),
@@ -642,12 +664,35 @@ pub fn build(b: *std.Build) void {
     find_predicate_references_test_module.addImport("tool_validation", validation_module);
     find_predicate_references_test_module.addImport("tool_clause_utils", clause_utils_module);
     find_predicate_references_test_module.addImport("term_utils", term_utils_module);
+    find_predicate_references_test_module.addImport("tool_predicate_types", predicate_types_module);
     const find_predicate_references_unit_tests = b.addTest(.{
         .root_module = find_predicate_references_test_module,
     });
     linkFfi(find_predicate_references_unit_tests, trealla);
     const run_find_predicate_references_unit_tests = b.addRunArtifact(find_predicate_references_unit_tests);
     test_step.dependOn(&run_find_predicate_references_unit_tests.step);
+
+    // rename_predicate tool tests (F025)
+    const rename_predicate_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/rename_predicate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    rename_predicate_test_module.addImport("mcp", mcp_dep.module("mcp"));
+    rename_predicate_test_module.addImport("../prolog/engine.zig", engine_test_module);
+    rename_predicate_test_module.addImport("../persistence/manager.zig", manager_test_module);
+    rename_predicate_test_module.addImport("../persistence/wal.zig", wal_test_module);
+    rename_predicate_test_module.addImport("../memory/registry.zig", registry_test_module);
+    rename_predicate_test_module.addImport("tool_validation", validation_module);
+    rename_predicate_test_module.addImport("tool_clause_utils", clause_utils_module);
+    rename_predicate_test_module.addImport("term_utils", term_utils_module);
+    rename_predicate_test_module.addImport("tool_predicate_types", predicate_types_module);
+    const rename_predicate_unit_tests = b.addTest(.{
+        .root_module = rename_predicate_test_module,
+    });
+    linkFfi(rename_predicate_unit_tests, trealla);
+    const run_rename_predicate_unit_tests = b.addRunArtifact(rename_predicate_unit_tests);
+    test_step.dependOn(&run_rename_predicate_unit_tests.step);
 }
 
 fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {

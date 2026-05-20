@@ -95,10 +95,10 @@ find_predicate_references functor='old_name' arity=2
 # 2. Review the rules and facts returned
 # (in the response: check all entries in "rules" and direct_facts_count)
 
-# 3. Rename the predicate using rename_predicate (future feature)
-# or manually:
-#   - Retract old facts and rules
-#   - Assert new facts and rules with updated name
+# 3. Rename the predicate atomically with rename_predicate
+#    rename_predicate old_functor='old_name' new_functor='new_name' arity=2
+#    See: docs/user-guide/predicate-rename.md
+# (or manually retract old facts/rules and assert new ones)
 
 # 4. Verify the refactor is complete
 find_predicate_references functor='old_name' arity=2

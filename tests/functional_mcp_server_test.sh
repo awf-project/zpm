@@ -27,7 +27,7 @@ TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 
 assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo back the input message"'
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
-for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview find_predicate_references; do
+for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview find_predicate_references rename_predicate; do
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
 done
 
@@ -2094,5 +2094,105 @@ RESPONSE=$(send_mcp "$FIND_REF_MISSING_INPUT")
 FIND_REF_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":2503')
 
 assert_contains "find_predicate_references missing functor returns isError true" "$FIND_REF_MISSING_LINE" '"isError":true'
+
+# === F025: rename_predicate ===
+
+# --- Test: rename_predicate single-memory happy path (F025/US1) ---
+echo "Test: rename_predicate single-memory happy path"
+RENAME_HAPPY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f001, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2601,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f002, pending)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2602,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"is_resolved(F)\",\"body\":\"task_status(F, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2603,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2}}}
+{\"jsonrpc\":\"2.0\",\"id\":2604,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature_status(_, Status)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2605,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"task_status(_, Status)\"}}}"
+RESPONSE=$(send_mcp "$RENAME_HAPPY_INPUT")
+RENAME_HAPPY_LINE=$(echo "$RESPONSE" | grep '"id":2603')
+QUERY_FEATURE_LINE=$(echo "$RESPONSE" | grep '"id":2604')
+QUERY_TASK_LINE=$(echo "$RESPONSE" | grep '"id":2605')
+
+assert_contains "rename_predicate happy path returns success" "$RENAME_HAPPY_LINE" '"isError":false'
+assert_contains "rename_predicate returns renamed_facts count" "$RENAME_HAPPY_LINE" '\"renamed_facts\"'
+assert_contains "after rename, feature_status has done result" "$QUERY_FEATURE_LINE" 'done'
+assert_contains "after rename, feature_status has pending result" "$QUERY_FEATURE_LINE" 'pending'
+assert_contains "after rename, task_status query returns 0 results" "$QUERY_TASK_LINE" '[]'
+
+# --- Test: rename_predicate dry_run preview (F025/US1) ---
+echo "Test: rename_predicate dry_run preview"
+RENAME_DRYRUN_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f003, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2611,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f004, pending)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2612,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"is_resolved(F)\",\"body\":\"task_status(F, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2613,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2,\"dry_run\":true}}}
+{\"jsonrpc\":\"2.0\",\"id\":2614,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"task_status(_, Status)\"}}}"
+RESPONSE=$(send_mcp "$RENAME_DRYRUN_INPUT")
+RENAME_DRYRUN_LINE=$(echo "$RESPONSE" | grep '"id":2613')
+QUERY_DRYRUN_LINE=$(echo "$RESPONSE" | grep '"id":2614')
+
+assert_contains "dry_run returns success" "$RENAME_DRYRUN_LINE" '"isError":false'
+assert_contains "dry_run response contains renamed_facts" "$RENAME_DRYRUN_LINE" '\"renamed_facts\"'
+assert_contains "dry_run response contains rewritten_rule_bodies" "$RENAME_DRYRUN_LINE" '\"rewritten_rule_bodies\"'
+assert_contains "dry_run response contains affected_rule_ids" "$RENAME_DRYRUN_LINE" '\"affected_rule_ids\"'
+assert_contains "dry_run response contains preserved_assumptions" "$RENAME_DRYRUN_LINE" '\"preserved_assumptions\"'
+assert_contains "dry_run response contains cross_memory_impact" "$RENAME_DRYRUN_LINE" '\"cross_memory_impact\"'
+assert_contains "dry_run response contains warnings" "$RENAME_DRYRUN_LINE" '\"warnings\"'
+assert_contains "after dry_run, task_status still has done result" "$QUERY_DRYRUN_LINE" 'done'
+assert_contains "after dry_run, task_status still has pending result" "$QUERY_DRYRUN_LINE" 'pending'
+
+# --- Test: rename_predicate collision rejection (F025/US2) ---
+echo "Test: rename_predicate collision rejection"
+RENAME_COLLISION_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f005, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2621,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature_status(f006, pending)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2622,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2}}}"
+RESPONSE=$(send_mcp "$RENAME_COLLISION_INPUT")
+RENAME_COLLISION_LINE=$(echo "$RESPONSE" | grep '"id":2622')
+
+assert_contains "collision returns isError true" "$RENAME_COLLISION_LINE" '"isError":true'
+assert_contains "collision error message mentions collision" "$RENAME_COLLISION_LINE" "collision"
+
+# --- Test: rename_predicate ISO operator rejection (F025/US3) ---
+echo "Test: rename_predicate ISO operator rejection"
+RENAME_ISO_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2630,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"=\",\"new_functor\":\"renamed_eq\",\"arity\":2}}}"
+RESPONSE=$(send_mcp "$RENAME_ISO_INPUT")
+RENAME_ISO_LINE=$(echo "$RESPONSE" | grep '"id":2630')
+
+assert_contains "ISO operator returns isError true" "$RENAME_ISO_LINE" '"isError":true'
+
+# --- Test: rename_predicate read-only memory rejection (F025/US4) ---
+echo "Test: rename_predicate read-only memory rejection"
+RENAME_RO_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2640,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_test_f025\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2641,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"ro_test_f025\",\"mode\":\"ro\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2642,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2,\"memory\":\"ro_test_f025\"}}}"
+RESPONSE=$(send_mcp "$RENAME_RO_INPUT")
+RENAME_RO_LINE=$(echo "$RESPONSE" | grep '"id":2642')
+
+assert_contains "read-only memory returns isError true" "$RENAME_RO_LINE" '"isError":true'
+assert_contains "read-only error message mentions read-only" "$RENAME_RO_LINE" "read-only"
+
+# --- Test: rename_predicate cross-memory propagation (F025/US5) ---
+echo "Test: rename_predicate cross-memory propagation"
+RENAME_CROSS_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2650,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(default_f, done)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2651,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"audit_f025\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2652,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"audit_f025\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2653,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"audit_rule(X)\",\"body\":\"default:task_status(X, done)\",\"memory\":\"audit_f025\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2654,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2,\"propagate_cross_memory_refs\":true}}}
+{\"jsonrpc\":\"2.0\",\"id\":2655,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"audit_rule(X)\",\"memory\":\"audit_f025\"}}}"
+RESPONSE=$(send_mcp "$RENAME_CROSS_INPUT")
+RENAME_CROSS_LINE=$(echo "$RESPONSE" | grep '"id":2654')
+QUERY_CROSS_LINE=$(echo "$RESPONSE" | grep '"id":2655')
+
+assert_contains "cross-memory rename returns success" "$RENAME_CROSS_LINE" '"isError":false'
+assert_contains "cross-memory response contains cross_memory_impact" "$RENAME_CROSS_LINE" '\"cross_memory_impact\"'
+assert_contains "after cross-memory rename, audit_rule query returns binding" "$QUERY_CROSS_LINE" 'default_f'
 
 test_summary

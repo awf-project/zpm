@@ -50,7 +50,7 @@ Most knowledge and reasoning tools accept an optional `memory` parameter that ta
 }
 ```
 
-Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an error if the target memory is mounted read-only. The following tools support the `memory` parameter: `remember_fact`, `upsert_fact`, `assume_fact`, `forget_fact`, `update_fact`, `query_logic`, `define_rule`, `explain_why`, `trace_dependency`, `retract_assumption`, `retract_assumptions`, `list_assumptions`, `get_belief_status`, `get_justification`, `verify_consistency`, `clear_context`, `get_knowledge_schema`, `save_snapshot`, `restore_snapshot`, `list_snapshots`.
+Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an error if the target memory is mounted read-only. The following tools support the `memory` parameter: `remember_fact`, `upsert_fact`, `assume_fact`, `forget_fact`, `update_fact`, `rename_predicate`, `query_logic`, `define_rule`, `explain_why`, `trace_dependency`, `retract_assumption`, `retract_assumptions`, `list_assumptions`, `get_belief_status`, `get_justification`, `verify_consistency`, `clear_context`, `get_knowledge_schema`, `find_predicate_references`, `save_snapshot`, `restore_snapshot`, `list_snapshots`.
 
 Excluded tools: `echo` (no knowledge base interaction), `get_persistence_status` (reports global persistence layer status), and `get_kb_overview` (snapshots the currently active engine database; namespace-scoped filtering is deferred).
 
@@ -913,6 +913,319 @@ If the `arity` argument is negative or not an integer:
   }
 }
 ```
+
+## Rename Predicate Tool
+
+**Name:** `rename_predicate`
+
+**Description:** Atomically rename a Prolog functor across all facts, rules, TMS justifications, and optionally cross-memory references in the knowledge base. A dry-run mode previews changes without mutation. Protects against self-renames, name collisions, ambiguous arities, and built-in functor corruption.
+
+**Annotations:**
+- Read-only: ✗
+- Idempotent: ✗
+- Non-destructive: ✗
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "tools/call",
+  "params": {
+    "name": "rename_predicate",
+    "arguments": {
+      "old_functor": "task_status",
+      "new_functor": "feature_status",
+      "arity": 2,
+      "memory": "default",
+      "dry_run": false,
+      "propagate_cross_memory_refs": false
+    }
+  }
+}
+```
+
+### Input Schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "old_functor": {
+      "type": "string",
+      "description": "The current functor name to rename (must be a valid Prolog atom)"
+    },
+    "new_functor": {
+      "type": "string",
+      "description": "The new functor name (must be a valid Prolog atom and not already exist with the same arity)"
+    },
+    "arity": {
+      "type": "integer",
+      "description": "The arity of the functor to rename (required if multiple arities exist). If omitted and only one arity exists, that arity is used. If omitted and multiple arities exist, returns an error listing detected arities."
+    },
+    "memory": {
+      "type": "string",
+      "description": "The target memory segment (default: 'default'). Must be writable (not mounted read-only)."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "description": "Preview mode: returns the full impact report without mutating the KB (default: false)"
+    },
+    "propagate_cross_memory_refs": {
+      "type": "boolean",
+      "description": "When true, rewrite qualified references (e.g., 'segment:old_functor/N') in all writable mounted memories (default: false). Cross-memory impact is always reported regardless of this flag."
+    }
+  },
+  "required": ["old_functor", "new_functor"]
+}
+```
+
+### Response (Success)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"renamed_facts\": 2, \"rewritten_rule_bodies\": 1, \"affected_rule_ids\": [\"active_work(X)\"], \"cross_memory_impact\": {\"rewritten\": [], \"warnings\": [], \"skipped_readonly\": []}, \"is_error\": false}"
+      }
+    ]
+  }
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `renamed_facts` | number | Count of facts renamed from `old_functor/arity` to `new_functor/arity` |
+| `rewritten_rule_bodies` | number | Count of rule bodies that mentioned the old functor and were rewritten |
+| `affected_rule_ids` | array | List of rule head identifiers (as strings) that were rewritten, e.g., `["active_work(X)", "completed(X)"]` |
+| `cross_memory_impact` | object | Summary of the rename's impact across all mounted memories |
+| `cross_memory_impact.rewritten` | array | Memories where qualified refs were updated (only populated when `propagate_cross_memory_refs=true`) |
+| `cross_memory_impact.rewritten[].memory` | string | Name of the rewritten memory segment |
+| `cross_memory_impact.rewritten[].rules_updated` | number | Count of rules updated in this memory |
+| `cross_memory_impact.warnings` | array | Writable memories with qualified refs that were NOT modified (only populated when `propagate_cross_memory_refs=false`) |
+| `cross_memory_impact.warnings[].memory` | string | Name of the memory containing unmodified refs |
+| `cross_memory_impact.warnings[].refs` | number | Count of unmodified qualified refs in this memory |
+| `cross_memory_impact.warnings[].reason` | string | Always `"propagate_cross_memory_refs=false"` |
+| `cross_memory_impact.skipped_readonly` | array | Read-only memories with qualified refs (always present, never modified) |
+| `cross_memory_impact.skipped_readonly[].memory` | string | Name of the read-only memory |
+| `cross_memory_impact.skipped_readonly[].refs` | number | Count of qualified refs in this memory |
+| `cross_memory_impact.skipped_readonly[].reason` | string | Always `"read-only"` |
+| `is_error` | boolean | False on success; if true, refer to response text for error message (string) |
+
+### Dry Run Example
+
+```bash
+zpm rename-predicate --old_functor task_status --new_functor feature_status --arity 2 --dry_run true
+```
+
+Returns the same response shape as a real run (counts, affected rules, cross-memory impact) **without modifying the KB**. Verification: a subsequent `query_logic` for the old functor still returns results.
+
+### Cross-Memory Impact Example
+
+When `propagate_cross_memory_refs=true` and multiple memories reference the renamed functor:
+
+```json
+{
+  "renamed_facts": 5,
+  "rewritten_rule_bodies": 3,
+  "affected_rule_ids": ["process_work(X)", "check_status(Y)"],
+  "cross_memory_impact": {
+    "rewritten": [
+      {
+        "memory": "audit",
+        "rules_updated": 1
+      },
+      {
+        "memory": "reporting",
+        "rules_updated": 2
+      }
+    ],
+    "warnings": [],
+    "skipped_readonly": [
+      {
+        "memory": "archive",
+        "refs": 3,
+        "reason": "read-only"
+      }
+    ]
+  },
+  "is_error": false
+}
+```
+
+### Usage Examples
+
+#### Basic Single-Memory Rename
+
+```bash
+# Rename task_status/2 to feature_status/2 in the default memory
+zpm rename-predicate \
+  --old_functor task_status \
+  --new_functor feature_status \
+  --arity 2
+```
+
+#### Dry Run Before Applying
+
+```bash
+# Preview the impact without modifying anything
+zpm rename-predicate \
+  --old_functor task_status \
+  --new_functor feature_status \
+  --arity 2 \
+  --dry_run true
+```
+
+#### Rename in a Specific Memory
+
+```bash
+# Rename within the 'audit_log' memory segment
+zpm rename-predicate \
+  --memory audit_log \
+  --old_functor check_result \
+  --new_functor test_result \
+  --arity 2
+```
+
+#### Cross-Memory Propagation
+
+```bash
+# Rename and rewrite qualified refs in all writable mounted memories
+zpm rename-predicate \
+  --old_functor task_status \
+  --new_functor feature_status \
+  --arity 2 \
+  --propagate_cross_memory_refs true
+```
+
+### Response (Error)
+
+#### Ambiguous Arity (Multiple Arities Exist)
+
+If `old_functor` exists with multiple arities and `arity` is not provided:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Ambiguous arity for task_status; detected arities: 1, 2. Specify arity parameter.",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+#### Name Collision (Target Name Already Exists)
+
+If `new_functor/arity` already exists:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cannot rename: feature_status/2 already exists in memory 'default'",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+#### Read-Only Memory
+
+If the target memory is mounted read-only:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cannot rename in read-only memory: archive",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+#### Built-In Operator (Blacklisted Functor)
+
+If attempting to rename a protected ISO Prolog operator:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Cannot rename ISO operator: =/2",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+#### Invalid Arguments
+
+If required arguments are missing or invalid:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "InvalidArguments",
+        "isError": true
+      }
+    ]
+  }
+}
+```
+
+### Guarantees
+
+- **Atomicity**: All-or-nothing at the per-memory level. If any write fails, the engine state and WAL are rolled back for that memory.
+- **TMS Preservation**: Assumption identifiers remain unchanged; justifications referencing the old functor are automatically updated to the new functor.
+- **Collision Detection**: Rejects renames where the target name already exists (no silent merges).
+- **Dry Run Byte-Identity**: When `dry_run=true`, the KB and WAL file remain byte-identical before and after the call.
+- **Cross-Memory Reporting**: Impact across all mounted memories is always computed and reported, even when `propagate_cross_memory_refs=false`.
+
+### Blacklisted Operators (Cannot be Renamed)
+
+The following ISO Prolog operators cannot be renamed, whether as `old_functor` or `new_functor`:
+`=/2`, `,/2`, `;/2`, `is/2`, `->/2`, `\=/2`, `==/2`, `\==/2`, `=../2`, `@</2`, `@>/2`, `@=</2`, `@>=/2`, `</2`, `>/2`, `=</2`, `>=/2`, `+/2`, `-/2`, `*/2`, `//2`, `:-/2`, `:-/1`, `\+/1`, `!/0`
+
+### See Also
+
+- [Rename Predicates Safely](../user-guide/rename-predicate.md) — How-to guide with workflow examples
+- [Find Predicate References Tool](#find-predicate-references-tool) — Locate all usage sites before renaming
+- [Get Knowledge Schema Tool](#get-knowledge-schema-tool) — Explore all predicates in the knowledge base
+- [Truth Maintenance System](../user-guide/truth-maintenance.md) — Understand how assumptions are updated
 
 ## Get KB Overview Tool
 

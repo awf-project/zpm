@@ -5,31 +5,18 @@ const engine_mod = @import("../prolog/engine.zig");
 const validation = @import("tool_validation");
 const clause_utils = @import("tool_clause_utils");
 const term_utils = @import("term_utils");
+const predicate_types = @import("tool_predicate_types");
 
 const Engine = engine_mod.Engine;
 const Term = engine_mod.Term;
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
-const RuleRef = struct {
-    head: []const u8,
-    body: []const u8,
-    memory: []const u8,
-};
-
-const AssumptionRef = struct {
-    assumption: []const u8,
-    fact: []const u8,
-    memory: []const u8,
-};
-
-const CrossMemoryRef = struct {
-    head: []const u8,
-    body: []const u8,
-    /// The memory segment that owns the referencing rule (the segment being scanned).
-    memory: []const u8,
-    /// The module qualifier used in the cross-memory call (e.g. "default", "tasks").
-    qualifier: []const u8,
-};
+const RuleRef = predicate_types.RuleRef;
+const AssumptionRef = predicate_types.AssumptionRef;
+const CrossMemoryRef = predicate_types.CrossMemoryRef;
+const bodyContainsTarget = predicate_types.bodyContainsTarget;
+const detectCrossMemoryRefs = predicate_types.detectCrossMemoryRefs;
+const parseBoolArg = validation.parseBoolArg;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
@@ -56,78 +43,23 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-fn parseBoolArg(obj: std.json.ObjectMap, key: []const u8, default_val: bool) bool {
-    const val = obj.get(key) orelse return default_val;
-    return switch (val) {
-        .bool => |b| b,
-        .string => |s| std.mem.eql(u8, s, "true"),
-        else => default_val,
-    };
-}
-
-// detectCrossMemoryRefs walks a body Term tree looking for `Qualifier:Goal`
-// nodes where Goal contains the target functor. It emits one CrossMemoryRef
-// per user-written qualifier, using `owner_segment` as the owning memory.
-//
-// Trealla automatically wraps any module-qualified call with an extra `user:`
-// prefix: `default:f(X)` becomes `:(user, :(default, f(X)))`. We skip the
-// `user` qualifier (Trealla's internal current-module marker) so that each
-// user-written qualifier produces exactly one entry.
-fn detectCrossMemoryRefs(
-    allocator: std.mem.Allocator,
-    body: Term,
-    target_functor: []const u8,
-    target_arity: ?i64,
-    head_str: []const u8,
-    body_str: []const u8,
-    owner_segment: []const u8,
+const CrossMemoryRefsCtx = struct {
+    functor: []const u8,
+    arity_arg: ?i64,
     out: *std.ArrayList(CrossMemoryRef),
-) !void {
-    switch (body) {
-        .compound => |c| {
-            if (std.mem.eql(u8, c.functor, ":") and c.args.len == 2) {
-                switch (c.args[0]) {
-                    .atom => |mod_name| {
-                        // Skip the `user` module: Trealla adds it automatically as
-                        // a wrapper around any module-qualified call. It is not a
-                        // user-defined segment name and would produce a spurious
-                        // duplicate entry alongside the real qualifier beneath it.
-                        if (!std.mem.eql(u8, mod_name, "user")) {
-                            if (bodyContainsTarget(c.args[1], target_functor, target_arity)) {
-                                const qualifier_str = try allocator.dupe(u8, mod_name);
-                                errdefer allocator.free(qualifier_str);
-                                const mem_str = try allocator.dupe(u8, owner_segment);
-                                errdefer allocator.free(mem_str);
-                                const head_copy = try allocator.dupe(u8, head_str);
-                                errdefer allocator.free(head_copy);
-                                const body_copy = try allocator.dupe(u8, body_str);
-                                errdefer allocator.free(body_copy);
-                                try out.append(allocator, .{
-                                    .head = head_copy,
-                                    .body = body_copy,
-                                    .memory = mem_str,
-                                    .qualifier = qualifier_str,
-                                });
-                            }
-                        }
-                        try detectCrossMemoryRefs(allocator, c.args[1], target_functor, target_arity, head_str, body_str, owner_segment, out);
-                        return;
-                    },
-                    else => {},
-                }
-            }
-            for (c.args) |arg| {
-                try detectCrossMemoryRefs(allocator, arg, target_functor, target_arity, head_str, body_str, owner_segment, out);
-            }
-        },
-        .list => |items| {
-            for (items) |item| {
-                try detectCrossMemoryRefs(allocator, item, target_functor, target_arity, head_str, body_str, owner_segment, out);
-            }
-        },
-        else => {},
+
+    fn callback(
+        ctx_ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        body_term: Term,
+        head_str: []const u8,
+        body_str: []const u8,
+        memory_name: []const u8,
+    ) anyerror!void {
+        const ctx: *CrossMemoryRefsCtx = @ptrCast(@alignCast(ctx_ptr));
+        try detectCrossMemoryRefs(allocator, body_term, ctx.functor, ctx.arity_arg, head_str, body_str, memory_name, ctx.out);
     }
-}
+};
 
 fn collectCrossMemoryRefs(
     allocator: std.mem.Allocator,
@@ -137,6 +69,43 @@ fn collectCrossMemoryRefs(
     memory_name: []const u8,
     out: *std.ArrayList(CrossMemoryRef),
 ) !void {
+    var ctx = CrossMemoryRefsCtx{ .functor = functor, .arity_arg = arity_arg, .out = out };
+    enumeratePredicateBodies(allocator, engine, memory_name, .{
+        .ptr = @ptrCast(&ctx),
+        .callFn = CrossMemoryRefsCtx.callback,
+    });
+}
+
+/// Context struct for enumeratePredicateBodies callbacks.
+/// Each callback receives `(ctx, allocator, body_term, head_str, body_str, memory_name)`.
+/// `head_str` and `body_str` are caller-allocated; the callback must NOT free them.
+/// `enumeratePredicateBodies` frees them after the callback returns.
+const BodyCallbackCtx = struct {
+    ptr: *anyopaque,
+    callFn: *const fn (ctx_ptr: *anyopaque, allocator: std.mem.Allocator, body_term: Term, head_str: []const u8, body_str: []const u8, memory_name: []const u8) anyerror!void,
+
+    pub fn call(
+        self: BodyCallbackCtx,
+        allocator: std.mem.Allocator,
+        body_term: Term,
+        head_str: []const u8,
+        body_str: []const u8,
+        memory_name: []const u8,
+    ) !void {
+        return self.callFn(self.ptr, allocator, body_term, head_str, body_str, memory_name);
+    }
+};
+
+/// Shared enumeration loop: enumerate all user predicates in `memory_name`,
+/// skip builtins and hook predicates, and for each non-fact body invoke `cb`.
+/// `head_str` and `body_str` passed to `cb` are freed by this function after
+/// `cb` returns — callbacks must dupe them if they need to outlive the call.
+fn enumeratePredicateBodies(
+    allocator: std.mem.Allocator,
+    engine: *Engine,
+    memory_name: []const u8,
+    cb: BodyCallbackCtx,
+) void {
     // The leading `mod:current_predicate(F/A)` scopes enumeration to `mod`.
     // Use `isBuiltin` to filter system predicates instead of
     // `predicate_property(H,dynamic)` (which under-reports user-declared
@@ -164,8 +133,7 @@ fn collectCrossMemoryRefs(
 
         // Render Head pattern from name+arity directly (avoids a Trealla variable
         // aliasing bug where `functor(H,F,A),clause(H,B)` leaks the query
-        // conjunction into B's variable positions). Query `clause(name(_,..),Body)`
-        // and reconstruct Head display from the (name, arity, body's free vars).
+        // conjunction into B's variable positions).
         const raw_clause_query = clause_utils.buildClauseQuery(allocator, pred_name, pred_arity, "Body") catch continue;
         defer allocator.free(raw_clause_query);
         const clause_query = context.qualifyClause(allocator, memory_name, raw_clause_query) catch continue;
@@ -176,7 +144,6 @@ fn collectCrossMemoryRefs(
 
         for (clause_result.solutions) |clause_sol| {
             const body_term = clause_sol.bindings.get("Body") orelse continue;
-
             switch (body_term) {
                 .atom => |s| if (std.mem.eql(u8, s, "true")) continue,
                 else => {},
@@ -188,7 +155,7 @@ fn collectCrossMemoryRefs(
                 continue;
             };
 
-            detectCrossMemoryRefs(allocator, body_term, functor, arity_arg, head_str, body_str, memory_name, out) catch {};
+            cb.call(allocator, body_term, head_str, body_str, memory_name) catch {};
             allocator.free(body_str);
             allocator.free(head_str);
         }
@@ -212,18 +179,6 @@ fn renderHeadPattern(allocator: std.mem.Allocator, name: []const u8, arity: i64)
     }
     try w.writeByte(')');
     return aw.toOwnedSlice();
-}
-
-fn sortByMemoryHeadBody(comptime T: type, items: []T) void {
-    std.mem.sort(T, items, {}, struct {
-        fn cmp(_: void, a: T, b: T) bool {
-            const mem_cmp = std.mem.order(u8, a.memory, b.memory);
-            if (mem_cmp != .eq) return mem_cmp == .lt;
-            const head_cmp = std.mem.order(u8, a.head, b.head);
-            if (head_cmp != .eq) return head_cmp == .lt;
-            return std.mem.order(u8, a.body, b.body) == .lt;
-        }
-    }.cmp);
 }
 
 fn sortCrossMemoryRefs(refs: []CrossMemoryRef) void {
@@ -469,31 +424,36 @@ fn countDirectFacts(
     return total;
 }
 
-fn bodyContainsTarget(body: Term, target_functor: []const u8, target_arity: ?i64) bool {
-    return switch (body) {
-        .atom => |s| blk: {
-            if (!std.mem.eql(u8, s, target_functor)) break :blk false;
-            break :blk if (target_arity) |a| a == 0 else true;
-        },
-        .compound => |c| blk: {
-            const arity: i64 = @intCast(c.args.len);
-            if (std.mem.eql(u8, c.functor, target_functor)) {
-                if (target_arity == null or target_arity.? == arity) break :blk true;
-            }
-            for (c.args) |arg| {
-                if (bodyContainsTarget(arg, target_functor, target_arity)) break :blk true;
-            }
-            break :blk false;
-        },
-        .list => |items| blk: {
-            for (items) |item| {
-                if (bodyContainsTarget(item, target_functor, target_arity)) break :blk true;
-            }
-            break :blk false;
-        },
-        else => false,
-    };
-}
+const CollectRulesCtx = struct {
+    functor: []const u8,
+    arity_arg: ?i64,
+    rules: *std.ArrayList(RuleRef),
+
+    fn callback(
+        ctx_ptr: *anyopaque,
+        allocator: std.mem.Allocator,
+        body_term: Term,
+        head_str: []const u8,
+        body_str: []const u8,
+        memory_name: []const u8,
+    ) anyerror!void {
+        const ctx: *CollectRulesCtx = @ptrCast(@alignCast(ctx_ptr));
+        if (!bodyContainsTarget(body_term, ctx.functor, ctx.arity_arg)) return;
+
+        const head_copy = try allocator.dupe(u8, head_str);
+        errdefer allocator.free(head_copy);
+        const body_copy = try allocator.dupe(u8, body_str);
+        errdefer allocator.free(body_copy);
+        const mem_copy = try allocator.dupe(u8, memory_name);
+        errdefer allocator.free(mem_copy);
+
+        try ctx.rules.append(allocator, .{
+            .head = head_copy,
+            .body = body_copy,
+            .memory = mem_copy,
+        });
+    }
+};
 
 fn collectRules(
     allocator: std.mem.Allocator,
@@ -503,70 +463,11 @@ fn collectRules(
     memory_name: []const u8,
     rules: *std.ArrayList(RuleRef),
 ) !void {
-    // The leading `mod:current_predicate(F/A)` scopes enumeration to `mod`.
-    // We rely on `clause_utils.isBuiltin` (rather than
-    // `predicate_property(H,dynamic)`) to filter system predicates, because
-    // Trealla's predicate_property does not flag dynamically-declared user
-    // predicates inside loaded modules as dynamic — only the system meta-
-    // predicates show up. Using isBuiltin lets every user predicate through
-    // regardless of how it was declared.
-    const raw_preds_query = "current_predicate(F/A)";
-    const all_preds_query = context.qualifyClause(allocator, memory_name, raw_preds_query) catch return;
-    defer allocator.free(all_preds_query);
-    var pred_result = engine.query(all_preds_query) catch return;
-    defer pred_result.deinit();
-
-    for (pred_result.solutions) |sol| {
-        const f_term = sol.bindings.get("F") orelse continue;
-        const a_term = sol.bindings.get("A") orelse continue;
-        const pred_name = switch (f_term) {
-            .atom => |s| s,
-            else => continue,
-        };
-        const pred_arity: i64 = switch (a_term) {
-            .integer => |i| i,
-            .atom => |s| std.fmt.parseInt(i64, s, 10) catch continue,
-            else => continue,
-        };
-        if (clause_utils.isBuiltin(pred_name)) continue;
-        // Also skip the standard goal/term expansion hooks which appear in every
-        // module via Trealla, but are not real user predicates.
-        if (std.mem.eql(u8, pred_name, "goal_expansion") or std.mem.eql(u8, pred_name, "term_expansion")) continue;
-
-        // See note in collectCrossMemoryRefs: build clause query directly to
-        // avoid the Trealla variable-alias bug.
-        const raw_clause_query = clause_utils.buildClauseQuery(allocator, pred_name, pred_arity, "Body") catch continue;
-        defer allocator.free(raw_clause_query);
-        const clause_query = context.qualifyClause(allocator, memory_name, raw_clause_query) catch continue;
-        defer allocator.free(clause_query);
-
-        var clause_result = engine.query(clause_query) catch continue;
-        defer clause_result.deinit();
-
-        for (clause_result.solutions) |clause_sol| {
-            const body_term = clause_sol.bindings.get("Body") orelse continue;
-
-            switch (body_term) {
-                .atom => |s| if (std.mem.eql(u8, s, "true")) continue,
-                else => {},
-            }
-
-            if (!bodyContainsTarget(body_term, functor, arity_arg)) continue;
-
-            const head_str = try renderHeadPattern(allocator, pred_name, pred_arity);
-            errdefer allocator.free(head_str);
-            const body_str = try term_utils.termToString(allocator, body_term);
-            errdefer allocator.free(body_str);
-            const mem_str = try allocator.dupe(u8, memory_name);
-            errdefer allocator.free(mem_str);
-
-            try rules.append(allocator, .{
-                .head = head_str,
-                .body = body_str,
-                .memory = mem_str,
-            });
-        }
-    }
+    var ctx = CollectRulesCtx{ .functor = functor, .arity_arg = arity_arg, .rules = rules };
+    enumeratePredicateBodies(allocator, engine, memory_name, .{
+        .ptr = @ptrCast(&ctx),
+        .callFn = CollectRulesCtx.callback,
+    });
 }
 
 fn collectAssumptionRefs(
@@ -653,7 +554,15 @@ fn formatTarget(allocator: std.mem.Allocator, functor: []const u8, arity: ?i64) 
 }
 
 fn sortRules(rules: []RuleRef) void {
-    sortByMemoryHeadBody(RuleRef, rules);
+    std.mem.sort(RuleRef, rules, {}, struct {
+        fn cmp(_: void, a: RuleRef, b: RuleRef) bool {
+            const mem_cmp = std.mem.order(u8, a.memory, b.memory);
+            if (mem_cmp != .eq) return mem_cmp == .lt;
+            const head_cmp = std.mem.order(u8, a.head, b.head);
+            if (head_cmp != .eq) return head_cmp == .lt;
+            return std.mem.order(u8, a.body, b.body) == .lt;
+        }
+    }.cmp);
 }
 
 fn buildJson(
@@ -719,20 +628,6 @@ fn buildJson(
     try w.writeAll("]}");
 
     return aw.toOwnedSlice();
-}
-
-test "parseBoolArg handles string \"true\" as true" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .string = "true" });
-    try std.testing.expect(parseBoolArg(map, "flag", false));
-}
-
-test "parseBoolArg handles string \"false\" as false" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .string = "false" });
-    try std.testing.expect(!parseBoolArg(map, "flag", true));
 }
 
 test "tool exports function returning Tool with name find_predicate_references" {

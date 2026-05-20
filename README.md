@@ -4,7 +4,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ## Features
 
-- CLI entrypoint with `init`, `serve`, `upgrade`, and all 28 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
+- CLI entrypoint with `init`, `serve`, `upgrade`, and all 29 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - Per-project `.zpm/` directory for isolated configuration and persistence
 - MCP protocol version `2025-11-25` over STDIO transport
@@ -142,6 +142,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `mount_memory` | Mount a named memory segment for use, optionally in read-only mode | `name` (string, required), `mode` (string, optional) |
 | `query_logic` | Execute a Prolog goal and return all variable bindings as JSON | `goal` (string, required), `memory` (string, optional) |
 | `remember_fact` | Assert a Prolog fact into the knowledge base | `fact` (string, required), `memory` (string, optional) |
+| `rename_predicate` | Atomically rename a Prolog functor across facts, rules, and TMS justifications | `old_functor` (string, required), `new_functor` (string, required), `arity` (integer, optional), `memory` (string, optional), `dry_run` (boolean, optional), `propagate_cross_memory_refs` (boolean, optional) |
 | `restore_snapshot` | Restore knowledge base from a named snapshot and replay subsequent journal entries | `name` (string, required), `memory` (string, optional) |
 | `retract_assumption` | Retract a named assumption and propagate its removal through the knowledge base | `assumption` (string, required), `memory` (string, optional) |
 | `retract_assumptions` | Retract all assumptions matching a glob-style pattern | `pattern` (string, required), `memory` (string, optional) |
