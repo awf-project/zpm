@@ -29,6 +29,7 @@ const unmount_memory = @import("../tools/unmount_memory.zig");
 const list_memories = @import("../tools/list_memories.zig");
 const get_kb_overview = @import("../tools/get_kb_overview.zig");
 const find_predicate_references = @import("../tools/find_predicate_references.zig");
+const rename_predicate = @import("../tools/rename_predicate.zig");
 
 pub const ParamKind = enum { string, integer };
 
@@ -71,7 +72,7 @@ fn buildListMemories(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
     return list_memories.tool;
 }
 
-const tool_defs: [28]ToolDef = .{
+const tool_defs: [29]ToolDef = .{
     .{
         .cli_name = "echo",
         .mcp_name = "echo",
@@ -344,6 +345,20 @@ const tool_defs: [28]ToolDef = .{
             .{ .mcp_key = "include_cross_memory_refs", .help = "Include cross-memory references (optional, defaults to true)", .required = false, .kind = .string }, // CLI path sends "true"/"false" string; MCP path sends JSON boolean directly
         },
     },
+    .{
+        .cli_name = "rename-predicate",
+        .mcp_name = "rename_predicate",
+        .description = "Rename a predicate across the knowledge base. Rewrites all facts, rule bodies, and truth maintenance justifications.",
+        .build = &rename_predicate.tool,
+        .params = &.{
+            .{ .mcp_key = "old_functor", .help = "The functor name to rename", .required = true },
+            .{ .mcp_key = "new_functor", .help = "The new functor name", .required = true },
+            .{ .mcp_key = "arity", .help = "The arity to rename (optional; if omitted and multiple arities exist, an error is returned)", .required = false, .kind = .integer },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
+            .{ .mcp_key = "dry_run", .help = "Preview the changes without applying them (optional, defaults to false)", .required = false, .kind = .string },
+            .{ .mcp_key = "propagate_cross_memory_refs", .help = "Propagate rename across memory boundaries (optional, not yet implemented)", .required = false, .kind = .string },
+        },
+    },
 };
 
 /// Comptime-friendly view of the registry, used by app.zig to inline-instantiate
@@ -355,9 +370,9 @@ pub fn all() []const ToolDef {
     return &tool_defs;
 }
 
-test "all returns 28 tool definitions" {
+test "all returns 29 tool definitions" {
     const tools = all();
-    try std.testing.expectEqual(@as(usize, 28), tools.len);
+    try std.testing.expectEqual(@as(usize, 29), tools.len);
 }
 
 test "echo build returns tool with mcp name echo" {
@@ -541,4 +556,64 @@ test "find-predicate-references ToolDef has 4 params with correct kinds and requ
         }
     }
     return error.ToolNotFound;
+}
+
+test "rename-predicate build returns tool with mcp name rename_predicate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for (tool_defs) |def| {
+        if (std.mem.eql(u8, def.cli_name, "rename-predicate")) {
+            const t = try def.build(arena.allocator());
+            try std.testing.expectEqualStrings("rename_predicate", t.name);
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "rename-predicate ToolDef has 6 params with correct kinds and requirements" {
+    const tools = all();
+    for (tools) |def| {
+        if (std.mem.eql(u8, def.cli_name, "rename-predicate")) {
+            try std.testing.expectEqual(@as(usize, 6), def.params.len);
+            try std.testing.expectEqualStrings("old_functor", def.params[0].mcp_key);
+            try std.testing.expect(def.params[0].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[0].kind);
+            try std.testing.expectEqualStrings("new_functor", def.params[1].mcp_key);
+            try std.testing.expect(def.params[1].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[1].kind);
+            try std.testing.expectEqualStrings("arity", def.params[2].mcp_key);
+            try std.testing.expect(!def.params[2].required);
+            try std.testing.expectEqual(ParamKind.integer, def.params[2].kind);
+            try std.testing.expectEqualStrings("memory", def.params[3].mcp_key);
+            try std.testing.expect(!def.params[3].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[3].kind);
+            try std.testing.expectEqualStrings("dry_run", def.params[4].mcp_key);
+            try std.testing.expect(!def.params[4].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[4].kind);
+            try std.testing.expectEqualStrings("propagate_cross_memory_refs", def.params[5].mcp_key);
+            try std.testing.expect(!def.params[5].required);
+            try std.testing.expectEqual(ParamKind.string, def.params[5].kind);
+            return;
+        }
+    }
+    return error.ToolNotFound;
+}
+
+test "rename-predicate cli_name is not registered with snake_case" {
+    const tools = all();
+    for (tools) |def| {
+        try std.testing.expect(!std.mem.eql(u8, def.cli_name, "rename_predicate"));
+    }
+}
+
+test "rename-predicate appears exactly once in registry" {
+    const tools = all();
+    var count: usize = 0;
+    for (tools) |def| {
+        if (std.mem.eql(u8, def.cli_name, "rename-predicate")) {
+            count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
 }

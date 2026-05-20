@@ -303,12 +303,25 @@ pub const Engine = struct {
         // evaluation errors), so we can't use it to detect "no matching
         // clause". Write a marker on success and on failure, then inspect
         // the captured stdout to decide what happened.
-        const code = std.fmt.allocPrintSentinel(
-            self.allocator,
-            "(retract({s}) -> write(zpm_retract_ok) ; write(zpm_retract_no)).",
-            .{stripped},
-            0,
-        ) catch return EngineError.OutOfMemory;
+        //
+        // Rules with `:-` need an extra paren around the clause so retract/1
+        // parses them with the right operator precedence — same fix as in
+        // assert(). Without this, Trealla emits a syntax warning to stderr.
+        const has_rule = std.mem.indexOf(u8, stripped, ":-") != null;
+        const code = if (has_rule)
+            std.fmt.allocPrintSentinel(
+                self.allocator,
+                "(retract(({s})) -> write(zpm_retract_ok) ; write(zpm_retract_no)).",
+                .{stripped},
+                0,
+            ) catch return EngineError.OutOfMemory
+        else
+            std.fmt.allocPrintSentinel(
+                self.allocator,
+                "(retract({s}) -> write(zpm_retract_ok) ; write(zpm_retract_no)).",
+                .{stripped},
+                0,
+            ) catch return EngineError.OutOfMemory;
         defer self.allocator.free(code);
 
         const succeeded = self.evalAndCheckMarker(code, "zpm_retract_ok");

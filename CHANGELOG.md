@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **F025**: `rename_predicate` MCP tool and CLI subcommand — atomically rename a Prolog functor across facts, rule bodies, and TMS justifications
+  - `old_functor` and `new_functor` parameters (required); optional `arity`, `memory`, `dry_run`, `propagate_cross_memory_refs`
+  - `dry_run=true` returns the full impact report (`renamed_facts`, `rewritten_rule_bodies`, `affected_rule_ids`, `cross_memory_impact`) without mutating the KB (byte-identical persistence files before/after)
+  - TMS preservation: assumption identifiers stay unchanged; justification facts are rewritten to reference the new functor
+  - Optional cross-memory propagation rewrites qualified refs (`segment:old/N`) in every writable mounted memory; read-only segments are always reported under `skipped_readonly` without modification
+  - Guardrails: rejects ISO Prolog operators (built-in blacklist), self-renames, name collisions, ambiguous arity (when multiple arities exist and `arity` is omitted), and read-only target memories
+  - Available via MCP (`rename_predicate`) and CLI (`zpm rename-predicate --old_functor X --new_functor Y --arity N`)
 - **F022**: `get_kb_overview` MCP tool and CLI subcommand — single-call JSON snapshot of the entire knowledge base
   - Reports predicates with samples, assumptions, snapshots, persistence health, and mounted memory segments in one response
   - `sample_size` parameter (default `2`, clamped to `[0, 50]`); `0` returns predicates with empty `samples` arrays

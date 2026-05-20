@@ -60,6 +60,8 @@ docs/
 - `make test` runs inline Zig tests; `make functional-test` runs end-to-end protocol validation
 - Isolate unit tests from system environment; mock XDG_DATA_HOME and other paths in test blocks
 - Include inline tests for CLI exec wrapper functions; extend coverage requirements beyond tool handlers
+- Never create separate test files; all unit tests must be inline in the module under test
+- Always include inline tests for exported utility functions covering happy path, error cases, and boundary conditions
 
 ## Common Pitfalls
 

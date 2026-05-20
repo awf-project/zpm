@@ -351,7 +351,7 @@ zpm serve &           # Should start without blocking terminal
 
 The CLI layer is split across several modules for clear separation of concerns:
 
-1. **Registry** (`src/cli/registry.zig`) — All 27 MCP tools (including 4 memory management tools), each with a `ParamSpec` array describing its CLI shape (kind, required, positional, kebab name)
+1. **Registry** (`src/cli/registry.zig`) — All 29 MCP tools (including 4 memory management tools), each with a `ParamSpec` array describing its CLI shape (kind, required, positional, kebab name)
 2. **Tool Command Generator** (`src/cli/tool_command.zig`) — Comptime generic `ToolCommand(comptime def)` that synthesizes a `cli.Command` per registry entry, including its options, positional args, and exec thunk
 3. **App Assembler** (`src/cli/app.zig`) — Builds the top-level `cli.App` with the `init`, `serve`, `upgrade`, and `version` subcommands plus every generated tool command
 4. **Bootstrap** (`src/cli/bootstrap.zig`) — Shared initialization: discover `.zpm/`, load knowledge base, start Prolog engine
