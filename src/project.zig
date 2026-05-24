@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Engine = @import("prolog/engine.zig").Engine;
 
 pub const ProjectError = error{
@@ -22,19 +23,19 @@ pub const ProjectPaths = struct {
 
 pub fn discover(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8) (ProjectError || std.mem.Allocator.Error)!ProjectPaths {
     var current = cwd;
-    var start_dev: ?u32 = null;
+    var start_dev: ?i64 = null;
 
     while (true) {
-        var stx: std.os.linux.Statx = undefined;
         var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
         if (current.len >= path_buf.len) return ProjectError.NotFound;
         @memcpy(path_buf[0..current.len], current);
         path_buf[current.len] = 0;
-        if (std.c.statx(std.posix.AT.FDCWD, @ptrCast(&path_buf), 0, std.os.linux.STATX.BASIC_STATS, &stx) != 0) return ProjectError.NotFound;
+
+        const dev = getDeviceId(@ptrCast(&path_buf)) orelse return ProjectError.NotFound;
 
         if (start_dev == null) {
-            start_dev = stx.dev_major;
-        } else if (stx.dev_major != start_dev.?) {
+            start_dev = dev;
+        } else if (dev != start_dev.?) {
             return ProjectError.NotFound;
         }
 
@@ -65,6 +66,18 @@ pub fn discover(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8) (Proj
         const parent = std.fs.path.dirname(current) orelse return ProjectError.NotFound;
         if (std.mem.eql(u8, parent, current)) return ProjectError.NotFound;
         current = parent;
+    }
+}
+
+fn getDeviceId(path: [*:0]const u8) ?i64 {
+    if (comptime builtin.os.tag == .linux) {
+        var stx: std.os.linux.Statx = undefined;
+        if (std.c.statx(std.posix.AT.FDCWD, path, 0, std.os.linux.STATX.BASIC_STATS, &stx) != 0) return null;
+        return @intCast(stx.dev_major);
+    } else {
+        var st: std.c.Stat = undefined;
+        if (std.c.fstatat(std.posix.AT.FDCWD, path, &st, 0) != 0) return null;
+        return @intCast(st.dev);
     }
 }
 

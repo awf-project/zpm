@@ -823,8 +823,6 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 }
 
 fn linkFfi(compile: *std.Build.Step.Compile, trealla: *std.Build.Step.Compile) void {
-    compile.use_llvm = true;
-    compile.use_lld = true;
     compile.root_module.linkLibrary(trealla);
     compile.root_module.linkSystemLibrary("m", .{});
     compile.root_module.link_libc = true;

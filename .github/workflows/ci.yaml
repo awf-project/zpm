@@ -2,6 +2,9 @@
 
 name: CI
 
+env:
+  ZIG_VERSION: "0.16.0"
+
 on:
   push:
     branches: [main]
@@ -17,7 +20,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Check Zig formatting
         run: zig fmt --check .
@@ -31,7 +34,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Run tests
         run: zig build test
@@ -46,7 +49,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe

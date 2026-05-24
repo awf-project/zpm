@@ -105,8 +105,8 @@ pub const Capture = struct {
         flushStdout();
         const fd = self.tmp_out_fd orelse return try self.allocator.alloc(u8, 0);
 
-        _ = c.lseek64(fd, 0, std.c.SEEK.END);
-        const file_end = c.lseek64(fd, 0, std.c.SEEK.CUR);
+        _ = c.lseek(fd, 0, std.c.SEEK.END);
+        const file_end = c.lseek(fd, 0, std.c.SEEK.CUR);
         if (file_end == 0) {
             return try self.allocator.alloc(u8, 0);
         }
@@ -115,7 +115,7 @@ pub const Capture = struct {
         const buf = try self.allocator.alloc(u8, size);
         errdefer self.allocator.free(buf);
 
-        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
+        _ = c.lseek(fd, 0, std.c.SEEK.SET);
         var total: usize = 0;
         while (total < size) {
             const got = try posix.read(fd, buf[total..]);
@@ -123,8 +123,8 @@ pub const Capture = struct {
             total += got;
         }
 
-        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
-        _ = std.c.ftruncate64(fd, 0);
+        _ = c.lseek(fd, 0, std.c.SEEK.SET);
+        _ = std.c.ftruncate(fd, 0);
         _ = fseek(stdout_ptr.*, 0, 0);
 
         if (total < size) {
@@ -139,8 +139,8 @@ pub const Capture = struct {
         const fd = self.tmp_err_fd orelse return try self.allocator.alloc(u8, 0);
         flushStderr();
 
-        _ = c.lseek64(fd, 0, std.c.SEEK.END);
-        const file_end = c.lseek64(fd, 0, std.c.SEEK.CUR);
+        _ = c.lseek(fd, 0, std.c.SEEK.END);
+        const file_end = c.lseek(fd, 0, std.c.SEEK.CUR);
         if (file_end == 0) {
             return try self.allocator.alloc(u8, 0);
         }
@@ -149,7 +149,7 @@ pub const Capture = struct {
         const buf = try self.allocator.alloc(u8, size);
         errdefer self.allocator.free(buf);
 
-        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
+        _ = c.lseek(fd, 0, std.c.SEEK.SET);
         var total: usize = 0;
         while (total < size) {
             const got = try posix.read(fd, buf[total..]);

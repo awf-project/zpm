@@ -46,7 +46,7 @@ pub const WriteAheadLog = struct {
         var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
         defer dir.close(io);
         const file = try dir.createFile(io, "journal.wal", .{ .truncate = false });
-        _ = std.c.lseek64(file.handle, 0, std.c.SEEK.END);
+        _ = std.c.lseek(file.handle, 0, std.c.SEEK.END);
         return .{
             .allocator = allocator,
             .dir_path = owned_path,
@@ -138,14 +138,14 @@ pub const WriteAheadLog = struct {
             // Reopen the original journal so self.file remains valid.
             self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = false }) catch
                 return rename_err;
-            _ = std.c.lseek64(self.file.handle, 0, std.c.SEEK.END);
+            _ = std.c.lseek(self.file.handle, 0, std.c.SEEK.END);
             return rename_err;
         };
         self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = true }) catch |err| {
             std.Io.Dir.rename(dir, archive, dir, "journal.wal", self.io) catch {};
             self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = false }) catch
                 return err;
-            _ = std.c.lseek64(self.file.handle, 0, std.c.SEEK.END);
+            _ = std.c.lseek(self.file.handle, 0, std.c.SEEK.END);
             return err;
         };
     }
