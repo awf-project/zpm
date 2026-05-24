@@ -2,15 +2,15 @@
     .fingerprint = 0xba1b5087bed36a4b,
     .name = .zpm,
     .version = "0.3.0",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .mcp = .{
-            .url = "git+https://github.com/muhammad-fiaz/mcp.zig.git#fdcf351801901424feedf5da33428c370ac4ae4a",
-            .hash = "mcp-0.0.3-cIUFgzd2AwCQe32r6I7vkQKkhQvlDEd75sKWNLk6vVtG",
+            .url = "git+https://github.com/muhammad-fiaz/mcp.zig.git#393ccea608f29d6be8324acb2deafa52c7ba6b96",
+            .hash = "mcp-0.0.5-cIUFgwGFBACgcv5OVy2tp7Vlc47GFpUQdaErzZDRz40C",
         },
         .cli = .{
-            .url = "git+https://github.com/sam701/zig-cli?ref=zig-0.15#cb44aade25a3c1eddd8b6f990b50c2189442c1e2",
-            .hash = "cli-0.10.0-2eKe_5kEAQBeHqKxUHNTGnETzu81rqKWwT1WPt1jXBt0",
+            .url = "git+https://github.com/sam701/zig-cli#036341c48b32ef355274d66461551772fc1f202d",
+            .hash = "cli-0.11.0-2eKe_6sIAQB1njsE9sfrNvd2HxmQej13ebo-D3kBuFX3",
         },
     },
     .paths = .{

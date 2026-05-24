@@ -30,7 +30,8 @@ pub fn assetBasename(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) UpgradeEr
 }
 
 pub fn detectPlatform() UpgradeError![]const u8 {
-    if (std.posix.getenv("ZPM_OVERRIDE_PLATFORM")) |override_val| {
+    if (std.c.getenv("ZPM_OVERRIDE_PLATFORM")) |override_raw| {
+        const override_val = std.mem.span(override_raw);
         if (std.mem.eql(u8, override_val, "zpm-linux-x86_64")) return "zpm-linux-x86_64";
         if (std.mem.eql(u8, override_val, "zpm-linux-arm64")) return "zpm-linux-arm64";
         if (std.mem.eql(u8, override_val, "zpm-darwin-universal")) return "zpm-darwin-universal";
@@ -64,10 +65,8 @@ pub fn findChecksumFor(sums_contents: []const u8, target_filename: []const u8) ?
     return null;
 }
 
-pub fn verifySha256(allocator: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    const contents = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+pub fn verifySha256(allocator: std.mem.Allocator, path: []const u8, expected: []const u8, io: std.Io) !void {
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(contents);
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(contents, &digest, .{});
@@ -107,12 +106,14 @@ pub const default_api_base = "https://api.github.com/repos/awf-project/zpm";
 pub const HttpReleaseClient = struct {
     allocator: std.mem.Allocator,
     api_base: []const u8,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator) HttpReleaseClient {
-        const api_base = std.posix.getenv("ZPM_GITHUB_API_URL") orelse default_api_base;
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) HttpReleaseClient {
+        const api_base = if (std.c.getenv("ZPM_GITHUB_API_URL")) |raw| std.mem.span(raw) else default_api_base;
         return .{
             .allocator = allocator,
             .api_base = api_base,
+            .io = io,
         };
     }
 
@@ -131,7 +132,7 @@ pub const HttpReleaseClient = struct {
         // each follow a redirect chain causes Zig 0.15.x stdlib to send a
         // malformed header on the second redirect, which Azure rejects with
         // HTTP 400 "Invalid Header".
-        var http_client: std.http.Client = .{ .allocator = allocator };
+        var http_client: std.http.Client = .{ .allocator = allocator, .io = self.io };
         defer http_client.deinit();
 
         var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -148,7 +149,7 @@ pub const HttpReleaseClient = struct {
 
         if (result.status != .ok) return UpgradeError.NetworkError;
 
-        const body = aw.writer.buffer[0..aw.writer.end];
+        const body = aw.written();
         const parsed = try std.json.parseFromSlice(
             []Release,
             allocator,
@@ -165,7 +166,7 @@ pub const HttpReleaseClient = struct {
         const self: *HttpReleaseClient = @ptrCast(@alignCast(ptr));
         const allocator = self.allocator;
 
-        var http_client: std.http.Client = .{ .allocator = allocator };
+        var http_client: std.http.Client = .{ .allocator = allocator, .io = self.io };
         defer http_client.deinit();
 
         var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -181,9 +182,9 @@ pub const HttpReleaseClient = struct {
 
         if (result.status != .ok) return UpgradeError.NetworkError;
 
-        const file = try std.fs.createFileAbsolute(dest, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(aw.writer.buffer[0..aw.writer.end]);
+        const file = try std.Io.Dir.cwd().createFile(self.io, dest, .{ .truncate = true });
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, aw.written());
     }
 
     pub fn releaseClient(self: *HttpReleaseClient) ReleaseClient {
@@ -264,37 +265,36 @@ fn freeRelease(allocator: std.mem.Allocator, release: Release) void {
     allocator.free(release.assets);
 }
 
-pub fn install(allocator: std.mem.Allocator, src_path: []const u8) !void {
+pub fn install(allocator: std.mem.Allocator, src_path: []const u8, io: std.Io) !void {
     var self_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dest_path = try std.fs.selfExePath(&self_buf);
-    return installTo(allocator, src_path, dest_path);
+    const dest_path_len = try std.Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &self_buf);
+    const dest_path = self_buf[0..dest_path_len];
+    return installTo(allocator, src_path, dest_path, io);
 }
 
-pub fn installTo(allocator: std.mem.Allocator, src_path: []const u8, dest_path: []const u8) !void {
+pub fn installTo(allocator: std.mem.Allocator, src_path: []const u8, dest_path: []const u8, io: std.Io) !void {
     const dest_stat = blk: {
-        const dest_file = try std.fs.openFileAbsolute(dest_path, .{});
-        defer dest_file.close();
-        break :blk try dest_file.stat();
+        const dest_file = try std.Io.Dir.openFileAbsolute(io, dest_path, .{});
+        defer dest_file.close(io);
+        break :blk try dest_file.stat(io);
     };
 
     const tmp_path = try std.mem.concat(allocator, u8, &.{ dest_path, ".new" });
     defer allocator.free(tmp_path);
+    errdefer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
 
-    const src_file = try std.fs.openFileAbsolute(src_path, .{});
-    defer src_file.close();
-    const content = try src_file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, src_path, allocator, .unlimited);
     defer allocator.free(content);
 
-    const tmp_file = try std.fs.createFileAbsolute(tmp_path, .{ .exclusive = true });
+    const tmp_file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .exclusive = true });
     {
-        defer tmp_file.close();
-        errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
-        try tmp_file.writeAll(content);
-        try std.posix.fchmod(tmp_file.handle, @intCast(dest_stat.mode & 0o777));
+        defer tmp_file.close(io);
+        errdefer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+        try tmp_file.writeStreamingAll(io, content);
+        try tmp_file.setPermissions(io, dest_stat.permissions);
     }
-    errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
 
-    try std.fs.renameAbsolute(tmp_path, dest_path);
+    try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
 }
 
 pub const UpgradeOptions = struct {
@@ -303,7 +303,7 @@ pub const UpgradeOptions = struct {
 };
 
 pub fn printDryRunInfo(
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     version: []const u8,
     asset_url: []const u8,
     checksum: []const u8,
@@ -315,7 +315,7 @@ pub fn printDryRunInfo(
 }
 
 pub fn printUpgradeSuccess(
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     prev_version: []const u8,
     new_tag: []const u8,
     channel: Channel,
@@ -330,7 +330,7 @@ pub fn printUpgradeSuccess(
     });
 }
 
-pub fn printAlreadyUpToDate(writer: *std.io.Writer, tag: []const u8) !void {
+pub fn printAlreadyUpToDate(writer: *std.Io.Writer, tag: []const u8) !void {
     try writer.print("zpm is already up to date ({s})\n", .{tag});
 }
 
@@ -350,17 +350,10 @@ fn errorMessage(err: anyerror) []const u8 {
 
 fn writeError(err: anyerror) void {
     const msg = errorMessage(err);
-    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
     if (msg.len > 0) {
-        var buf: [512]u8 = undefined;
-        var fw = stderr.writer(&buf);
-        fw.interface.print("ERROR: {s}\n", .{msg}) catch {};
-        fw.interface.flush() catch {};
+        std.debug.print("ERROR: {s}\n", .{msg});
     } else {
-        var buf: [256]u8 = undefined;
-        var fw = stderr.writer(&buf);
-        fw.interface.print("ERROR: upgrade failed: {s}\n", .{@errorName(err)}) catch {};
-        fw.interface.flush() catch {};
+        std.debug.print("ERROR: upgrade failed: {s}\n", .{@errorName(err)});
     }
 }
 
@@ -374,13 +367,16 @@ pub fn upgradeExecAction() anyerror!void {
 }
 
 pub fn upgradeAction(allocator: std.mem.Allocator, opts: UpgradeOptions) anyerror!void {
-    var http_client = HttpReleaseClient.init(allocator);
-    defer http_client.deinit();
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    var http_client = HttpReleaseClient.init(allocator, io);
+    defer http_client.deinit();
+    const stdout = std.Io.File.stdout();
     var stdout_buf: [1024]u8 = undefined;
-    var stdout_fw = stdout.writer(&stdout_buf);
-    try upgradeActionWithClient(allocator, opts, http_client.releaseClient(), &stdout_fw.interface);
+    var stdout_fw = stdout.writer(io, &stdout_buf);
+    try upgradeActionWithClient(allocator, opts, http_client.releaseClient(), &stdout_fw.interface, io);
     try stdout_fw.interface.flush();
 }
 
@@ -395,7 +391,8 @@ pub fn upgradeActionWithClient(
     allocator: std.mem.Allocator,
     opts: UpgradeOptions,
     client: ReleaseClient,
-    out: *std.io.Writer,
+    out: *std.Io.Writer,
+    io: std.Io,
 ) anyerror!void {
     const release = try client.fetchLatest(opts.channel);
     defer freeRelease(allocator, release);
@@ -415,19 +412,20 @@ pub fn upgradeActionWithClient(
     const sums_url = findAssetUrl(release.assets, "SHA256SUMS") orelse return UpgradeError.SHA256SUMSMissing;
 
     var self_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const self_path = try std.fs.selfExePath(&self_buf);
+    const self_path_len = try std.Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &self_buf);
+    const self_path = self_buf[0..self_path_len];
     const self_dir = std.fs.path.dirname(self_path) orelse return UpgradeError.InvalidSelfPath;
 
     var sums_tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const sums_tmp_path = try std.fmt.bufPrint(&sums_tmp_buf, "{s}/.zpm-sha256sums-{x}", .{ self_dir, std.crypto.random.int(u32) });
+    const sums_tmp_path = try std.fmt.bufPrint(&sums_tmp_buf, "{s}/.zpm-sha256sums-{x}", .{ self_dir, blk: {
+        var rb: [4]u8 = undefined;
+        io.random(&rb);
+        break :blk std.mem.readInt(u32, &rb, .little);
+    } });
     try client.downloadToFile(sums_url, sums_tmp_path);
-    defer std.fs.deleteFileAbsolute(sums_tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, sums_tmp_path) catch {};
 
-    const sums_file = try std.fs.openFileAbsolute(sums_tmp_path, .{});
-    const sums_contents = blk: {
-        defer sums_file.close();
-        break :blk try sums_file.readToEndAlloc(allocator, 1024 * 1024);
-    };
+    const sums_contents = try std.Io.Dir.cwd().readFileAlloc(io, sums_tmp_path, allocator, .limited(1024 * 1024));
     defer allocator.free(sums_contents);
 
     const expected_hash = findChecksumFor(sums_contents, asset_name) orelse return UpgradeError.ChecksumNotFound;
@@ -438,32 +436,36 @@ pub fn upgradeActionWithClient(
     }
 
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}/.zpm-upgrade-{x}", .{ self_dir, std.crypto.random.int(u32) });
+    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}/.zpm-upgrade-{x}", .{ self_dir, blk: {
+        var rb: [4]u8 = undefined;
+        io.random(&rb);
+        break :blk std.mem.readInt(u32, &rb, .little);
+    } });
     try client.downloadToFile(asset_url, tmp_path);
-    defer std.fs.deleteFileAbsolute(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
 
-    try verifySha256(allocator, tmp_path, expected_hash);
-    try installTo(allocator, tmp_path, self_path);
+    try verifySha256(allocator, tmp_path, expected_hash, io);
+    try installTo(allocator, tmp_path, self_path, io);
 
     try printUpgradeSuccess(out, version_info.version, release.tag_name, opts.channel, self_path);
 }
 
 test "detectPlatform returns zpm-linux-x86_64 on linux x86_64" {
-    if (std.posix.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
+    if (std.c.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
     if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const name = try detectPlatform();
     try std.testing.expectEqualStrings("zpm-linux-x86_64", name);
 }
 
 test "detectPlatform returns zpm-linux-arm64 on linux aarch64" {
-    if (std.posix.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
+    if (std.c.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
     if (builtin.os.tag != .linux or builtin.cpu.arch != .aarch64) return error.SkipZigTest;
     const name = try detectPlatform();
     try std.testing.expectEqualStrings("zpm-linux-arm64", name);
 }
 
 test "detectPlatform returns zpm-darwin-universal on macos" {
-    if (std.posix.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
+    if (std.c.getenv("ZPM_OVERRIDE_PLATFORM") != null) return error.SkipZigTest;
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     const name = try detectPlatform();
     try std.testing.expectEqualStrings("zpm-darwin-universal", name);
@@ -532,29 +534,31 @@ test "verifySha256 succeeds when file hash matches expected" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("bin", .{});
-    try f.writeAll("hello");
-    f.close();
+    const f = try tmp.dir.createFile(std.testing.io, "bin", .{});
+    try f.writeStreamingAll(std.testing.io, "hello");
+    f.close(std.testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp.dir.realpath("bin", &path_buf);
+    const path_len = try tmp.dir.realPathFile(std.testing.io, "bin", &path_buf);
+    const path = path_buf[0..path_len];
 
-    try verifySha256(std.testing.allocator, path, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    try verifySha256(std.testing.allocator, path, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", std.testing.io);
 }
 
 test "verifySha256 returns ChecksumMismatch when hash does not match file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("bin", .{});
-    try f.writeAll("hello");
-    f.close();
+    const f = try tmp.dir.createFile(std.testing.io, "bin", .{});
+    try f.writeStreamingAll(std.testing.io, "hello");
+    f.close(std.testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp.dir.realpath("bin", &path_buf);
+    const path_len = try tmp.dir.realPathFile(std.testing.io, "bin", &path_buf);
+    const path = path_buf[0..path_len];
 
     const wrong = "0000000000000000000000000000000000000000000000000000000000000000";
-    try std.testing.expectError(UpgradeError.ChecksumMismatch, verifySha256(std.testing.allocator, path, wrong));
+    try std.testing.expectError(UpgradeError.ChecksumMismatch, verifySha256(std.testing.allocator, path, wrong, std.testing.io));
 }
 
 const TestReleaseClient = struct {
@@ -693,81 +697,83 @@ test "installTo replaces dest file content with src content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const src = try tmp.dir.createFile("src_bin", .{});
-    try src.writeAll("updated binary content");
-    src.close();
+    const src = try tmp.dir.createFile(std.testing.io, "src_bin", .{});
+    try src.writeStreamingAll(std.testing.io, "updated binary content");
+    src.close(std.testing.io);
 
-    const dest = try tmp.dir.createFile("dest_bin", .{});
-    try dest.writeAll("old binary content");
-    dest.close();
+    const dest = try tmp.dir.createFile(std.testing.io, "dest_bin", .{});
+    try dest.writeStreamingAll(std.testing.io, "old binary content");
+    dest.close(std.testing.io);
 
     var src_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const src_path = try tmp.dir.realpath("src_bin", &src_buf);
+    const src_path_len = try tmp.dir.realPathFile(std.testing.io, "src_bin", &src_buf);
+    const src_path = src_buf[0..src_path_len];
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dest_path = try tmp.dir.realpath("dest_bin", &dest_buf);
+    const dest_path_len = try tmp.dir.realPathFile(std.testing.io, "dest_bin", &dest_buf);
+    const dest_path = dest_buf[0..dest_path_len];
 
-    try installTo(std.testing.allocator, src_path, dest_path);
+    try installTo(std.testing.allocator, src_path, dest_path, std.testing.io);
 
-    const installed = try tmp.dir.openFile("dest_bin", .{});
-    defer installed.close();
-    const content = try installed.readToEndAlloc(std.testing.allocator, 4096);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "dest_bin", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(content);
     try std.testing.expectEqualStrings("updated binary content", content);
 
-    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile("dest_bin.new", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(std.testing.io, "dest_bin.new", .{}));
 }
 
 test "installTo preserves dest file executable mode" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const src = try tmp.dir.createFile("src_bin", .{});
-    try src.writeAll("new content");
-    src.close();
+    const src = try tmp.dir.createFile(std.testing.io, "src_bin", .{});
+    try src.writeStreamingAll(std.testing.io, "new content");
+    src.close(std.testing.io);
 
-    const dest = try tmp.dir.createFile("dest_bin", .{});
-    try dest.writeAll("old content");
-    try std.posix.fchmod(dest.handle, 0o755);
-    dest.close();
+    const dest = try tmp.dir.createFile(std.testing.io, "dest_bin", .{});
+    try dest.writeStreamingAll(std.testing.io, "old content");
+    _ = std.c.fchmod(dest.handle, 0o755);
+    dest.close(std.testing.io);
 
     var src_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const src_path = try tmp.dir.realpath("src_bin", &src_buf);
+    const src_path_len = try tmp.dir.realPathFile(std.testing.io, "src_bin", &src_buf);
+    const src_path = src_buf[0..src_path_len];
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dest_path = try tmp.dir.realpath("dest_bin", &dest_buf);
+    const dest_path_len = try tmp.dir.realPathFile(std.testing.io, "dest_bin", &dest_buf);
+    const dest_path = dest_buf[0..dest_path_len];
 
-    try installTo(std.testing.allocator, src_path, dest_path);
+    try installTo(std.testing.allocator, src_path, dest_path, std.testing.io);
 
-    const installed = try tmp.dir.openFile("dest_bin", .{});
-    defer installed.close();
-    const stat = try installed.stat();
-    try std.testing.expectEqual(@as(std.fs.File.Mode, 0o755), stat.mode & 0o777);
+    const installed = try tmp.dir.openFile(std.testing.io, "dest_bin", .{});
+    defer installed.close(std.testing.io);
+    const stat = try installed.stat(std.testing.io);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), stat.permissions.toMode() & 0o777);
 }
 
 test "installTo fails with PathAlreadyExists when temp file exists" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const src = try tmp.dir.createFile("src_bin", .{});
-    try src.writeAll("new content");
-    src.close();
+    const src = try tmp.dir.createFile(std.testing.io, "src_bin", .{});
+    try src.writeStreamingAll(std.testing.io, "new content");
+    src.close(std.testing.io);
 
-    const dest = try tmp.dir.createFile("dest_bin", .{});
-    try dest.writeAll("old content");
-    dest.close();
+    const dest = try tmp.dir.createFile(std.testing.io, "dest_bin", .{});
+    try dest.writeStreamingAll(std.testing.io, "old content");
+    dest.close(std.testing.io);
 
-    const lock = try tmp.dir.createFile("dest_bin.new", .{});
-    lock.close();
+    const lock = try tmp.dir.createFile(std.testing.io, "dest_bin.new", .{});
+    lock.close(std.testing.io);
 
     var src_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const src_path = try tmp.dir.realpath("src_bin", &src_buf);
+    const src_path_len = try tmp.dir.realPathFile(std.testing.io, "src_bin", &src_buf);
+    const src_path = src_buf[0..src_path_len];
     var dest_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dest_path = try tmp.dir.realpath("dest_bin", &dest_buf);
+    const dest_path_len = try tmp.dir.realPathFile(std.testing.io, "dest_bin", &dest_buf);
+    const dest_path = dest_buf[0..dest_path_len];
 
-    try std.testing.expectError(error.PathAlreadyExists, installTo(std.testing.allocator, src_path, dest_path));
+    try std.testing.expectError(error.PathAlreadyExists, installTo(std.testing.allocator, src_path, dest_path, std.testing.io));
 
-    const original = try tmp.dir.openFile("dest_bin", .{});
-    defer original.close();
-    const content = try original.readToEndAlloc(std.testing.allocator, 4096);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "dest_bin", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(content);
     try std.testing.expectEqualStrings("old content", content);
 }
@@ -809,9 +815,9 @@ test "upgradeActionWithClient short-circuits without download when version match
     var mock = CurrentVersionClient{};
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try upgradeActionWithClient(std.testing.allocator, .{ .channel = .stable, .dry_run = false }, mock.client(), &aw.writer);
+    try upgradeActionWithClient(std.testing.allocator, .{ .channel = .stable, .dry_run = false }, mock.client(), &aw.writer, std.testing.io);
     try std.testing.expect(!mock.download_called);
-    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "already up to date") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "already up to date") != null);
 }
 
 test "selectRelease dev channel picks stable release when stable has newest published_at" {
@@ -859,7 +865,7 @@ test "printDryRunInfo writes version asset_url checksum install_path to writer" 
         "abc123def456",
         "/usr/local/bin/zpm",
     );
-    const written = aw.writer.buffer[0..aw.writer.end];
+    const written = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, written, "v1.2.3") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "https://example.com/zpm-linux-x86_64") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "abc123def456") != null);
@@ -870,7 +876,7 @@ test "printUpgradeSuccess writes prev/new version, channel, install path" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try printUpgradeSuccess(&aw.writer, "0.1.0", "v0.2.0", .stable, "/usr/local/bin/zpm");
-    const written = aw.writer.buffer[0..aw.writer.end];
+    const written = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, written, "0.1.0") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "v0.2.0") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "stable") != null);
@@ -881,12 +887,12 @@ test "printAlreadyUpToDate writes tag" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try printAlreadyUpToDate(&aw.writer, "v0.1.0");
-    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "v0.1.0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "already up to date") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "v0.1.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "already up to date") != null);
 }
 
 test "errorMessage covers every UpgradeError variant" {
-    inline for (@typeInfo(UpgradeError).error_set.?) |variant| {
+    inline for (@typeInfo(UpgradeError).error_set orelse @compileError("UpgradeError must be non-empty")) |variant| {
         const err = @field(UpgradeError, variant.name);
         const msg = errorMessage(err);
         try std.testing.expect(msg.len > 0);
@@ -934,8 +940,27 @@ pub fn buildCommand(runner: *cli.AppRunner) !cli.Command {
     };
 }
 
+fn makeTestInit(arena: *std.heap.ArenaAllocator, environ_map: *std.process.Environ.Map) std.process.Init {
+    return .{
+        .minimal = .{
+            .environ = .empty,
+            .args = .{ .vector = &.{} },
+        },
+        .arena = arena,
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .environ_map = environ_map,
+        .preopens = .empty,
+    };
+}
+
 test "buildCommand exposes channel and dry-run options" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
 

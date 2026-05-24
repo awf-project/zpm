@@ -20,32 +20,32 @@ pub const ProjectPaths = struct {
     }
 };
 
-pub fn discover(allocator: std.mem.Allocator, cwd: []const u8) (ProjectError || std.mem.Allocator.Error)!ProjectPaths {
+pub fn discover(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8) (ProjectError || std.mem.Allocator.Error)!ProjectPaths {
     var current = cwd;
-    var start_dev: ?std.posix.dev_t = null;
+    var start_dev: ?u32 = null;
 
     while (true) {
-        var cur_dir = std.fs.openDirAbsolute(current, .{}) catch return ProjectError.NotFound;
-
-        const cur_stat = std.posix.fstat(cur_dir.fd) catch {
-            cur_dir.close();
-            return ProjectError.NotFound;
-        };
+        var stx: std.os.linux.Statx = undefined;
+        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (current.len >= path_buf.len) return ProjectError.NotFound;
+        @memcpy(path_buf[0..current.len], current);
+        path_buf[current.len] = 0;
+        if (std.c.statx(std.posix.AT.FDCWD, @ptrCast(&path_buf), 0, std.os.linux.STATX.BASIC_STATS, &stx) != 0) return ProjectError.NotFound;
 
         if (start_dev == null) {
-            start_dev = cur_stat.dev;
-        } else if (cur_stat.dev != start_dev.?) {
-            cur_dir.close();
+            start_dev = stx.dev_major;
+        } else if (stx.dev_major != start_dev.?) {
             return ProjectError.NotFound;
         }
 
-        const has_zpm = if (cur_dir.openDir(".zpm", .{})) |zd| blk: {
+        var cur_dir = std.Io.Dir.openDirAbsolute(io, current, .{}) catch return ProjectError.NotFound;
+        const has_zpm = if (cur_dir.openDir(io, ".zpm", .{})) |zd| blk: {
             var mzd = zd;
-            mzd.close();
+            mzd.close(io);
             break :blk true;
         } else |_| false;
 
-        cur_dir.close();
+        cur_dir.close(io);
 
         if (has_zpm) {
             const data_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/data", .{current});
@@ -68,34 +68,34 @@ pub fn discover(allocator: std.mem.Allocator, cwd: []const u8) (ProjectError || 
     }
 }
 
-pub fn initProject(cwd: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(cwd, .{});
-    defer dir.close();
+pub fn initProject(io: std.Io, cwd: []const u8) !void {
+    var dir = try std.Io.Dir.openDirAbsolute(io, cwd, .{});
+    defer dir.close(io);
 
-    if (dir.openDir(".zpm", .{})) |zd| {
+    if (dir.openDir(io, ".zpm", .{})) |zd| {
         var mzd = zd;
-        mzd.close();
+        mzd.close(io);
         return ProjectError.AlreadyInitialized;
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
 
-    try dir.makeDir(".zpm");
-    try dir.makeDir(".zpm/kb");
-    try dir.makeDir(".zpm/data");
+    try dir.createDir(io, ".zpm", .default_dir);
+    try dir.createDir(io, ".zpm/kb", .default_dir);
+    try dir.createDir(io, ".zpm/data", .default_dir);
 
-    const gitignore = try dir.createFile(".zpm/.gitignore", .{});
-    defer gitignore.close();
-    try gitignore.writeAll("data/\n");
+    const gitignore = try dir.createFile(io, ".zpm/.gitignore", .{});
+    defer gitignore.close(io);
+    try gitignore.writeStreamingAll(io, "data/\n");
 }
 
-pub fn loadKnowledgeBase(allocator: std.mem.Allocator, kb_dir: []const u8, engine: *Engine) !void {
-    var dir = try std.fs.openDirAbsolute(kb_dir, .{ .iterate = true });
-    defer dir.close();
+pub fn loadKnowledgeBase(io: std.Io, allocator: std.mem.Allocator, kb_dir: []const u8, engine: *Engine) !void {
+    var dir = try std.Io.Dir.openDirAbsolute(io, kb_dir, .{ .iterate = true });
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".pl")) continue;
 
@@ -111,14 +111,15 @@ pub fn loadKnowledgeBase(allocator: std.mem.Allocator, kb_dir: []const u8, engin
 test "discover returns ProjectPaths with data_dir and kb_dir when .zpm exists in cwd" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/data");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/data", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    const paths = try discover(std.testing.allocator, cwd);
+    const paths = try discover(std.testing.io, std.testing.allocator, cwd);
     defer paths.deinit();
 
     try std.testing.expect(std.mem.endsWith(u8, paths.data_dir, "/.zpm/data"));
@@ -128,17 +129,19 @@ test "discover returns ProjectPaths with data_dir and kb_dir when .zpm exists in
 test "discover finds .zpm in parent directory when invoked from nested subdirectory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/data");
-    try tmp.dir.makeDir(".zpm/kb");
-    try tmp.dir.makeDir("src");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/data", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "src", .default_dir);
 
     var parent_buf: [4096]u8 = undefined;
-    const parent = try tmp.dir.realpath(".", &parent_buf);
+    const parent_len = try tmp.dir.realPathFile(std.testing.io, ".", &parent_buf);
+    const parent = parent_buf[0..parent_len];
     var child_buf: [4096]u8 = undefined;
-    const child = try tmp.dir.realpath("src", &child_buf);
+    const child_len = try tmp.dir.realPathFile(std.testing.io, "src", &child_buf);
+    const child = child_buf[0..child_len];
 
-    const paths = try discover(std.testing.allocator, child);
+    const paths = try discover(std.testing.io, std.testing.allocator, child);
     defer paths.deinit();
 
     try std.testing.expect(std.mem.startsWith(u8, paths.data_dir, parent));
@@ -148,14 +151,15 @@ test "discover finds .zpm in parent directory when invoked from nested subdirect
 test "discover populates manifest_path ending with /.zpm/mounts.json" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/data");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/data", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    const paths = try discover(std.testing.allocator, cwd);
+    const paths = try discover(std.testing.io, std.testing.allocator, cwd);
     defer paths.deinit();
 
     try std.testing.expect(std.mem.endsWith(u8, paths.manifest_path, "/.zpm/mounts.json"));
@@ -164,34 +168,37 @@ test "discover populates manifest_path ending with /.zpm/mounts.json" {
 test "ProjectPaths.deinit frees manifest_path without leaks" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/data");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/data", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    const paths = try discover(std.testing.allocator, cwd);
+    const paths = try discover(std.testing.io, std.testing.allocator, cwd);
     paths.deinit();
 }
 
 test "initProject creates .zpm directory structure with kb and data subdirectories" {
+    const tio = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    try initProject(cwd);
+    try initProject(std.testing.io, cwd);
 
-    var zpm = try tmp.dir.openDir(".zpm", .{});
-    defer zpm.close();
-    var kb = try tmp.dir.openDir(".zpm/kb", .{});
-    defer kb.close();
-    var data = try tmp.dir.openDir(".zpm/data", .{});
-    defer data.close();
-    const gi = try tmp.dir.openFile(".zpm/.gitignore", .{});
-    defer gi.close();
+    var zpm = try tmp.dir.openDir(tio, ".zpm", .{});
+    defer zpm.close(tio);
+    var kb = try tmp.dir.openDir(tio, ".zpm/kb", .{});
+    defer kb.close(tio);
+    var data = try tmp.dir.openDir(tio, ".zpm/data", .{});
+    defer data.close(tio);
+    const gi = try tmp.dir.openFile(tio, ".zpm/.gitignore", .{});
+    defer gi.close(tio);
 }
 
 test "initProject writes data/ to .zpm/.gitignore" {
@@ -199,41 +206,45 @@ test "initProject writes data/ to .zpm/.gitignore" {
     defer tmp.cleanup();
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    try initProject(cwd);
+    try initProject(std.testing.io, cwd);
 
     var buf: [256]u8 = undefined;
-    const content = try tmp.dir.readFile(".zpm/.gitignore", &buf);
+    const content = try tmp.dir.readFile(std.testing.io, ".zpm/.gitignore", &buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "data/") != null);
 }
 
 test "initProject returns AlreadyInitialized when .zpm already exists" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".zpm");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
 
     var cwd_buf: [4096]u8 = undefined;
-    const cwd = try tmp.dir.realpath(".", &cwd_buf);
+    const cwd_len = try tmp.dir.realPathFile(std.testing.io, ".", &cwd_buf);
+    const cwd = cwd_buf[0..cwd_len];
 
-    try std.testing.expectError(ProjectError.AlreadyInitialized, initProject(cwd));
+    try std.testing.expectError(ProjectError.AlreadyInitialized, initProject(std.testing.io, cwd));
 }
 
 test "loadKnowledgeBase loads .pl files from directory into engine" {
+    const tio = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const pl = try tmp.dir.createFile("facts.pl", .{});
-    try pl.writeAll(":- dynamic(hello/1).\nhello(world).\n");
-    pl.close();
+    const pl = try tmp.dir.createFile(tio, "facts.pl", .{});
+    try pl.writeStreamingAll(tio, ":- dynamic(hello/1).\nhello(world).\n");
+    pl.close(tio);
 
     var kb_buf: [4096]u8 = undefined;
-    const kb_dir = try tmp.dir.realpath(".", &kb_buf);
+    const kb_dir_len = try tmp.dir.realPathFile(std.testing.io, ".", &kb_buf);
+    const kb_dir = kb_buf[0..kb_dir_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    try loadKnowledgeBase(std.testing.allocator, kb_dir, engine);
+    try loadKnowledgeBase(std.testing.io, std.testing.allocator, kb_dir, engine);
 
     var result = try engine.query("hello(world)");
     defer result.deinit();
@@ -241,24 +252,26 @@ test "loadKnowledgeBase loads .pl files from directory into engine" {
 }
 
 test "loadKnowledgeBase ignores non-.pl files and still loads .pl files" {
+    const tio = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const txt = try tmp.dir.createFile("readme.txt", .{});
-    try txt.writeAll("this is not prolog\n");
-    txt.close();
+    const txt = try tmp.dir.createFile(tio, "readme.txt", .{});
+    try txt.writeStreamingAll(tio, "this is not prolog\n");
+    txt.close(tio);
 
-    const pl = try tmp.dir.createFile("rules.pl", .{});
-    try pl.writeAll(":- dynamic(valid/1).\nvalid(yes).\n");
-    pl.close();
+    const pl = try tmp.dir.createFile(tio, "rules.pl", .{});
+    try pl.writeStreamingAll(tio, ":- dynamic(valid/1).\nvalid(yes).\n");
+    pl.close(tio);
 
     var kb_buf: [4096]u8 = undefined;
-    const kb_dir = try tmp.dir.realpath(".", &kb_buf);
+    const kb_dir_len = try tmp.dir.realPathFile(std.testing.io, ".", &kb_buf);
+    const kb_dir = kb_buf[0..kb_dir_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    try loadKnowledgeBase(std.testing.allocator, kb_dir, engine);
+    try loadKnowledgeBase(std.testing.io, std.testing.allocator, kb_dir, engine);
 
     var result = try engine.query("valid(yes)");
     defer result.deinit();
@@ -270,12 +283,13 @@ test "loadKnowledgeBase succeeds with empty directory" {
     defer tmp.cleanup();
 
     var kb_buf: [4096]u8 = undefined;
-    const kb_dir = try tmp.dir.realpath(".", &kb_buf);
+    const kb_dir_len = try tmp.dir.realPathFile(std.testing.io, ".", &kb_buf);
+    const kb_dir = kb_buf[0..kb_dir_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    try loadKnowledgeBase(std.testing.allocator, kb_dir, engine);
+    try loadKnowledgeBase(std.testing.io, std.testing.allocator, kb_dir, engine);
 }
 
 test "discover stops at filesystem root and returns NotFound when no .zpm exists" {
@@ -284,14 +298,14 @@ test "discover stops at filesystem root and returns NotFound when no .zpm exists
     const base = "/tmp/zpm-test-discover-root";
     const nested = base ++ "/deep/nested";
 
-    std.fs.deleteTreeAbsolute(base) catch {};
-    try std.fs.makeDirAbsolute(base);
-    defer std.fs.deleteTreeAbsolute(base) catch {};
-    try std.fs.makeDirAbsolute(base ++ "/deep");
-    try std.fs.makeDirAbsolute(nested);
+    std.Io.Dir.cwd().deleteTree(std.testing.io, base) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, base, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, base) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, base ++ "/deep", .default_dir);
+    try std.Io.Dir.cwd().createDir(std.testing.io, nested, .default_dir);
 
     try std.testing.expectError(
         ProjectError.NotFound,
-        discover(std.testing.allocator, nested),
+        discover(std.testing.io, std.testing.allocator, nested),
     );
 }

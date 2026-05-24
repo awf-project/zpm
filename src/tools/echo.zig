@@ -3,9 +3,9 @@ const mcp = @import("mcp");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("message", "The message to echo back", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "message", "The message to echo back", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "echo",
@@ -23,7 +23,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const message = mcp.tools.getString(args, "message") orelse return mcp.tools.ToolError.InvalidArguments;
     return mcp.tools.textResult(allocator, message);
 }
@@ -33,11 +33,11 @@ test "handler echoes message string from args" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("message", .{ .string = "hello world" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "message", .{ .string = "hello world" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
     try std.testing.expect(!result.is_error);
@@ -45,7 +45,7 @@ test "handler echoes message string from args" {
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -54,9 +54,9 @@ test "handler returns InvalidArguments when message key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }

@@ -20,12 +20,12 @@ const parseBoolArg = validation.parseBoolArg;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("functor", "Predicate functor name", true);
-    _ = try schema.addInteger("arity", "Predicate arity (optional, omit to match all arities)", false);
-    _ = try schema.addString("memory", "Memory segment name (optional, defaults to 'default')", false);
-    _ = try schema.addBoolean("include_cross_memory_refs", "Include cross-memory references (optional, defaults to true)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "functor", "Predicate functor name", true);
+    _ = try schema.addInteger(allocator, "arity", "Predicate arity (optional, omit to match all arities)", false);
+    _ = try schema.addString(allocator, "memory", "Memory segment name (optional, defaults to 'default')", false);
+    _ = try schema.addBoolean(allocator, "include_cross_memory_refs", "Include cross-memory references (optional, defaults to true)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "find_predicate_references",
@@ -167,7 +167,7 @@ fn enumeratePredicateBodies(
 // bug that leaks the enclosing query conjunction into body bindings.
 fn renderHeadPattern(allocator: std.mem.Allocator, name: []const u8, arity: i64) ![]u8 {
     if (arity <= 0) return allocator.dupe(u8, name);
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll(name);
@@ -195,7 +195,7 @@ fn sortCrossMemoryRefs(refs: []CrossMemoryRef) void {
     }.cmp);
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     if (args == null) return mcp.tools.ToolError.InvalidArguments;
 
     const obj = switch (args.?) {
@@ -575,7 +575,7 @@ fn buildJson(
     assumption_refs: []const AssumptionRef,
     cross_refs: []const CrossMemoryRef,
 ) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -656,7 +656,7 @@ test "tool schema declares functor as required string property" {
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -665,10 +665,10 @@ test "handler returns InvalidArguments when functor key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -677,11 +677,11 @@ test "handler returns InvalidArguments when functor is not a string" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .integer = 123 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .integer = 123 });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -690,12 +690,12 @@ test "handler returns InvalidArguments when arity is negative" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
-    try obj.put("arity", .{ .integer = -1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
+    try obj.put(allocator, "arity", .{ .integer = -1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -704,11 +704,11 @@ test "handler returns InvalidArguments when functor fails validation" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test:bad" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test:bad" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -720,11 +720,11 @@ test "handler returns error result when engine is not initialized" {
     context.clearEngine();
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -733,16 +733,16 @@ test "handler response includes target field with functor when arity omitted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"target\":\"test\"") != null);
@@ -753,17 +753,17 @@ test "handler response includes target field with arity when arity provided" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"target\":\"test/2\"") != null);
@@ -774,16 +774,16 @@ test "handler response includes memory field set to default when omitted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"memory\":\"default\"") != null);
@@ -794,16 +794,16 @@ test "handler response includes rules array" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[]") != null);
@@ -814,16 +814,16 @@ test "handler response includes direct_facts_count field" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"direct_facts_count\":") != null);
@@ -834,16 +834,16 @@ test "handler response includes empty facts_referenced_in_assumptions array" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"facts_referenced_in_assumptions\":[]") != null);
@@ -854,16 +854,16 @@ test "handler response includes empty cross_memory_refs array" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"cross_memory_refs\":[]") != null);
@@ -874,29 +874,29 @@ test "handler returns InvalidArguments when arity is non-integer" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
-    try obj.put("arity", .{ .string = "not_an_int" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
+    try obj.put(allocator, "arity", .{ .string = "not_an_int" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
 fn emptyEngineResponse(allocator: std.mem.Allocator, functor: []const u8, arity_opt: ?i64) ![]const u8 {
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = functor });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = functor });
     if (arity_opt) |a| {
-        try obj.put("arity", .{ .integer = a });
+        try obj.put(allocator, "arity", .{ .integer = a });
     }
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     return result.content[0].text.text;
 }
@@ -916,19 +916,19 @@ test "one asserted fact is counted by direct_facts_count" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("task_status(f016, in_progress)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"direct_facts_count\":1,") != null);
@@ -939,19 +939,19 @@ test "rule body reference is enumerated in rules array" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("active_work(X) :- task_status(X, in_progress)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[{") != null);
@@ -964,7 +964,7 @@ test "arity omitted matches multiple arities of same functor" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -972,11 +972,11 @@ test "arity omitted matches multiple arities of same functor" {
     try engine.assertFact("task_status(f016)");
     try engine.assertFact("task_status(f016, in_progress)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"direct_facts_count\":2") != null);
@@ -1015,19 +1015,19 @@ test "reference inside negation \\+ is detected" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("available_task(X) :- \\+ task_status(X, in_progress)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[{") != null);
@@ -1038,19 +1038,19 @@ test "reference inside findall is detected" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("count_active(N) :- findall(X, task_status(X, in_progress), L)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[{") != null);
@@ -1061,19 +1061,19 @@ test "reference inside conjunction is detected" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("pending_action(X) :- (a, task_status(X, in_progress), b)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[{") != null);
@@ -1084,19 +1084,19 @@ test "reference inside disjunction is detected" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("maybe_active(X) :- (task_status(X, in_progress) ; task_status(X, pending))");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"rules\":[{") != null);
@@ -1107,7 +1107,7 @@ test "rules array is lexicographically sorted by memory, head, body" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1116,12 +1116,12 @@ test "rules array is lexicographically sorted by memory, head, body" {
     try engine.assert("a_rule(X) :- target(X, a)");
     try engine.assert("m_rule(X) :- target(X, c)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "target" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1137,18 +1137,18 @@ test "handler returns error result with Memory not mounted when memory names unk
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
     context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "test" });
-    try obj.put("memory", .{ .string = "unknown_segment" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "test" });
+    try obj.put(allocator, "memory", .{ .string = "unknown_segment" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "Memory not mounted") != null);
@@ -1159,17 +1159,17 @@ test "handler returns empty facts_referenced_in_assumptions when no tms_justific
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"facts_referenced_in_assumptions\":[]") != null);
@@ -1180,7 +1180,7 @@ test "handler returns one facts_referenced_in_assumptions entry when tms_justifi
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1188,12 +1188,12 @@ test "handler returns one facts_referenced_in_assumptions entry when tms_justifi
     var qr = try engine.query("assertz(tms_justification(task_status(f016, in_progress), hyp_sprint_4))");
     defer qr.deinit();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"assumption\":\"hyp_sprint_4\"") != null);
@@ -1206,7 +1206,7 @@ test "handler with arity omitted matches assumptions referencing both task_statu
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1216,11 +1216,11 @@ test "handler with arity omitted matches assumptions referencing both task_statu
     var qr2 = try engine.query("assertz(tms_justification(task_status(f016, in_progress), a2))");
     defer qr2.deinit();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"assumption\":\"a1\"") != null);
@@ -1232,7 +1232,7 @@ test "handler with arity: 1 excludes assumptions referencing task_status/2" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1242,12 +1242,12 @@ test "handler with arity: 1 excludes assumptions referencing task_status/2" {
     var qr2 = try engine.query("assertz(tms_justification(task_status(f016, in_progress), a2))");
     defer qr2.deinit();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "\"assumption\":\"a1\"") != null);
@@ -1259,7 +1259,7 @@ test "facts_referenced_in_assumptions entries are stably sorted by memory, assum
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1271,12 +1271,12 @@ test "facts_referenced_in_assumptions entries are stably sorted by memory, assum
     var qr3 = try engine.query("assertz(tms_justification(status(m), m_assump))");
     defer qr3.deinit();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "status" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "status" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1293,19 +1293,19 @@ test "handler with rule stale(F) :- tasks:task_status(F, blocked) in default mem
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("stale(F) :- tasks:task_status(F, blocked)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1329,19 +1329,19 @@ test "handler detects Mod:Goal nested under \\+ tasks:task_status(X, blocked)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("available_task(X) :- \\+ tasks:task_status(X, blocked)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1356,19 +1356,19 @@ test "handler detects Mod:Goal nested under findall(_, audit:task_status(_, _), 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("count_audit_status(N) :- findall(X, audit:task_status(X, _), L), length(L, N)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1383,19 +1383,19 @@ test "handler with Var:Goal left arg (variable, not atom) does NOT emit a cross_
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("call_indirect(Mod, Goal) :- Mod:Goal");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1407,7 +1407,7 @@ test "cross_memory_refs is stably sorted by (memory, qualifier, head, body)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1416,12 +1416,12 @@ test "cross_memory_refs is stably sorted by (memory, qualifier, head, body)" {
     try engine.assert("a_rule(X) :- audit:target(X, a)");
     try engine.assert("m_rule(X) :- tasks:target(X, a)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "target" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1449,20 +1449,20 @@ test "handler with include_cross_memory_refs: false returns empty cross_memory_r
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("stale(F) :- tasks:task_status(F, blocked)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
-    try obj.put("include_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
+    try obj.put(allocator, "include_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1474,19 +1474,19 @@ test "handler with include_cross_memory_refs: true (default) includes cross_memo
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("stale(F) :- tasks:task_status(F, blocked)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1502,20 +1502,22 @@ test "handler with memory: \"__all__\" and two mounted memories iterates both an
     var tmp_tasks = std.testing.tmpDir(.{});
     defer tmp_tasks.cleanup();
     var path_buf_tasks: [std.fs.max_path_bytes]u8 = undefined;
-    const tasks_path = try tmp_tasks.dir.realpath(".", &path_buf_tasks);
-    var tasks_kf = try tmp_tasks.dir.createFile("knowledge.pl", .{});
-    defer tasks_kf.close();
-    try tasks_kf.writeAll(":- module(tasks, []).\n");
+    const tasks_path_len = try tmp_tasks.dir.realPathFile(std.testing.io, ".", &path_buf_tasks);
+    const tasks_path = path_buf_tasks[0..tasks_path_len];
+    var tasks_kf = try tmp_tasks.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer tasks_kf.close(std.testing.io);
+    try tasks_kf.writeStreamingAll(std.testing.io, ":- module(tasks, []).\n");
 
     var tmp_audit = std.testing.tmpDir(.{});
     defer tmp_audit.cleanup();
     var path_buf_audit: [std.fs.max_path_bytes]u8 = undefined;
-    const audit_path = try tmp_audit.dir.realpath(".", &path_buf_audit);
-    var audit_kf = try tmp_audit.dir.createFile("knowledge.pl", .{});
-    defer audit_kf.close();
-    try audit_kf.writeAll(":- module(audit, []).\n");
+    const audit_path_len = try tmp_audit.dir.realPathFile(std.testing.io, ".", &path_buf_audit);
+    const audit_path = path_buf_audit[0..audit_path_len];
+    var audit_kf = try tmp_audit.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer audit_kf.close(std.testing.io);
+    try audit_kf.writeStreamingAll(std.testing.io, ":- module(audit, []).\n");
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1541,18 +1543,18 @@ test "handler with memory: \"__all__\" and two mounted memories iterates both an
 
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
-    try reg.mount("tasks", tasks_path, .project, .rw, engine);
-    try reg.mount("audit", audit_path, .project, .rw, engine);
+    try reg.mount("tasks", tasks_path, .project, .rw, engine, std.testing.io);
+    try reg.mount("audit", audit_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "target" });
-    try obj.put("arity", .{ .integer = 2 });
-    try obj.put("memory", .{ .string = "__all__" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
+    try obj.put(allocator, "memory", .{ .string = "__all__" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1578,7 +1580,7 @@ test "handler with memory: \"__all__\" sums direct_facts_count across all mounte
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1586,13 +1588,13 @@ test "handler with memory: \"__all__\" sums direct_facts_count across all mounte
     try engine.assertFact("target(a, 1)");
     try engine.assertFact("target(b, 2)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "target" });
-    try obj.put("arity", .{ .integer = 2 });
-    try obj.put("memory", .{ .string = "__all__" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
+    try obj.put(allocator, "memory", .{ .string = "__all__" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1604,7 +1606,7 @@ test "handler with include_cross_memory_refs: false under memory: \"__all__\" st
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1612,14 +1614,14 @@ test "handler with include_cross_memory_refs: false under memory: \"__all__\" st
     try engine.assert("rule1(X) :- target(X, a)");
     try engine.assertFact("target(f, 1)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "target" });
-    try obj.put("arity", .{ .integer = 2 });
-    try obj.put("memory", .{ .string = "__all__" });
-    try obj.put("include_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
+    try obj.put(allocator, "memory", .{ .string = "__all__" });
+    try obj.put(allocator, "include_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1637,7 +1639,7 @@ test "cross_memory_refs emits exactly one entry per qualifier, no spurious user:
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1649,12 +1651,12 @@ test "cross_memory_refs emits exactly one entry per qualifier, no spurious user:
     // and one with qualifier "mymod".
     try engine.assert("check_done(X) :- mymod:task_status(X, done)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "task_status" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "task_status" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1678,7 +1680,7 @@ test "cross_memory_refs memory field is the owning segment, qualifier field is t
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1686,12 +1688,12 @@ test "cross_memory_refs memory field is the owning segment, qualifier field is t
     // Rule asserting in the default segment, referencing "other_seg".
     try engine.assert("check_other(X) :- other_seg:item(X, active)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "item" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "item" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1715,19 +1717,19 @@ test "handler response is valid JSON parseable by std.json" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("ref_rule(X) :- ref_target(X, done)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("functor", .{ .string = "ref_target" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "functor", .{ .string = "ref_target" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 

@@ -74,44 +74,44 @@ pub fn parseBoolArg(obj: std.json.ObjectMap, key: []const u8, default_val: bool)
 }
 
 test "parseBoolArg returns default when key missing" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
     try std.testing.expect(parseBoolArg(map, "missing", true));
     try std.testing.expect(!parseBoolArg(map, "missing", false));
 }
 
 test "parseBoolArg handles bool true value" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .bool = true });
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "flag", .{ .bool = true });
     try std.testing.expect(parseBoolArg(map, "flag", false));
 }
 
 test "parseBoolArg handles bool false value" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .bool = false });
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "flag", .{ .bool = false });
     try std.testing.expect(!parseBoolArg(map, "flag", true));
 }
 
 test "parseBoolArg handles string true value" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .string = "true" });
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "flag", .{ .string = "true" });
     try std.testing.expect(parseBoolArg(map, "flag", false));
 }
 
 test "parseBoolArg handles string false value as false" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .string = "false" });
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "flag", .{ .string = "false" });
     try std.testing.expect(!parseBoolArg(map, "flag", true));
 }
 
 test "parseBoolArg returns default for non-bool non-string values" {
-    var map = std.json.ObjectMap.init(std.testing.allocator);
-    defer map.deinit();
-    try map.put("flag", .{ .integer = 1 });
+    var map: std.json.ObjectMap = .{};
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "flag", .{ .integer = 1 });
     try std.testing.expect(parseBoolArg(map, "flag", true));
     try std.testing.expect(!parseBoolArg(map, "flag", false));
 }

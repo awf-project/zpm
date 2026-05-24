@@ -24,7 +24,7 @@ const PredicateEntry = struct {
     rule_count: usize,
 };
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const engine = context.getEngine() orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
@@ -84,7 +84,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 }
 
 fn buildSchemaJson(allocator: std.mem.Allocator, entries: []const PredicateEntry) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -117,14 +117,14 @@ test "handler returns predicate list when facts are asserted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("person(alice)");
     try engine.assertFact("person(bob)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -139,11 +139,11 @@ test "handler returns empty predicates list for empty knowledge base" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -156,13 +156,13 @@ test "handler classifies rule-only predicate as rule type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assert("grandparent(X,Z) :- parent(X,Y), parent(Y,Z)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -175,11 +175,11 @@ test "handler returns valid result when args are null" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
 }
@@ -191,7 +191,7 @@ test "handler returns error message when engine is unavailable" {
 
     context.clearEngine();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(result.is_error);
     const text = result.content[0].text.text;
     try std.testing.expect(std.mem.indexOf(u8, text, "not initialized") != null);
@@ -202,14 +202,14 @@ test "handler classifies fact-only predicate as fact type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("animal(dog)");
     try engine.assertFact("animal(cat)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -221,14 +221,14 @@ test "handler classifies predicate with facts and rules as both type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("vehicle(car)");
     try engine.assert("vehicle(X) :- motorbike(X)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -240,7 +240,7 @@ test "handler includes accurate clause count in schema" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -248,7 +248,7 @@ test "handler includes accurate clause count in schema" {
     try engine.assertFact("color(blue)");
     try engine.assertFact("color(green)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -260,13 +260,13 @@ test "handler reports arity 0 for zero-argument predicate" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("is_ready");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -276,7 +276,7 @@ test "handler reports arity 0 for zero-argument predicate" {
 
 test "handler returns ExecutionFailed when countClauses allocation fails" {
     // A sentinel predicate forces the iteration path that calls countClauses.
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     try engine.assertFact("sentinel_pred(x)");
@@ -286,6 +286,6 @@ test "handler returns ExecutionFailed when countClauses allocation fails" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
     const allocator = failing.allocator();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

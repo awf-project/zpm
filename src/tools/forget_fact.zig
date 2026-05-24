@@ -5,13 +5,12 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
 const Engine = @import("../prolog/engine.zig").Engine;
-
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("fact", "The Prolog fact to retract (e.g. 'parent(tom, bob)')", true);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "fact", "The Prolog fact to retract (e.g. 'parent(tom, bob)')", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "forget_fact",
@@ -29,7 +28,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     if (fact.len == 0) return mcp.tools.errorResult(allocator, "Fact must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
 
@@ -51,7 +50,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     };
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .op = .retract, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = blk: {
+            var _ts: std.posix.timespec = undefined;
+            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+            break :blk _ts.sec;
+        }, .op = .retract, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     const msg = std.fmt.allocPrint(allocator, "Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -63,18 +66,18 @@ test "handler retracts existing fact and returns confirmation" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("role(alice, admin).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "role(alice, admin)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "role(alice, admin)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -82,7 +85,7 @@ test "handler retracts existing fact and returns confirmation" {
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -91,10 +94,10 @@ test "handler returns InvalidArguments when fact key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -103,11 +106,11 @@ test "handler returns error result when fact is empty string" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -119,28 +122,29 @@ test "handler journals retraction to WAL when persistence manager is active" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
     try engine.assertFact("session(active).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "session(active)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "session(active)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var content_buf: [1024]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "session(active)") != null);
 }
 
@@ -149,16 +153,16 @@ test "handler returns error result when fact does not exist in knowledge base" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "role(nobody, ghost)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "role(nobody, ghost)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -170,30 +174,31 @@ test "handler returns ExecutionFailed when journal write fails" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
     try engine.assertFact("journal_fail_forget(x).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
     // Swap the WAL fd for a read-only /dev/null so writeAll fails.
     if (pm.wal) |*w| {
-        w.file.close();
-        w.file = try std.fs.openFileAbsolute("/dev/null", .{ .mode = .read_only });
+        w.file.close(std.testing.io);
+        w.file = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .read_only });
     }
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "journal_fail_forget(x)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "journal_fail_forget(x)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 
     // The engine retraction succeeded before the journal write failed, so the
@@ -210,10 +215,10 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "role(alice, admin)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "role(alice, admin)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

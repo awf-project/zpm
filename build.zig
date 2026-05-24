@@ -13,6 +13,10 @@ pub fn build(b: *std.Build) void {
 
     const mcp_dep = b.dependency("mcp", .{});
     const cli_dep = b.dependency("cli", .{});
+
+    // mounts, and cli modules. Declared as a named module so test modules can
+    // forbidden when the file is outside the test module's root directory).
+
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -546,6 +550,7 @@ pub fn build(b: *std.Build) void {
     upgrade_test_module.addImport("output.zig", output_test_module);
     upgrade_test_module.addImport("../version.zig", version_module);
     upgrade_test_module.addImport("cli", cli_dep.module("cli"));
+    upgrade_test_module.link_libc = true;
     const upgrade_unit_tests = b.addTest(.{ .root_module = upgrade_test_module });
     const run_upgrade_unit_tests = b.addRunArtifact(upgrade_unit_tests);
     test_step.dependOn(&run_upgrade_unit_tests.step);
@@ -712,8 +717,8 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         .linkage = .static,
     });
 
-    lib.addIncludePath(b.path("ffi/trealla/src"));
-    lib.addIncludePath(b.path("ffi"));
+    mod.addIncludePath(b.path("ffi/trealla/src"));
+    mod.addIncludePath(b.path("ffi"));
 
     const lib_path = b.fmt("-DDEFAULT_LIBRARY_PATH=\"{s}\"", .{b.path("ffi/trealla/library").getPath(b)});
     const flags: []const []const u8 = &.{
@@ -734,11 +739,11 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         .name = "bin2c",
         .root_module = bin2c_mod,
     });
-    bin2c.addCSourceFile(.{
+    bin2c_mod.addCSourceFile(.{
         .file = b.path("ffi/trealla/util/bin2c.c"),
         .flags = &.{},
     });
-    bin2c.linkLibC();
+    bin2c_mod.link_libc = true;
 
     // Embed each .pl library file as a C source with byte arrays
     const pl_libs = [_][]const u8{
@@ -758,14 +763,14 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         gen.setCwd(b.path("ffi/trealla"));
         gen.addArg(b.fmt("library/{s}.pl", .{name}));
         const out_name = b.fmt("library_{s}_pl.c", .{name});
-        const generated_c = wf.addCopyFile(gen.captureStdOut(), out_name);
-        lib.addCSourceFile(.{
+        const generated_c = wf.addCopyFile(gen.captureStdOut(.{}), out_name);
+        mod.addCSourceFile(.{
             .file = generated_c,
             .flags = &.{},
         });
     }
 
-    lib.addCSourceFiles(.{
+    mod.addCSourceFiles(.{
         .root = b.path("ffi/trealla/src"),
         .files = &.{
             "imath/imath.c",
@@ -811,8 +816,8 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         .flags = flags,
     });
 
-    lib.linkSystemLibrary("m");
-    lib.linkLibC();
+    mod.linkSystemLibrary("m", .{});
+    mod.link_libc = true;
 
     return lib;
 }
@@ -820,7 +825,7 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
 fn linkFfi(compile: *std.Build.Step.Compile, trealla: *std.Build.Step.Compile) void {
     compile.use_llvm = true;
     compile.use_lld = true;
-    compile.linkLibrary(trealla);
-    compile.linkSystemLibrary("m");
-    compile.linkLibC();
+    compile.root_module.linkLibrary(trealla);
+    compile.root_module.linkSystemLibrary("m", .{});
+    compile.root_module.link_libc = true;
 }

@@ -15,7 +15,7 @@ pub const tool = mcp.tools.Tool{
     .handler = handler,
 };
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     _ = args;
 
     const reg = context.getMemoryRegistryAs(MemoryRegistry) orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -59,6 +59,6 @@ test "list_memories tool is read-only" {
 test "list_memories handler returns ExecutionFailed without registry" {
     context.clearMemoryRegistry();
 
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

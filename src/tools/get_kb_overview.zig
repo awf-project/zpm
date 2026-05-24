@@ -6,15 +6,14 @@ const validation = @import("tool_validation");
 const clause_utils = @import("tool_clause_utils");
 const manager_mod = @import("../persistence/manager.zig");
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
-
 const PersistenceManager = manager_mod.PersistenceManager;
 const Engine = engine_mod.Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addInteger("sample_size", "Number of sample clauses per predicate (default: 2, max: 50)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addInteger(allocator, "sample_size", "Number of sample clauses per predicate (default: 2, max: 50)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "get_kb_overview",
@@ -32,7 +31,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const engine = context.getEngine() orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
@@ -47,23 +46,23 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     // the budget (very large KB with many predicates), we emit truncated=true
     // with size=0 and accept the overage rather than omitting sections entirely,
     // because partial structural information is more useful than a minimal stub.
-    const json = buildBudgeted(allocator, engine, &size) catch return mcp.tools.ToolError.OutOfMemory;
+    const json = buildBudgeted(io, allocator, engine, &size) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(json);
     return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
 /// Reduce sample_size until the output fits in total_budget, then return
 /// the final JSON. Exactly one allocated slice is live at any point.
-fn buildBudgeted(allocator: std.mem.Allocator, engine: *Engine, size: *usize) ![]u8 {
+fn buildBudgeted(io: std.Io, allocator: std.mem.Allocator, engine: *Engine, size: *usize) ![]u8 {
     var truncated = false;
     while (true) {
-        const attempt = try buildJson(allocator, engine, size.*, false);
+        const attempt = try buildJson(io, allocator, engine, size.*, false);
         if (attempt.len <= total_budget or size.* == 0) {
             if (truncated) {
                 // Rebuild with the truncated flag set so the caller knows
                 // the sample count was reduced from the original request.
                 allocator.free(attempt);
-                return buildJson(allocator, engine, size.*, true);
+                return buildJson(io, allocator, engine, size.*, true);
             }
             return attempt;
         }
@@ -93,7 +92,7 @@ const total_budget: usize = 64 * 1024;
 
 const mounts_unavailable_json = "{\"available\":false,\"count\":0,\"items\":[]}";
 
-fn buildJson(allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, truncated: bool) ![]u8 {
+fn buildJson(io: std.Io, allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, truncated: bool) ![]u8 {
     // std.ArrayList(u8) = .empty uses the managed ArrayList API (Zig 0.15):
     // each append/deinit call receives the allocator explicitly. This is
     // intentional and consistent with the rest of the project's tool handlers.
@@ -161,13 +160,13 @@ fn buildJson(allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, 
 
     try buf.appendSlice(allocator, ",\"snapshots\":");
 
-    const snap_json = try buildSnapshotsJson(allocator);
+    const snap_json = try buildSnapshotsJson(io, allocator);
     defer allocator.free(snap_json);
     try buf.appendSlice(allocator, snap_json);
 
     try buf.appendSlice(allocator, ",\"persistence\":");
 
-    const persist_json = try buildPersistenceJson(allocator);
+    const persist_json = try buildPersistenceJson(io, allocator);
     defer allocator.free(persist_json);
     try buf.appendSlice(allocator, persist_json);
 
@@ -222,7 +221,7 @@ fn buildPredicateJson(
     count: usize,
     samples: []const []u8,
 ) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -284,7 +283,7 @@ fn buildAssumptionsJson(allocator: std.mem.Allocator, engine: *Engine) ![]u8 {
         }
     } else |_| {}
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -300,7 +299,7 @@ fn buildAssumptionsJson(allocator: std.mem.Allocator, engine: *Engine) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-fn buildSnapshotsJson(allocator: std.mem.Allocator) ![]u8 {
+fn buildSnapshotsJson(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
     const empty = "{\"count\":0,\"latest\":null,\"latest_at\":null}";
 
     const pm = context.getPersistenceManagerAs(PersistenceManager) orelse {
@@ -342,14 +341,14 @@ fn buildSnapshotsJson(allocator: std.mem.Allocator) ![]u8 {
     const snap_path = try std.fs.path.join(allocator, &.{ pm.snapshot_dir_path, latest_name });
     defer allocator.free(snap_path);
 
-    if (std.fs.openFileAbsolute(snap_path, .{})) |f| {
-        defer f.close();
-        if (f.stat()) |stat| {
-            timestamp_str = formatIso8601(allocator, stat.mtime) catch null;
+    if (std.Io.Dir.openFileAbsolute(io, snap_path, .{})) |f| {
+        defer f.close(io);
+        if (f.stat(io)) |stat| {
+            timestamp_str = formatIso8601(allocator, stat.mtime.nanoseconds) catch null;
         } else |_| {}
     } else |_| {}
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -386,13 +385,13 @@ fn formatIso8601(allocator: std.mem.Allocator, mtime_ns: i128) ![]u8 {
     });
 }
 
-fn buildPersistenceJson(allocator: std.mem.Allocator) ![]u8 {
+fn buildPersistenceJson(io: std.Io, allocator: std.mem.Allocator) ![]u8 {
     const pm = context.getPersistenceManagerAs(PersistenceManager);
 
     const healthy: bool = if (pm) |p| p.status == .active else false;
-    const wal_pending: usize = if (pm) |p| countWalPending(allocator, p) else 0;
+    const wal_pending: usize = if (pm) |p| countWalPending(io, allocator, p) else 0;
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -431,7 +430,7 @@ fn buildMountsJson(allocator: std.mem.Allocator) ![]u8 {
     // the items actually emitted. `getMounted` can return null (theoretical
     // race in multi-threaded use, defensive otherwise) — counting `names.len`
     // up-front would publish a count that diverges from the JSON array length.
-    var items_aw: std.io.Writer.Allocating = .init(allocator);
+    var items_aw: std.Io.Writer.Allocating = .init(allocator);
     defer items_aw.deinit();
     const iw = &items_aw.writer;
 
@@ -451,7 +450,7 @@ fn buildMountsJson(allocator: std.mem.Allocator) ![]u8 {
     const items_bytes = try items_aw.toOwnedSlice();
     defer allocator.free(items_bytes);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -464,24 +463,15 @@ fn buildMountsJson(allocator: std.mem.Allocator) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-fn countWalPending(allocator: std.mem.Allocator, pm: *PersistenceManager) usize {
+fn countWalPending(io: std.Io, allocator: std.mem.Allocator, pm: *PersistenceManager) usize {
     if (pm.wal == null) return 0;
     const wal_path = std.fs.path.join(allocator, &.{ pm.dir_path, "journal.wal" }) catch return 0;
     defer allocator.free(wal_path);
-    const file = std.fs.openFileAbsolute(wal_path, .{}) catch return 0;
-    defer file.close();
-
-    // Streamed newline count — no heap allocation regardless of WAL size.
-    // Invariant: WriteAheadLog.appendBatch (src/persistence/wal.zig:79) writes
-    // a trailing '\n' after every entry, so '\n' count == entry count.
-    var buf: [4096]u8 = undefined;
+    const wal_content = std.Io.Dir.cwd().readFileAlloc(io, wal_path, allocator, .unlimited) catch return 0;
+    defer allocator.free(wal_content);
     var count: usize = 0;
-    while (true) {
-        const n = file.read(&buf) catch break;
-        if (n == 0) break;
-        for (buf[0..n]) |b| {
-            if (b == '\n') count += 1;
-        }
+    for (wal_content) |b| {
+        if (b == '\n') count += 1;
     }
     return count;
 }
@@ -514,12 +504,12 @@ test "tool schema declares sample_size optional parameter" {
 /// Shared helper for the five empty-engine envelope tests.
 /// Caller owns the returned slice (arena-allocated, freed when caller's arena deinits).
 fn emptyEngineResponse(allocator: std.mem.Allocator) ![]const u8 {
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
     return result.content[0].text.text;
 }
@@ -564,7 +554,7 @@ test "handler with two facts produces predicate entry with functor, arity, kind,
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -572,7 +562,7 @@ test "handler with two facts produces predicate entry with functor, arity, kind,
     try engine.assertFact("parent(tom,bob)");
     try engine.assertFact("parent(bob,sue)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -587,7 +577,7 @@ test "handler with two facts produces samples array of length 2" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -595,7 +585,7 @@ test "handler with two facts produces samples array of length 2" {
     try engine.assertFact("parent(tom,bob)");
     try engine.assertFact("parent(bob,sue)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -608,14 +598,14 @@ test "handler with rule-only predicate produces kind rule and sample with :- sep
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assert("grandparent(X,Z) :- parent(X,Y), parent(Y,Z)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -628,7 +618,7 @@ test "handler with mixed facts and rules produces kind both" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -636,7 +626,7 @@ test "handler with mixed facts and rules produces kind both" {
     try engine.assertFact("vehicle(car)");
     try engine.assert("vehicle(X) :- motorbike(X)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -648,7 +638,7 @@ test "handler with sample_size 0 returns empty samples arrays" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -656,11 +646,11 @@ test "handler with sample_size 0 returns empty samples arrays" {
     try engine.assertFact("fact(a)");
     try engine.assertFact("fact(b)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("sample_size", .{ .integer = 0 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "sample_size", .{ .integer = 0 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -673,18 +663,18 @@ test "handler with sample_size 10000 clamps to 50 silently" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("fact(a)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("sample_size", .{ .integer = 10000 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "sample_size", .{ .integer = 10000 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
 }
@@ -694,18 +684,18 @@ test "handler with sample_size -5 clamps to 0 silently" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("fact(a)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("sample_size", .{ .integer = -5 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "sample_size", .{ .integer = -5 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
 }
@@ -715,14 +705,14 @@ test "handler with arity-0 predicate produces sample without parens" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("is_ready");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -735,7 +725,7 @@ test "handler returns all sample-able clauses for a fact predicate" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -743,7 +733,7 @@ test "handler returns all sample-able clauses for a fact predicate" {
     try engine.assertFact("good_pred(a)");
     try engine.assertFact("good_pred(b)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -755,7 +745,7 @@ test "handler deduplicates assumptions in response" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -763,7 +753,7 @@ test "handler deduplicates assumptions in response" {
     try engine.assertFact("tms_justification(fact1, a1)");
     try engine.assertFact("tms_justification(fact2, a1)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -779,23 +769,24 @@ test "handler with one snapshot returns snapshot metadata" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("test_fact(x)");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
     try pm.saveSnapshot(engine, "kb_v1");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -812,21 +803,22 @@ test "handler snapshot timestamp matches ISO-8601 format" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
     try pm.saveSnapshot(engine, "kb_v1");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -841,14 +833,15 @@ test "handler with WAL entries reports wal_pending count" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -856,7 +849,7 @@ test "handler with WAL entries reports wal_pending count" {
     try pm.journalMutation(.{ .timestamp = 1713000000, .clause = "fact1(a)" });
     try pm.journalMutation(.{ .timestamp = 1713000001, .clause = "fact2(b)" });
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -869,7 +862,7 @@ test "handler returns healthy false when persistence manager is null" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -877,7 +870,7 @@ test "handler returns healthy false when persistence manager is null" {
     context.clearPersistenceManager();
     defer context.clearPersistenceManager();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -892,7 +885,7 @@ test "handler returns errorResult when engine is null" {
     context.clearEngine();
     defer context.clearEngine();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(result.is_error);
     const text = result.content[0].text.text;
@@ -907,21 +900,22 @@ test "handler response does not contain absolute paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("test(x)");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -933,14 +927,14 @@ test "handler with small KB sets truncated false" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("small(x)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -952,7 +946,7 @@ test "handler with null registry returns mounts available:false" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -960,7 +954,7 @@ test "handler with null registry returns mounts available:false" {
     context.clearMemoryRegistry();
     defer context.clearMemoryRegistry();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -972,7 +966,7 @@ test "handler with empty registry returns mounts available:true count:0" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -982,7 +976,7 @@ test "handler with empty registry returns mounts available:true count:0" {
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -999,20 +993,21 @@ test "handler with mounted segments returns name scope mode in mounts items" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
-    try reg.mount("mymem", dir_path, .project, .rw, engine);
+    try reg.mount("mymem", dir_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -1031,17 +1026,18 @@ test "handler with multiple mounts returns items sorted lexicographically" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    try tmp.dir.makeDir("zoo");
-    try tmp.dir.makeDir("apple");
-    try tmp.dir.makeDir("middle");
+    try tmp.dir.createDir(std.testing.io, "zoo", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "apple", .default_dir);
+    try tmp.dir.createDir(std.testing.io, "middle", .default_dir);
 
     const path_a = try std.fs.path.join(allocator, &.{ dir_path, "apple" });
     const path_m = try std.fs.path.join(allocator, &.{ dir_path, "middle" });
     const path_z = try std.fs.path.join(allocator, &.{ dir_path, "zoo" });
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1049,13 +1045,13 @@ test "handler with multiple mounts returns items sorted lexicographically" {
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
     // Insert in non-alphabetic order — the lexicographic sort must reorder them.
-    try reg.mount("zoo", path_z, .project, .rw, engine);
-    try reg.mount("apple", path_a, .project, .rw, engine);
-    try reg.mount("middle", path_m, .project, .rw, engine);
+    try reg.mount("zoo", path_z, .project, .rw, engine, std.testing.io);
+    try reg.mount("apple", path_a, .project, .rw, engine, std.testing.io);
+    try reg.mount("middle", path_m, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
 
@@ -1072,7 +1068,7 @@ test "handler result length is under 64 KiB when budgeting is applied" {
     const allocator = arena.allocator();
 
     // Engine with increased solution cap to enumerate all seeded predicates.
-    const engine = try Engine.init(.{ .max_solutions = 300 });
+    const engine = try Engine.init(.{ .max_solutions = 300 }, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1121,7 +1117,7 @@ test "handler result length is under 64 KiB when budgeting is applied" {
         allocator.free(f2);
     }
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;

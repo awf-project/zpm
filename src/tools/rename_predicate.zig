@@ -12,14 +12,14 @@ const predicate_types = @import("tool_predicate_types");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("old_functor", "Predicate functor to rename", true);
-    _ = try schema.addString("new_functor", "New predicate functor name", true);
-    _ = try schema.addInteger("arity", "Predicate arity (optional, omit to match all arities)", false);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to 'default')", false);
-    _ = try schema.addBoolean("dry_run", "Preview changes without mutation (optional, defaults to false)", false);
-    _ = try schema.addBoolean("propagate_cross_memory_refs", "Propagate rename to cross-memory references (optional, defaults to false)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "old_functor", "Predicate functor to rename", true);
+    _ = try schema.addString(allocator, "new_functor", "New predicate functor name", true);
+    _ = try schema.addInteger(allocator, "arity", "Predicate arity (optional, omit to match all arities)", false);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to 'default')", false);
+    _ = try schema.addBoolean(allocator, "dry_run", "Preview changes without mutation (optional, defaults to false)", false);
+    _ = try schema.addBoolean(allocator, "propagate_cross_memory_refs", "Propagate rename to cross-memory references (optional, defaults to false)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "rename_predicate",
@@ -67,7 +67,7 @@ const RewrittenRuleBody = struct {
     new_body: []const u8,
 };
 
-fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     // 1. Null args guard.
     if (args == null) return mcp.tools.ToolError.InvalidArguments;
     const obj = switch (args.?) {
@@ -312,7 +312,11 @@ fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolEr
             engine.assertFact(qual_assert) catch continue;
 
             if (pm_opt) |pm| {
-                const ts = std.time.timestamp();
+                const ts = blk: {
+                    var _ts: std.posix.timespec = undefined;
+                    _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+                    break :blk _ts.sec;
+                };
                 const entries = [_]JournalEntry{
                     .{ .timestamp = ts, .op = .retract, .clause = qual_retract },
                     .{ .timestamp = ts, .op = .assert, .clause = qual_assert },
@@ -336,7 +340,11 @@ fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolEr
             engine.assertFact(new_tms) catch {};
 
             if (pm_opt) |pm| {
-                const ts = std.time.timestamp();
+                const ts = blk: {
+                    var _ts: std.posix.timespec = undefined;
+                    _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+                    break :blk _ts.sec;
+                };
                 const entries = [_]JournalEntry{
                     .{ .timestamp = ts, .op = .retract, .clause = old_tms },
                     .{ .timestamp = ts, .op = .assert, .clause = new_tms },
@@ -610,7 +618,7 @@ fn scanCrossMemoryRefs(
 
 fn buildHeadPattern(allocator: std.mem.Allocator, name: []const u8, arity: i64) ![]u8 {
     if (arity <= 0) return allocator.dupe(u8, name);
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll(name);
@@ -634,7 +642,7 @@ fn buildConcreteHead(
 ) ![]u8 {
     if (arity <= 0) return allocator.dupe(u8, functor);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll(functor);
@@ -788,7 +796,7 @@ fn buildResponseJson(
     rule_body_rewrites: []const RewrittenRuleBody,
     affected_rule_ids: []const []const u8,
 ) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -863,7 +871,7 @@ fn buildResponseJson(
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -872,11 +880,11 @@ test "handler returns InvalidArguments when old_functor key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -885,11 +893,11 @@ test "handler returns InvalidArguments when new_functor key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -898,12 +906,12 @@ test "handler returns InvalidArguments when old_functor is invalid atom name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "Invalid" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "Invalid" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -912,12 +920,12 @@ test "handler returns InvalidArguments when new_functor is invalid atom name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "Invalid" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "Invalid" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -926,13 +934,13 @@ test "handler returns InvalidArguments when arity is negative" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = -1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = -1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -943,12 +951,12 @@ test "handler returns error when engine context is uninitialized" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -957,18 +965,18 @@ test "handler returns error when old_functor is ISO operator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "=" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "=" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -977,18 +985,18 @@ test "handler returns error when new_functor is ISO operator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "=" });
-    try obj.put("arity", .{ .integer = 2 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "=" });
+    try obj.put(allocator, "arity", .{ .integer = 2 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -997,18 +1005,18 @@ test "handler returns error when old_functor equals new_functor with same arity"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "foo" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "foo" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -1017,20 +1025,20 @@ test "handler returns error when new_functor already exists in target memory (co
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("bar(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -1039,7 +1047,7 @@ test "handler returns error when old_functor has multiple arities and arity is o
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1047,12 +1055,12 @@ test "handler returns error when old_functor has multiple arities and arity is o
     try engine.assertFact("foo(1).");
     try engine.assertFact("foo(2, 3).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -1061,18 +1069,18 @@ test "handler returns error when memory is read-only" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("memory", .{ .string = "nonexistent" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "memory", .{ .string = "nonexistent" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -1081,17 +1089,17 @@ test "handler succeeds with zero counts when old_functor has no matches" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(result.content.len > 0);
 }
@@ -1101,20 +1109,20 @@ test "handler renames single fact and returns renamed_facts count" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1123,7 +1131,7 @@ test "handler renames multiple facts and returns correct renamed_facts count" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1132,13 +1140,13 @@ test "handler renames multiple facts and returns correct renamed_facts count" {
     try engine.assertFact("foo(2).");
     try engine.assertFact("foo(3).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1147,20 +1155,20 @@ test "handler mutations persist in KB after execution" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var qr = try engine.query("bar(1).");
     defer qr.deinit();
@@ -1172,21 +1180,21 @@ test "handler dry_run does not mutate KB" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
-    try obj.put("dry_run", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
+    try obj.put(allocator, "dry_run", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var qr = try engine.query("foo(1).");
     defer qr.deinit();
@@ -1198,21 +1206,21 @@ test "handler dry_run response has same fields as real run" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
-    try obj.put("dry_run", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
+    try obj.put(allocator, "dry_run", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(result.content.len > 0);
 }
@@ -1222,20 +1230,20 @@ test "handler rewrite rule bodies matching old_functor" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("bar(x) :- foo(x).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "baz" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "baz" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1244,7 +1252,7 @@ test "handler rewrite TMS justifications referencing old_functor" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1252,13 +1260,13 @@ test "handler rewrite TMS justifications referencing old_functor" {
     try engine.assertFact("foo(1).");
     try engine.assertFact("tms_justification(foo(1), baseline).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1267,7 +1275,7 @@ test "handler preserves TMS assumption identifiers during rewrite" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1275,13 +1283,13 @@ test "handler preserves TMS assumption identifiers during rewrite" {
     try engine.assertFact("foo(1).");
     try engine.assertFact("tms_justification(foo(1), baseline).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("arity", .{ .integer = 1 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "arity", .{ .integer = 1 });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var qr = try engine.query("tms_justification(bar(1), baseline).");
     defer qr.deinit();
@@ -1293,19 +1301,19 @@ test "handler response includes preserved_assumptions field" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(result.content.len > 0);
     const text = result.content[0].text.text;
@@ -1319,19 +1327,19 @@ test "handler response includes cross_memory_impact field with empty rewritten" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(result.content.len > 0);
     const text = result.content[0].text.text;
@@ -1345,19 +1353,19 @@ test "handler response includes warnings field" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(result.content.len > 0);
     const text = result.content[0].text.text;
@@ -1371,20 +1379,20 @@ test "cross-memory scan runs on every call regardless of propagate flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1393,7 +1401,7 @@ test "propagate_cross_memory_refs=false populates warnings with writable segment
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1401,13 +1409,13 @@ test "propagate_cross_memory_refs=false populates warnings with writable segment
     try engine.assertFact("foo(1).");
     try engine.assertFact("rule(X) :- foo(X).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1416,20 +1424,20 @@ test "propagate_cross_memory_refs=false does not mutate segments other than targ
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var qr = try engine.query("foo(1).");
     defer qr.deinit();
@@ -1441,20 +1449,20 @@ test "propagate_cross_memory_refs=false keeps cross_memory_impact.rewritten empt
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1463,7 +1471,7 @@ test "propagate_cross_memory_refs=true rewrites qualified rule bodies in writabl
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -1471,13 +1479,13 @@ test "propagate_cross_memory_refs=true rewrites qualified rule bodies in writabl
     try engine.assertFact("foo(1).");
     try engine.assertFact("rule(X) :- default:foo(X).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1486,20 +1494,20 @@ test "propagate_cross_memory_refs=true reports in cross_memory_impact.rewritten"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1508,19 +1516,19 @@ test "read-only segment with refs reported in skipped_readonly without mutation"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1529,20 +1537,20 @@ test "dry_run=true applies zero mutations to any segment" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("dry_run", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "dry_run", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var qr = try engine.query("foo(1).");
     defer qr.deinit();
@@ -1554,21 +1562,21 @@ test "dry_run=true populates cross_memory_impact and warnings with same shape" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("dry_run", .{ .bool = true });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "dry_run", .{ .bool = true });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -1577,20 +1585,20 @@ test "warnings array has shape {memory, refs, reason}" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = false });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = false });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
@@ -1609,19 +1617,19 @@ test "skipped_readonly array has shape {memory, refs, reason}" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
@@ -1640,23 +1648,23 @@ test "compensation rollback on journalMutations failure returns errorResult" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
     // TODO(F025): inject journalMutations failure to exercise rollback path.
     // Without a test-seam on PersistenceManager, this test documents the
     // intended behavior: result should be is_error=true when journaling fails.
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     _ = result;
 }
 
@@ -1665,22 +1673,22 @@ test "compensation rollback reverses engine mutations on all touched segments" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
     // TODO(F025): this test requires journalMutations fault injection.
     // For now, just ensure handler completes without error.
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     // After a successful rename, foo(1) is gone and bar(1) exists.
     // Rollback behavior requires fault injection (not yet implemented).
@@ -1694,20 +1702,20 @@ test "error message on rollback identifies failing segment by name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("foo(1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("old_functor", .{ .string = "foo" });
-    try obj.put("new_functor", .{ .string = "bar" });
-    try obj.put("propagate_cross_memory_refs", .{ .bool = true });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "old_functor", .{ .string = "foo" });
+    try obj.put(allocator, "new_functor", .{ .string = "bar" });
+    try obj.put(allocator, "propagate_cross_memory_refs", .{ .bool = true });
     const args = std.json.Value{ .object = obj };
 
     // TODO(F025): inject journalMutations failure to exercise rollback path.
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     _ = result;
 }

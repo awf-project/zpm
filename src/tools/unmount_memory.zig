@@ -6,9 +6,9 @@ const MountManifest = @import("../mounts/manifest.zig").MountManifest;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("name", "Memory name to unmount", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "name", "Memory name to unmount", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "unmount_memory",
@@ -26,7 +26,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
 
     const reg = context.getMemoryRegistryAs(MemoryRegistry) orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -78,22 +78,23 @@ test "unmount_memory handler unmounts mounted memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("mounted_memory", dir_path, .project, .rw, engine);
+    try registry.mount("mounted_memory", dir_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "mounted_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "mounted_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -107,11 +108,11 @@ test "unmount_memory handler returns error when unmounting default" {
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "default" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "default" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -125,16 +126,16 @@ test "unmount_memory handler returns error for non-mounted memory" {
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "not_mounted" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "not_mounted" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
 test "unmount_memory handler with null args returns InvalidArguments" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -143,10 +144,10 @@ test "unmount_memory handler with missing name returns InvalidArguments" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -157,11 +158,11 @@ test "unmount_memory handler returns ExecutionFailed when registry unavailable" 
 
     context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -175,20 +176,21 @@ test "unmount_memory handler removes entry from manifest on success" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     const manifest_path = try std.fs.path.join(allocator, &.{ dir_path, "mounts.json" });
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("test_mem", dir_path, .project, .rw, engine);
+    try registry.mount("test_mem", dir_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
     try manifest.addEntry(.{
         .name = "test_mem",
@@ -199,11 +201,11 @@ test "unmount_memory handler removes entry from manifest on success" {
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_mem" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 0), manifest.entries.items.len);
 }
@@ -218,24 +220,25 @@ test "unmount_memory handler with no manifest in context succeeds without writin
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("test_mem", dir_path, .project, .rw, engine);
+    try registry.mount("test_mem", dir_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_mem" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -249,7 +252,7 @@ test "unmount_memory of default still fails with DefaultProtected and manifest i
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var manifest = try MountManifest.init(std.testing.allocator, "/tmp/nonexistent/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, "/tmp/nonexistent/mounts.json");
     defer manifest.deinit();
     try manifest.addEntry(.{
         .name = "default",
@@ -260,11 +263,11 @@ test "unmount_memory of default still fails with DefaultProtected and manifest i
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "default" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "default" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
     try std.testing.expectEqual(@as(usize, 1), manifest.entries.items.len);
     try std.testing.expectEqualStrings("default", manifest.entries.items[0].name);

@@ -5,9 +5,9 @@ const engine_mod = @import("../prolog/engine.zig");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("start_node", "The reference atom whose dependents are traced. The tool queries path(X, start_node), so the caller's path/2 rules must be written as path(X, Start) :- depends_on(Start, X) (or similar), i.e. second argument is the source and first is the destination.", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "start_node", "The reference atom whose dependents are traced. The tool queries path(X, start_node), so the caller's path/2 rules must be written as path(X, Start) :- depends_on(Start, X) (or similar), i.e. second argument is the source and first is the destination.", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "trace_dependency",
@@ -25,7 +25,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const start_node = mcp.tools.getString(args, "start_node") orelse return mcp.tools.ToolError.InvalidArguments;
     if (start_node.len == 0) return mcp.tools.errorResult(allocator, "start_node must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
 
@@ -59,7 +59,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 }
 
 fn buildDepsJson(allocator: std.mem.Allocator, solutions: []engine_mod.Solution) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const writer = &aw.writer;
 
@@ -99,7 +99,7 @@ test "handler returns reachable nodes for transitive dependency chain" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -108,11 +108,11 @@ test "handler returns reachable nodes for transitive dependency chain" {
     try engine.assert("path(X, Start) :- depends_on(Start, X)");
     try engine.assert("path(X, Start) :- depends_on(Start, Mid), path(X, Mid)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("start_node", .{ .string = "a" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "a" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -126,22 +126,22 @@ test "handler returns empty result for isolated node" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("start_node", .{ .string = "isolated" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "isolated" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqualStrings("[]", result.content[0].text.text);
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -150,10 +150,10 @@ test "handler returns InvalidArguments when start_node key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -162,11 +162,11 @@ test "handler returns error result when start_node is empty string" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("start_node", .{ .string = "" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -177,11 +177,11 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("start_node", .{ .string = "a" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "a" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -190,14 +190,14 @@ test "handler rejects start_node with injection attempt" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("start_node", .{ .string = "a), halt(0" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "a), halt(0" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }

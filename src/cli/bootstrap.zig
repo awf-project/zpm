@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const c = std.c;
 const Engine = @import("../prolog/engine.zig").Engine;
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
@@ -12,18 +13,21 @@ const ManifestEntry = manifest_mod.ManifestEntry;
 /// Silence libc stdout for the duration of a call. Trealla's pl_create()
 /// writes a banner directly via libc, so we dup2 /dev/null over fd 1 around
 /// it. Two syscalls (open + dup) beats a tmpfile round-trip.
-fn silenceStdout() !posix.fd_t {
-    const saved = try posix.dup(posix.STDOUT_FILENO);
-    errdefer posix.close(saved);
-    const null_fd = try posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0);
-    defer posix.close(null_fd);
-    try posix.dup2(null_fd, posix.STDOUT_FILENO);
+fn silenceStdout() !c_int {
+    const saved = std.c.dup(posix.STDOUT_FILENO);
+    if (saved == -1) return error.Unexpected;
+    errdefer _ = std.c.close(saved);
+    const null_fd_r = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY }, @as(c_uint, 0));
+    if (null_fd_r == -1) return error.Unexpected;
+    const null_fd = @as(posix.fd_t, @intCast(null_fd_r));
+    defer _ = std.c.close(null_fd);
+    if (std.c.dup2(null_fd, posix.STDOUT_FILENO) == -1) return error.Unexpected;
     return saved;
 }
 
-fn restoreStdout(saved: posix.fd_t) void {
-    posix.dup2(saved, posix.STDOUT_FILENO) catch {};
-    posix.close(saved);
+fn restoreStdout(saved: c_int) void {
+    _ = std.c.dup2(saved, posix.STDOUT_FILENO);
+    _ = std.c.close(saved);
 }
 
 /// Aggregate of long-lived resources returned by `initBootstrap`.
@@ -64,8 +68,8 @@ pub const Context = struct {
 
 /// Scan .zpm/kb/ for subdirectories and return a populated MountManifest.
 /// Always includes "default" as entry #0. Does NOT call registry.mount.
-fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths) !MountManifest {
-    var manifest = try MountManifest.init(allocator, paths.manifest_path);
+fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths, io: std.Io) !MountManifest {
+    var manifest = try MountManifest.init(io, allocator, paths.manifest_path);
     errdefer manifest.deinit();
 
     try manifest.addEntry(.{
@@ -75,10 +79,10 @@ fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths) 
         .mode = .rw,
     });
 
-    var kb = std.fs.openDirAbsolute(paths.kb_dir, .{ .iterate = true }) catch return manifest;
-    defer kb.close();
+    var kb = std.Io.Dir.openDirAbsolute(io, paths.kb_dir, .{ .iterate = true }) catch return manifest;
+    defer kb.close(io);
     var iter = kb.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
         if (std.mem.eql(u8, entry.name, "default")) continue;
         const rel_path = std.fmt.allocPrint(allocator, ".zpm/kb/{s}", .{entry.name}) catch continue;
@@ -98,15 +102,19 @@ fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths) 
 }
 
 /// Rename the existing manifest to mounts.json.corrupt-<unix_ts> for postmortem.
-fn preserveCorrupt(paths: project.ProjectPaths) !void {
-    const ts = std.time.timestamp();
+fn preserveCorrupt(paths: project.ProjectPaths, io: std.Io) !void {
+    const ts = blk: {
+        var _ts: std.posix.timespec = undefined;
+        _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    };
     var corrupt_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
     const corrupt_path = try std.fmt.bufPrint(
         &corrupt_buf,
         "{s}.corrupt-{d}",
         .{ paths.manifest_path, ts },
     );
-    try std.fs.renameAbsolute(paths.manifest_path, corrupt_path);
+    try std.Io.Dir.renameAbsolute(paths.manifest_path, corrupt_path, io);
 }
 
 /// Initialize the long-lived resources for a single zpm invocation.
@@ -115,23 +123,24 @@ fn preserveCorrupt(paths: project.ProjectPaths) !void {
 /// contract** (you MUST publish the manifest / registry / pm / kb_dir / engine
 /// into the global tool-context slots before invoking any handler — bootstrap
 /// cannot do it itself because only the caller holds the stable address).
-pub fn initBootstrap(allocator: std.mem.Allocator) anyerror!Context {
+pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context {
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = try std.process.getCwd(&cwd_buf);
-    const paths = try project.discover(allocator, cwd);
+    _ = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.NameTooLong;
+    const cwd = std.mem.sliceTo(&cwd_buf, 0);
+    const paths = try project.discover(io, allocator, cwd);
     errdefer paths.deinit();
 
-    std.fs.makeDirAbsolute(paths.data_dir) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDir(io, paths.data_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    std.fs.makeDirAbsolute(paths.kb_dir) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDir(io, paths.kb_dir, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    const saved_stdout = silenceStdout() catch null;
-    const engine = Engine.init(.{}) catch |err| {
+    const saved_stdout: ?c_int = silenceStdout() catch null;
+    const engine = Engine.init(.{}, io) catch |err| {
         if (saved_stdout) |fd| restoreStdout(fd);
         return err;
     };
@@ -140,34 +149,34 @@ pub fn initBootstrap(allocator: std.mem.Allocator) anyerror!Context {
     context.setEngine(engine);
     errdefer context.clearEngine();
 
-    try project.loadKnowledgeBase(allocator, paths.kb_dir, engine);
+    try project.loadKnowledgeBase(io, allocator, paths.kb_dir, engine);
 
-    var pm = try PersistenceManager.init(allocator, paths.data_dir, paths.kb_dir);
+    var pm = try PersistenceManager.init(allocator, paths.data_dir, paths.kb_dir, io);
     errdefer pm.deinit();
     try pm.restore(engine);
 
     const file_exists = blk: {
-        const f = std.fs.openFileAbsolute(paths.manifest_path, .{}) catch |err| switch (err) {
+        const f = std.Io.Dir.openFileAbsolute(io, paths.manifest_path, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => return err,
         };
-        f.close();
+        f.close(io);
         break :blk true;
     };
 
     var did_migrate = false;
     var manifest: MountManifest = if (file_exists) blk: {
-        break :blk MountManifest.read(allocator, paths.manifest_path) catch |err| switch (err) {
+        break :blk MountManifest.read(io, allocator, paths.manifest_path) catch |err| switch (err) {
             error.ParseFailed, error.CorruptFile => inner: {
-                preserveCorrupt(paths) catch |e| std.log.warn("failed to rename corrupt manifest: {}", .{e});
+                preserveCorrupt(paths, io) catch |e| std.log.warn("failed to rename corrupt manifest: {}", .{e});
                 did_migrate = true;
-                break :inner try migrateToManifest(allocator, paths);
+                break :inner try migrateToManifest(allocator, paths, io);
             },
             else => return err,
         };
     } else blk: {
         did_migrate = true;
-        break :blk try migrateToManifest(allocator, paths);
+        break :blk try migrateToManifest(allocator, paths, io);
     };
     errdefer manifest.deinit();
 
@@ -190,7 +199,7 @@ pub fn initBootstrap(allocator: std.mem.Allocator) anyerror!Context {
 
         // Always create the default directory if absent.
         if (std.mem.eql(u8, entry.name, "default")) {
-            std.fs.makeDirAbsolute(disk_path) catch |err| switch (err) {
+            std.Io.Dir.cwd().createDir(io, disk_path, .default_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
@@ -198,14 +207,14 @@ pub fn initBootstrap(allocator: std.mem.Allocator) anyerror!Context {
 
         // Skip entries whose path is not accessible (FR-009); keep entry in manifest.
         {
-            var d = std.fs.openDirAbsolute(disk_path, .{}) catch {
+            var d = std.Io.Dir.openDirAbsolute(io, disk_path, .{}) catch {
                 std.log.warn("skipping missing mount '{s}': path not accessible", .{entry.name});
                 continue;
             };
-            d.close();
+            d.close(io);
         }
 
-        registry.mount(entry.name, disk_path, entry.scope, entry.mode, engine) catch |err| {
+        registry.mount(entry.name, disk_path, entry.scope, entry.mode, engine, io) catch |err| {
             std.log.warn("failed to mount '{s}': {}", .{ entry.name, err });
             continue;
         };
@@ -227,22 +236,24 @@ test "initBootstrap returns Context with correct project paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(std.mem.endsWith(u8, ctx.paths.data_dir, "/.zpm/data"));
@@ -255,22 +266,24 @@ test "initBootstrap sets engine in context globals (PM is set by caller)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(context.getEngine() != null);
@@ -290,15 +303,16 @@ test "initBootstrap returns NotFound when no .zpm directory exists" {
     const counter = notfound_counter.fetchAdd(1, .monotonic);
     var path_buf: [256]u8 = undefined;
     const tmp_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/zpm-test-bootstrap-notfound-{d}-{d}", .{ pid, counter });
-    try std.fs.makeDirAbsolute(tmp_path);
-    defer std.fs.deleteDirAbsolute(tmp_path) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, tmp_path, .default_dir);
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, tmp_path) catch {};
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
-    try std.testing.expectError(project.ProjectError.NotFound, initBootstrap(allocator));
+    try std.testing.expectError(project.ProjectError.NotFound, initBootstrap(allocator, std.testing.io));
 }
 
 test "initBootstrap creates .zpm/kb/default directory if missing" {
@@ -307,28 +321,30 @@ test "initBootstrap creates .zpm/kb/default directory if missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     const default_dir = try std.fmt.allocPrint(allocator, "{s}/default", .{ctx.paths.kb_dir});
     defer allocator.free(default_dir);
-    var dir = try std.fs.openDirAbsolute(default_dir, .{});
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, default_dir, .{});
+    defer dir.close(std.testing.io);
 }
 
 test "initBootstrap initializes MemoryRegistry and mounts default memory" {
@@ -337,22 +353,24 @@ test "initBootstrap initializes MemoryRegistry and mounts default memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(ctx.registry.mounted.contains("default"));
@@ -364,22 +382,24 @@ test "bootstrap Context includes registry field with proper deinit cleanup" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     try std.testing.expect(@TypeOf(ctx.registry) == MemoryRegistry);
     ctx.deinit();
 }
@@ -390,36 +410,38 @@ test "initBootstrap on first boot scans kb_dir and writes mounts.json containing
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
-    try tmp.dir.makeDir(".zpm/kb/feature_auth");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb/feature_auth", .default_dir);
     {
-        var sub = try tmp.dir.openDir(".zpm/kb/feature_auth", .{});
-        defer sub.close();
-        var kf = try sub.createFile("knowledge.pl", .{});
-        defer kf.close();
-        try kf.writeAll(":- module(feature_auth, []).\n");
+        var sub = try tmp.dir.openDir(std.testing.io, ".zpm/kb/feature_auth", .{});
+        defer sub.close(std.testing.io);
+        var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+        defer kf.close(std.testing.io);
+        try kf.writeStreamingAll(std.testing.io, ":- module(feature_auth, []).\n");
     }
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(ctx.registry.mounted.contains("default"));
     try std.testing.expect(ctx.registry.mounted.contains("feature_auth"));
 
-    const manifest_file = try tmp.dir.readFileAlloc(allocator, ".zpm/mounts.json", 8192);
+    const manifest_file = try tmp.dir.readFileAlloc(std.testing.io, ".zpm/mounts.json", allocator, std.Io.Limit.limited(8192));
     defer allocator.free(manifest_file);
     try std.testing.expect(std.mem.containsAtLeast(u8, manifest_file, 1, "\"default\""));
     try std.testing.expect(std.mem.containsAtLeast(u8, manifest_file, 1, "\"feature_auth\""));
@@ -431,12 +453,13 @@ test "initBootstrap on second boot reads mounts.json and does NOT rescan kb_dir"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
-    try tmp.dir.makeDir(".zpm/kb/listed");
-    try tmp.dir.makeDir(".zpm/kb/not_in_manifest");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb/listed", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb/not_in_manifest", .default_dir);
 
     const manifest_json =
         \\{
@@ -457,22 +480,23 @@ test "initBootstrap on second boot reads mounts.json and does NOT rescan kb_dir"
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = ".zpm/mounts.json",
         .data = manifest_json,
     });
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(ctx.registry.mounted.contains("default"));
@@ -486,10 +510,11 @@ test "initBootstrap skips manifest entry pointing to deleted path without panic"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
 
     const manifest_json =
         \\{
@@ -510,22 +535,23 @@ test "initBootstrap skips manifest entry pointing to deleted path without panic"
         \\  ]
         \\}
     ;
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = ".zpm/mounts.json",
         .data = manifest_json,
     });
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
     try std.testing.expect(ctx.registry.mounted.contains("default"));
@@ -538,40 +564,42 @@ test "initBootstrap regenerates mounts.json from migration when existing file is
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
 
-    try tmp.dir.makeDir(".zpm");
-    try tmp.dir.makeDir(".zpm/kb");
-    try tmp.dir.makeDir(".zpm/kb/feature_auth");
+    try tmp.dir.createDir(std.testing.io, ".zpm", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb", .default_dir);
+    try tmp.dir.createDir(std.testing.io, ".zpm/kb/feature_auth", .default_dir);
 
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = ".zpm/mounts.json",
         .data = "{not json",
     });
 
     var orig_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const orig = try std.process.getCwd(&orig_buf);
-    defer std.posix.chdir(orig) catch {};
-    try std.posix.chdir(tmp_path);
+    _ = std.c.getcwd(&orig_buf, orig_buf.len) orelse return error.NameTooLong;
+    const orig = std.mem.sliceTo(&orig_buf, 0);
+    defer std.Io.Threaded.chdir(orig) catch {};
+    try std.Io.Threaded.chdir(tmp_path);
 
     context.clearEngine();
     context.clearPersistenceManager();
     defer context.clearEngine();
     defer context.clearPersistenceManager();
 
-    var ctx = try initBootstrap(allocator);
+    var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
-    const manifest_file = try tmp.dir.readFileAlloc(allocator, ".zpm/mounts.json", 8192);
+    const manifest_file = try tmp.dir.readFileAlloc(std.testing.io, ".zpm/mounts.json", allocator, std.Io.Limit.limited(8192));
     defer allocator.free(manifest_file);
     try std.testing.expect(std.mem.containsAtLeast(u8, manifest_file, 1, "\"default\""));
 
-    var zpm_dir = try tmp.dir.openDir(".zpm", .{ .iterate = true });
-    defer zpm_dir.close();
+    var zpm_dir = try tmp.dir.openDir(std.testing.io, ".zpm", .{ .iterate = true });
+    defer zpm_dir.close(std.testing.io);
 
     var iter = zpm_dir.iterate();
     var corrupt_count: usize = 0;
-    while (try iter.next()) |entry| {
+    while (try iter.next(std.testing.io)) |entry| {
         if (std.mem.startsWith(u8, entry.name, "mounts.json.corrupt-")) {
             corrupt_count += 1;
         }

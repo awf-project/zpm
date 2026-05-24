@@ -8,9 +8,9 @@ const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("goal", "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "goal", "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "query_logic",
@@ -28,7 +28,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const goal = mcp.tools.getString(args, "goal") orelse return mcp.tools.ToolError.InvalidArguments;
     if (goal.len == 0) return mcp.tools.errorResult(allocator, "Goal must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -61,7 +61,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 }
 
 fn buildQueryJson(allocator: std.mem.Allocator, solutions: []Solution) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const writer = &aw.writer;
 
@@ -85,7 +85,7 @@ fn buildQueryJson(allocator: std.mem.Allocator, solutions: []Solution) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-fn writeTermJson(writer: *std.io.Writer, term: Term) !void {
+fn writeTermJson(writer: *std.Io.Writer, term: Term) !void {
     switch (term) {
         .atom => |s| try std.json.Stringify.value(s, .{}, writer),
         .integer => |i| try std.json.Stringify.value(i, .{}, writer),
@@ -119,18 +119,18 @@ test "handler returns JSON array of bindings for matching goal" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("fruit(apple)");
     try engine.assertFact("fruit(banana)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "fruit(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "fruit(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -146,22 +146,22 @@ test "handler returns empty JSON array when no solutions exist" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "nonexistent_predicate(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "nonexistent_predicate(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqualStrings("[]", result.content[0].text.text);
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -170,10 +170,10 @@ test "handler returns InvalidArguments when goal key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -182,11 +182,11 @@ test "handler returns error result when goal is empty string" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -197,11 +197,11 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "fruit(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "fruit(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -213,17 +213,18 @@ test "named memory query routes to qualified goal" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     // Create the knowledge.pl file required by registry.mount
-    var kfile = try tmp.dir.createFile("knowledge.pl", .{});
-    defer kfile.close();
-    try kfile.writeAll(":- module(feature_auth, []).\n");
+    var kfile = try tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kfile.close(std.testing.io);
+    try kfile.writeStreamingAll(std.testing.io, ":- module(feature_auth, []).\n");
 
     // Fact exists only in the feature_auth module namespace, not globally.
     // Without memory dispatch the unqualified search returns [] — this test fails RED.
@@ -236,16 +237,16 @@ test "named memory query routes to qualified goal" {
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("feature_auth", dir_path, .project, .ro, engine);
+    try registry.mount("feature_auth", dir_path, .project, .ro, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "task_status(X, done)" });
-    try obj.put("memory", .{ .string = "feature_auth" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "task_status(X, done)" });
+    try obj.put(allocator, "memory", .{ .string = "feature_auth" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -258,18 +259,18 @@ test "default memory uses unqualified goal" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("task_status(deploy_v1, done)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "task_status(X, done)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "task_status(X, done)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -282,16 +283,16 @@ test "handler returns error result when goal is malformed" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "(((" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "(((" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -300,7 +301,7 @@ test "handler returns error result when named memory is not mounted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -310,12 +311,12 @@ test "handler returns error result when named memory is not mounted" {
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("goal", .{ .string = "task_status(X, done)" });
-    try obj.put("memory", .{ .string = "nonexistent_module" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "task_status(X, done)" });
+    try obj.put(allocator, "memory", .{ .string = "nonexistent_module" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "not mounted") != null);
 }

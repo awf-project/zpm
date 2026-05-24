@@ -65,25 +65,27 @@ fn parseMode(s: []const u8) ?MemoryMode {
 
 pub const MountManifest = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     manifest_path: []const u8,
     entries: std.ArrayList(ManifestEntry),
     status: ManifestStatus,
 
-    pub fn init(allocator: std.mem.Allocator, manifest_path: []const u8) !MountManifest {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, manifest_path: []const u8) !MountManifest {
         const owned_path = try allocator.dupe(u8, manifest_path);
         errdefer allocator.free(owned_path);
 
         return .{
             .allocator = allocator,
+            .io = io,
             .manifest_path = owned_path,
             .entries = .empty,
             .status = .active,
         };
     }
 
-    pub fn read(allocator: std.mem.Allocator, manifest_path: []const u8) (ManifestError || error{OutOfMemory})!MountManifest {
-        const content = std.fs.cwd().readFileAlloc(allocator, manifest_path, 1024 * 1024) catch |err| switch (err) {
-            error.FileNotFound => return init(allocator, manifest_path),
+    pub fn read(io: std.Io, allocator: std.mem.Allocator, manifest_path: []const u8) (ManifestError || error{OutOfMemory})!MountManifest {
+        const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => return init(io, allocator, manifest_path),
             error.OutOfMemory => return error.OutOfMemory,
             else => return ManifestError.ParseFailed,
         };
@@ -112,7 +114,7 @@ pub const MountManifest = struct {
             else => return ManifestError.CorruptFile,
         };
 
-        var manifest = try init(allocator, manifest_path);
+        var manifest = try init(io, allocator, manifest_path);
         errdefer manifest.deinit();
 
         for (mounts_arr.items) |item| {
@@ -182,7 +184,7 @@ pub const MountManifest = struct {
             };
         }
 
-        var aw: std.io.Writer.Allocating = .init(self.allocator);
+        var aw: std.Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
 
         std.json.Stringify.value(
@@ -194,20 +196,20 @@ pub const MountManifest = struct {
         const buf = aw.toOwnedSlice() catch return ManifestError.WriteError;
         defer self.allocator.free(buf);
 
-        const file = std.fs.cwd().createFile(temp_path, .{}) catch return ManifestError.WriteError;
-        errdefer std.fs.cwd().deleteFile(temp_path) catch {};
+        const file = std.Io.Dir.cwd().createFile(self.io, temp_path, .{}) catch return ManifestError.WriteError;
+        errdefer std.Io.Dir.cwd().deleteFile(self.io, temp_path) catch {};
 
-        file.writeAll(buf) catch {
-            file.close();
+        file.writeStreamingAll(self.io, buf) catch {
+            file.close(self.io);
             return ManifestError.WriteError;
         };
-        file.sync() catch {
-            file.close();
+        file.sync(self.io) catch {
+            file.close(self.io);
             return ManifestError.WriteError;
         };
-        file.close();
+        file.close(self.io);
 
-        std.fs.cwd().rename(temp_path, self.manifest_path) catch return ManifestError.WriteError;
+        std.Io.Dir.rename(std.Io.Dir.cwd(), temp_path, std.Io.Dir.cwd(), self.manifest_path, self.io) catch return ManifestError.WriteError;
     }
 
     pub fn addEntry(self: *MountManifest, entry: ManifestEntry) (MemoryError || ManifestError || error{OutOfMemory})!void {
@@ -281,7 +283,7 @@ test "MountManifest.init returns empty manifest without touching disk" {
     const allocator = std.testing.allocator;
     const path = "/tmp/nonexistent/mounts.json";
 
-    var manifest = try MountManifest.init(allocator, path);
+    var manifest = try MountManifest.init(std.testing.io, allocator, path);
     defer manifest.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), manifest.entries.items.len);
@@ -294,11 +296,12 @@ test "MountManifest.read returns empty manifest on FileNotFound" {
     defer tmp_dir.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "nonexistent/mounts.json" });
     defer allocator.free(path);
 
-    var manifest = try MountManifest.read(allocator, path);
+    var manifest = try MountManifest.read(std.testing.io, allocator, path);
     defer manifest.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), manifest.entries.items.len);
@@ -309,17 +312,18 @@ test "MountManifest.read returns ManifestError.ParseFailed on malformed JSON" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "mounts.json",
         .data = "{ invalid json }",
     });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    const result = MountManifest.read(allocator, path);
+    const result = MountManifest.read(std.testing.io, allocator, path);
     try std.testing.expectError(ManifestError.ParseFailed, result);
 }
 
@@ -328,17 +332,18 @@ test "MountManifest.read returns ManifestError.CorruptFile on missing version" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "mounts.json",
         .data = "{\"mounts\": []}",
     });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    const result = MountManifest.read(allocator, path);
+    const result = MountManifest.read(std.testing.io, allocator, path);
     try std.testing.expectError(ManifestError.CorruptFile, result);
 }
 
@@ -347,17 +352,18 @@ test "MountManifest.read returns ManifestError.CorruptFile on wrong version" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "mounts.json",
         .data = "{\"version\": 2, \"mounts\": []}",
     });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    const result = MountManifest.read(allocator, path);
+    const result = MountManifest.read(std.testing.io, allocator, path);
     try std.testing.expectError(ManifestError.CorruptFile, result);
 }
 
@@ -366,17 +372,18 @@ test "MountManifest.read returns ManifestError.CorruptFile on missing mounts fie
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "mounts.json",
         .data = "{\"version\": 1}",
     });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    const result = MountManifest.read(allocator, path);
+    const result = MountManifest.read(std.testing.io, allocator, path);
     try std.testing.expectError(ManifestError.CorruptFile, result);
 }
 
@@ -386,11 +393,12 @@ test "MountManifest.write produces JSON with version 1 and mounts envelope" {
     defer tmp_dir.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    var manifest = try MountManifest.init(allocator, path);
+    var manifest = try MountManifest.init(std.testing.io, allocator, path);
     defer manifest.deinit();
 
     const entry = ManifestEntry{
@@ -402,7 +410,7 @@ test "MountManifest.write produces JSON with version 1 and mounts envelope" {
     try manifest.addEntry(entry);
     try manifest.write();
 
-    const written = try tmp_dir.dir.readFileAlloc(allocator, "mounts.json", 4096);
+    const written = try tmp_dir.dir.readFileAlloc(std.testing.io, "mounts.json", allocator, std.Io.Limit.limited(4096));
     defer allocator.free(written);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, written, 1, "\"version\": 1"));
@@ -416,23 +424,24 @@ test "MountManifest.write performs atomic temp file and rename" {
     defer tmp_dir.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    var manifest = try MountManifest.init(allocator, path);
+    var manifest = try MountManifest.init(std.testing.io, allocator, path);
     defer manifest.deinit();
 
     try manifest.write();
 
     // Zig 0.15 requires the dir be opened with .iterate = true to use lseek_SET
-    var iterable_dir = try std.fs.openDirAbsolute(tmp_path, .{ .iterate = true });
-    defer iterable_dir.close();
+    var iterable_dir = try std.Io.Dir.openDirAbsolute(std.testing.io, tmp_path, .{ .iterate = true });
+    defer iterable_dir.close(std.testing.io);
 
     var iter = iterable_dir.iterate();
     var found_final = false;
     var found_temp = false;
-    while (try iter.next()) |entry| {
+    while (try iter.next(std.testing.io)) |entry| {
         if (std.mem.eql(u8, entry.name, "mounts.json")) {
             found_final = true;
         }
@@ -451,11 +460,12 @@ test "MountManifest round-trip: write then read returns equal entries" {
     defer tmp_dir.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path_len = try tmp_dir.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
     const path = try std.fs.path.join(allocator, &.{ tmp_path, "mounts.json" });
     defer allocator.free(path);
 
-    var m1 = try MountManifest.init(allocator, path);
+    var m1 = try MountManifest.init(std.testing.io, allocator, path);
     const entry = ManifestEntry{
         .name = "default",
         .path = ".zpm/kb/default",
@@ -466,7 +476,7 @@ test "MountManifest round-trip: write then read returns equal entries" {
     try m1.write();
     m1.deinit();
 
-    var m2 = try MountManifest.read(allocator, path);
+    var m2 = try MountManifest.read(std.testing.io, allocator, path);
     defer m2.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), m2.entries.items.len);
@@ -478,7 +488,7 @@ test "MountManifest round-trip: write then read returns equal entries" {
 
 test "MountManifest.addEntry rejects invalid atom names with MemoryError.InvalidName" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const invalid_names = [_][]const u8{
@@ -504,7 +514,7 @@ test "MountManifest.addEntry rejects invalid atom names with MemoryError.Invalid
 
 test "MountManifest.addEntry upserts: replaces existing entry by name without increasing len" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const entry1 = ManifestEntry{
@@ -529,7 +539,7 @@ test "MountManifest.addEntry upserts: replaces existing entry by name without in
 
 test "MountManifest.addEntry duplicates name and path strings" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     var name_buf: [32]u8 = undefined;
@@ -555,7 +565,7 @@ test "MountManifest.addEntry duplicates name and path strings" {
 
 test "MountManifest.removeEntry removes matching entry or is no-op" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const entry = ManifestEntry{
@@ -576,7 +586,7 @@ test "MountManifest.removeEntry removes matching entry or is no-op" {
 
 test "MountManifest.updateMode returns NotFound for unknown name" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const result = manifest.updateMode("nonexistent", .rw);
@@ -585,7 +595,7 @@ test "MountManifest.updateMode returns NotFound for unknown name" {
 
 test "MountManifest.updateMode updates mode for existing entry" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const entry = ManifestEntry{
@@ -603,7 +613,7 @@ test "MountManifest.updateMode updates mode for existing entry" {
 
 test "MountManifest.findEntry returns read-only lookup or null" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
     defer manifest.deinit();
 
     const result1 = manifest.findEntry("nonexistent");
@@ -626,7 +636,7 @@ test "MountManifest.findEntry returns read-only lookup or null" {
 
 test "MountManifest.deinit frees all allocations without leaks" {
     const allocator = std.testing.allocator;
-    var manifest = try MountManifest.init(allocator, "/tmp/mounts.json");
+    var manifest = try MountManifest.init(std.testing.io, allocator, "/tmp/mounts.json");
 
     const entries = [_]ManifestEntry{
         .{ .name = "a", .path = "/a", .scope = .project, .mode = .rw },

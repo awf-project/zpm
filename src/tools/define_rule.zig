@@ -7,11 +7,11 @@ const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("head", "The head of the Prolog rule (e.g. 'grandparent(X, Z)')", true);
-    _ = try schema.addString("body", "The body of the Prolog rule (e.g. 'parent(X, Y), parent(Y, Z)')", true);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "head", "The head of the Prolog rule (e.g. 'grandparent(X, Z)')", true);
+    _ = try schema.addString(allocator, "body", "The body of the Prolog rule (e.g. 'parent(X, Y), parent(Y, Z)')", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "define_rule",
@@ -29,7 +29,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const head = mcp.tools.getString(args, "head") orelse return mcp.tools.ToolError.InvalidArguments;
     if (head.len == 0) return mcp.tools.errorResult(allocator, "Head must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
     const body = mcp.tools.getString(args, "body") orelse return mcp.tools.ToolError.InvalidArguments;
@@ -55,7 +55,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     };
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = std.time.timestamp(), .clause = qualified_rule }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = blk: {
+            var _ts: std.posix.timespec = undefined;
+            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+            break :blk _ts.sec;
+        }, .clause = qualified_rule }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -67,16 +71,16 @@ test "handler asserts valid rule and returns confirmation" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "mortal(X)" });
-    try obj.put("body", .{ .string = "human(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "mortal(X)" });
+    try obj.put(allocator, "body", .{ .string = "human(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -85,7 +89,7 @@ test "handler asserts valid rule and returns confirmation" {
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -94,11 +98,11 @@ test "handler returns InvalidArguments when head key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("body", .{ .string = "human(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "body", .{ .string = "human(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -107,11 +111,11 @@ test "handler returns InvalidArguments when body key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "mortal(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "mortal(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -123,28 +127,29 @@ test "handler journals rule to WAL when persistence manager is active" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "mortal(X)" });
-    try obj.put("body", .{ .string = "human(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "mortal(X)" });
+    try obj.put(allocator, "body", .{ .string = "human(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var content_buf: [1024]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "mortal(X)") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "human(X)") != null);
 }
@@ -154,16 +159,16 @@ test "handler returns error result for invalid Prolog syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "123invalid" });
-    try obj.put("body", .{ .string = "also invalid!!" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "123invalid" });
+    try obj.put(allocator, "body", .{ .string = "also invalid!!" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(result.is_error);
 }
@@ -173,12 +178,12 @@ test "handler returns error result when head is empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "" });
-    try obj.put("body", .{ .string = "human(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "" });
+    try obj.put(allocator, "body", .{ .string = "human(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(result.is_error);
 }
@@ -188,12 +193,12 @@ test "handler returns error result when body is empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("head", .{ .string = "mortal(X)" });
-    try obj.put("body", .{ .string = "" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "head", .{ .string = "mortal(X)" });
+    try obj.put(allocator, "body", .{ .string = "" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(result.is_error);
 }

@@ -13,38 +13,26 @@ const context = @import("../tools/context.zig");
 fn SlotsType(comptime params: []const registry.ParamSpec) type {
     if (params.len == 0) return struct {};
 
-    var fields: [params.len]std.builtin.Type.StructField = undefined;
+    var field_names: [params.len][]const u8 = undefined;
+    var field_types: [params.len]type = undefined;
+    var field_attrs: [params.len]std.builtin.Type.StructField.Attributes = undefined;
     inline for (params, 0..) |p, i| {
+        field_names[i] = p.mcp_key;
         switch (p.kind) {
             .string => {
+                field_types[i] = ?[]const u8;
                 const default: ?[]const u8 = null;
-                fields[i] = .{
-                    .name = p.mcp_key[0..p.mcp_key.len :0],
-                    .type = ?[]const u8,
-                    .default_value_ptr = @ptrCast(&default),
-                    .is_comptime = false,
-                    .alignment = @alignOf(?[]const u8),
-                };
+                field_attrs[i] = .{ .default_value_ptr = @ptrCast(&default) };
             },
             .integer => {
+                field_types[i] = ?i64;
                 const default: ?i64 = null;
-                fields[i] = .{
-                    .name = p.mcp_key[0..p.mcp_key.len :0],
-                    .type = ?i64,
-                    .default_value_ptr = @ptrCast(&default),
-                    .is_comptime = false,
-                    .alignment = @alignOf(?i64),
-                };
+                field_attrs[i] = .{ .default_value_ptr = @ptrCast(&default) };
             },
         }
     }
 
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = &fields,
-        .decls = &.{},
-        .is_tuple = false,
-    } });
+    return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
 }
 
 test "SlotsType empty params yields zero-field struct" {
@@ -83,15 +71,7 @@ test "SlotsType field defaults to null" {
     try std.testing.expectEqual(@as(?[]const u8, null), @field(instance, "x"));
 }
 
-/// Generic per-tool CLI machinery. For each registry entry, a fresh
-/// instantiation produces:
-///   - module-level `slots` struct (one field per param, typed)
-///   - module-level `format_slot: []const u8 = "text"`
-///   - `build(runner)` that constructs a `cli.Command` with bound Options
-///   - `exec()` that reads slots, builds JSON, dispatches the handler
-///
-/// Each call to `ToolCommand(def)` returns a distinct type, so its `slots`
-/// and `format_slot` are disjoint from every other tool's.
+/// Generic per-tool CLI machinery.
 pub fn ToolCommand(comptime def: registry.ToolDef) type {
     return struct {
         pub const Slots = SlotsType(def.params);
@@ -99,10 +79,7 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
         pub var slots: Slots = .{};
         pub var format_slot: []const u8 = "text";
 
-        /// Build the cli.Command for this tool, binding every param Option
-        /// and PositionalArg to the corresponding `slots` field.
         pub fn build(runner: *cli.AppRunner) !cli.Command {
-            // 1 Option per non-positional param, plus --format.
             const non_positional_count = comptime blk: {
                 var n: usize = 0;
                 for (def.params) |p| {
@@ -110,7 +87,7 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
                 }
                 break :blk n;
             };
-            const total_options = non_positional_count + 1; // + --format
+            const total_options = non_positional_count + 1;
             var opts = try runner.arena.allocator().alloc(cli.Option, total_options);
 
             var oi: usize = 0;
@@ -132,7 +109,6 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
                 .value_ref = runner.mkRef(&format_slot),
             };
 
-            // PositionalArgs: required positional params land here.
             const positional_count = comptime blk: {
                 var n: usize = 0;
                 for (def.params) |p| {
@@ -167,8 +143,11 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
+            var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
 
-            var ctx = bootstrap.initBootstrap(allocator) catch |err| {
+            var ctx = bootstrap.initBootstrap(allocator, io) catch |err| {
                 std.debug.print("zpm {s}: {s}. Run 'zpm init' first.\n", .{ def.cli_name, @errorName(err) });
                 std.process.exit(1);
             };
@@ -183,19 +162,18 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
             defer context.clearKbDir();
             defer context.clearEngine();
 
-            // Build the JSON args object from set slots.
-            var obj = std.json.ObjectMap.init(allocator);
-            defer obj.deinit();
+            var obj: std.json.ObjectMap = .{};
+            defer obj.deinit(allocator);
             inline for (def.params) |p| {
                 switch (p.kind) {
                     .string => {
                         if (@field(slots, p.mcp_key)) |val| {
-                            try obj.put(p.mcp_key, .{ .string = val });
+                            try obj.put(allocator, p.mcp_key, .{ .string = val });
                         }
                     },
                     .integer => {
                         if (@field(slots, p.mcp_key)) |val| {
-                            try obj.put(p.mcp_key, .{ .integer = val });
+                            try obj.put(allocator, p.mcp_key, .{ .integer = val });
                         }
                     },
                 }
@@ -204,14 +182,14 @@ pub fn ToolCommand(comptime def: registry.ToolDef) type {
                 if (obj.count() == 0) null else .{ .object = obj };
 
             const tool = try def.build(allocator);
-            const result = tool.handler(allocator, json_args) catch |err| {
+            const result = tool.handler(null, io, allocator, json_args) catch |err| {
                 std.debug.print("zpm {s}: {s}\n", .{ def.cli_name, @errorName(err) });
                 std.process.exit(1);
             };
 
             const fmt: output.OutputFormat =
                 if (std.mem.eql(u8, format_slot, "json")) .json else .text;
-            const exit_code = try output.render(result, fmt);
+            const exit_code = try output.render(result, fmt, io);
             if (exit_code != 0) std.process.exit(exit_code);
         }
     };
@@ -246,6 +224,21 @@ const ECHO_DEF: registry.ToolDef = .{
     },
 };
 
+/// Minimal std.process.Init for test use only.
+fn makeTestInit(arena: *std.heap.ArenaAllocator, environ_map: *std.process.Environ.Map) std.process.Init {
+    return .{
+        .minimal = .{
+            .environ = .empty,
+            .args = .{ .vector = &.{} },
+        },
+        .arena = arena,
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .environ_map = environ_map,
+        .preopens = .empty,
+    };
+}
+
 test "ToolCommand exposes Slots, slots, format_slot" {
     const TC = ToolCommand(ECHO_DEF);
     try std.testing.expectEqual(?[]const u8, @TypeOf(TC.slots.message));
@@ -253,7 +246,12 @@ test "ToolCommand exposes Slots, slots, format_slot" {
 }
 
 test "ToolCommand build returns cli.Command with correct name" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena_r = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_r.deinit();
+    var environ_map_r = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map_r.deinit();
+    const fake_init_r = makeTestInit(&arena_r, &environ_map_r);
+    var runner = cli.AppRunner.init(&fake_init_r);
     defer runner.deinit();
     const TC = ToolCommand(ECHO_DEF);
     const cmd = try TC.build(&runner);
@@ -272,7 +270,12 @@ const NO_PARAMS_DEF: registry.ToolDef = .{
 };
 
 test "ToolCommand with zero params still emits --format option" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena_r = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_r.deinit();
+    var environ_map_r = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map_r.deinit();
+    const fake_init_r = makeTestInit(&arena_r, &environ_map_r);
+    var runner = cli.AppRunner.init(&fake_init_r);
     defer runner.deinit();
     const TC = ToolCommand(NO_PARAMS_DEF);
     const cmd = try TC.build(&runner);
@@ -292,7 +295,12 @@ const POSITIONAL_DEF: registry.ToolDef = .{
 };
 
 test "ToolCommand with positional emits a PositionalArg" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena_r = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_r.deinit();
+    var environ_map_r = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map_r.deinit();
+    const fake_init_r = makeTestInit(&arena_r, &environ_map_r);
+    var runner = cli.AppRunner.init(&fake_init_r);
     defer runner.deinit();
     const TC = ToolCommand(POSITIONAL_DEF);
     const cmd = try TC.build(&runner);

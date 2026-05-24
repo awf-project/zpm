@@ -4,9 +4,9 @@ const context = @import("context.zig");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("fact", "The Prolog fact to check belief status for", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "fact", "The Prolog fact to check belief status for", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "get_belief_status",
@@ -24,7 +24,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -104,18 +104,18 @@ test "handler returns status in with justifications when fact is supported" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -128,15 +128,15 @@ test "handler returns status out with empty justifications when fact is unsuppor
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "unknown_fact(x)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "unknown_fact(x)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "\"out\"") != null);
@@ -148,7 +148,7 @@ test "handler returns multiple justifications when fact has multiple supporting 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -156,11 +156,11 @@ test "handler returns multiple justifications when fact has multiple supporting 
     try engine.assertFact("tms_justification(active(service), assumption_a).");
     try engine.assertFact("tms_justification(active(service), assumption_b).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "active(service)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "active(service)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "\"in\"") != null);
@@ -169,7 +169,7 @@ test "handler returns multiple justifications when fact has multiple supporting 
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -178,10 +178,10 @@ test "handler returns InvalidArguments when fact key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -190,18 +190,18 @@ test "source field is interactive when zpm_source metadata is asserted" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("config(timeout, 30).");
     try engine.assertFact("zpm_source(config(timeout, 30), interactive).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "config(timeout, 30)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "config(timeout, 30)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "\"source\"") != null);
@@ -213,17 +213,17 @@ test "source field is unknown when no zpm_source metadata exists for fact" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("config(timeout, 30).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "config(timeout, 30)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "config(timeout, 30)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "\"source\"") != null);
@@ -237,10 +237,10 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

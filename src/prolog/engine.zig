@@ -62,7 +62,7 @@ var g_src_counter = std.atomic.Value(u32).init(0);
 var g_engine_count = std.atomic.Value(u32).init(0);
 
 pub const Engine = struct {
-    gpa: std.heap.GeneralPurposeAllocator(.{}),
+    gpa: std.heap.DebugAllocator(.{}),
     allocator: std.mem.Allocator,
     handle: ?*ffi.Prolog,
     config: EngineConfig,
@@ -71,12 +71,14 @@ pub const Engine = struct {
     /// both on first-assert and when loading a .pl file that contains
     /// `:- dynamic(F/A).` directives. Keys are owned by the engine allocator.
     declared_dynamic: std.StringHashMap(void),
+    io: std.Io,
 
-    pub fn init(config: EngineConfig) EngineError!*Engine {
+    pub fn init(config: EngineConfig, io: std.Io) EngineError!*Engine {
         const self = std.heap.page_allocator.create(Engine) catch return EngineError.OutOfMemory;
-        self.gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        self.gpa = std.heap.DebugAllocator(.{}).init;
         self.allocator = self.gpa.allocator();
         self.config = config;
+        self.io = io;
         self.declared_dynamic = std.StringHashMap(void).init(self.allocator);
         self.handle = ffi.pl_create();
         if (self.handle == null) {
@@ -378,8 +380,7 @@ pub const Engine = struct {
             args_buf.appendSlice(self.allocator, "_") catch return EngineError.OutOfMemory;
             var i: usize = 1;
             while (i < arity) : (i += 1) args_buf.appendSlice(self.allocator, ",_") catch return EngineError.OutOfMemory;
-            const args = args_buf.toOwnedSlice(self.allocator) catch return EngineError.OutOfMemory;
-            defer self.allocator.free(args);
+            const args = args_buf.items;
             const code = std.fmt.allocPrintSentinel(
                 self.allocator,
                 "retractall({s}({s})).",
@@ -429,18 +430,15 @@ pub const Engine = struct {
         // Verify readability up front — mirrors the access(R_OK) check in the
         // old C wrapper so missing files fail fast instead of going through
         // Trealla's error reporting path.
-        std.fs.cwd().access(path, .{}) catch return EngineError.LoadFailed;
+        const io = self.io;
+        std.Io.Dir.cwd().access(io, path, .{}) catch return EngineError.LoadFailed;
 
         // pl_consult loads clauses as static; harvesting the snapshot's
         // `:- dynamic(F/A).` directives into the cache keeps post-load
         // assertFact from tripping permission_error(modify, static_procedure).
-        if (std.fs.cwd().openFile(path, .{})) |f| {
-            defer f.close();
-            const src = f.readToEndAlloc(self.allocator, std.math.maxInt(usize)) catch null;
-            if (src) |buf| {
-                defer self.allocator.free(buf);
-                self.scanDynamicDirectives(buf);
-            }
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .unlimited)) |buf| {
+            defer self.allocator.free(buf);
+            self.scanDynamicDirectives(buf);
         } else |_| {}
 
         // Load via `consult/1` as a Prolog goal rather than `pl_consult`.
@@ -486,6 +484,8 @@ pub const Engine = struct {
 
         self.scanDynamicDirectives(source);
 
+        const local_io = self.io;
+
         const pid = std.c.getpid();
         const counter = g_src_counter.fetchAdd(1, .monotonic);
         const tmppath = std.fmt.allocPrintSentinel(
@@ -497,15 +497,15 @@ pub const Engine = struct {
         defer self.allocator.free(tmppath);
 
         {
-            var file = std.fs.createFileAbsoluteZ(tmppath, .{}) catch
+            var file = std.Io.Dir.cwd().createFile(local_io, tmppath, .{}) catch
                 return EngineError.LoadFailed;
-            defer file.close();
+            defer file.close(local_io);
             var writer_buf: [4096]u8 = undefined;
-            var file_writer = file.writer(&writer_buf);
+            var file_writer = file.writer(local_io, &writer_buf);
             file_writer.interface.writeAll(source) catch return EngineError.LoadFailed;
             file_writer.interface.flush() catch return EngineError.LoadFailed;
         }
-        defer std.posix.unlink(tmppath) catch {};
+        defer _ = std.c.unlink(tmppath);
 
         var cap = Capture.init(self.allocator);
         var have_cap = true;
@@ -608,7 +608,7 @@ pub const Engine = struct {
 };
 
 fn stripDot(s: []const u8) []const u8 {
-    const trimmed = std.mem.trimRight(u8, s, " \t\n\r");
+    const trimmed = std.mem.trimEnd(u8, s, " \t\n\r");
     if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '.') {
         return trimmed[0 .. trimmed.len - 1];
     }
@@ -1012,20 +1012,20 @@ test "parseTermValue rejects wrong-typed atom value" {
 }
 
 test "Engine.init creates engine with non-null handle" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try testing.expect(engine.handle != null);
 }
 
 test "Engine.init stores config" {
-    var engine = try Engine.init(.{ .timeout_ms = 1000, .max_solutions = 10 });
+    var engine = try Engine.init(.{ .timeout_ms = 1000, .max_solutions = 10 }, std.testing.io);
     defer engine.deinit();
     try testing.expectEqual(@as(u64, 1000), engine.config.timeout_ms);
     try testing.expectEqual(@as(usize, 10), engine.config.max_solutions);
 }
 
 test "Engine.query parses atom binding from asserted fact" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assert("fruit(apple).");
@@ -1038,7 +1038,7 @@ test "Engine.query parses atom binding from asserted fact" {
 }
 
 test "Engine.assert and retract succeed" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assert("temp(42).");
@@ -1050,7 +1050,7 @@ test "Engine.assert and retract succeed" {
 }
 
 test "Engine.assertFact then query succeeds" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("fruit(apple).");
@@ -1063,7 +1063,7 @@ test "Engine.assertFact then query succeeds" {
 }
 
 test "Engine.retractFact then query returns no results" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("temp(42).");
@@ -1075,7 +1075,7 @@ test "Engine.retractFact then query returns no results" {
 }
 
 test "Engine.assertFact with invalid term returns parse error" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     const err = engine.assertFact(")(invalid");
@@ -1083,7 +1083,7 @@ test "Engine.assertFact with invalid term returns parse error" {
 }
 
 test "Engine.loadString accepts valid Prolog source" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.loadString("color(red). color(green). color(blue).");
@@ -1097,12 +1097,13 @@ test "Engine.loadFile loads predicates from disk and makes them queryable" {
     defer tmp.cleanup();
 
     const pl_content = "parent(tom, bob). parent(bob, ann).";
-    try tmp.dir.writeFile(.{ .sub_path = "kb.pl", .data = pl_content });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "kb.pl", .data = pl_content });
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp.dir.realpath("kb.pl", &path_buf);
+    const abs_path_len = try tmp.dir.realPathFile(std.testing.io, "kb.pl", &path_buf);
+    const abs_path = path_buf[0..abs_path_len];
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.loadFile(abs_path);
@@ -1114,7 +1115,7 @@ test "Engine.loadFile loads predicates from disk and makes them queryable" {
 }
 
 test "Engine.loadFile with non-existent path returns LoadFailed" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     const err = engine.loadFile("/tmp/zpm_nonexistent_file_that_does_not_exist.pl");
@@ -1122,7 +1123,7 @@ test "Engine.loadFile with non-existent path returns LoadFailed" {
 }
 
 test "Engine.loadString with invalid syntax returns LoadFailed" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     const err = engine.loadString(")(not valid prolog((.");
@@ -1134,7 +1135,7 @@ test "Engine.query succeeds with explicit sandbox limits set" {
         .timeout_ms = 5000,
         .max_recursion_depth = 1000,
         .max_memory_bytes = 67108864,
-    });
+    }, std.testing.io);
     defer engine.deinit();
 
     try engine.assert("sandboxed(ok).");
@@ -1146,7 +1147,7 @@ test "Engine.query succeeds with explicit sandbox limits set" {
 }
 
 test "Engine.query returns Timeout when timeout_ms is zero" {
-    var engine = try Engine.init(.{ .timeout_ms = 0 });
+    var engine = try Engine.init(.{ .timeout_ms = 0 }, std.testing.io);
     defer engine.deinit();
 
     try engine.assert("timeout_test(x).");
@@ -1155,7 +1156,7 @@ test "Engine.query returns Timeout when timeout_ms is zero" {
 }
 
 test "Engine.query returns OutOfMemory when max_memory_bytes is too small" {
-    var engine = try Engine.init(.{ .max_memory_bytes = 1 });
+    var engine = try Engine.init(.{ .max_memory_bytes = 1 }, std.testing.io);
     defer engine.deinit();
 
     try engine.assert("memtest(x).");
@@ -1164,7 +1165,7 @@ test "Engine.query returns OutOfMemory when max_memory_bytes is too small" {
 }
 
 test "Engine.retractAll removes all matching facts" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("color(red).");
@@ -1179,14 +1180,14 @@ test "Engine.retractAll removes all matching facts" {
 }
 
 test "Engine.retractAll succeeds when no facts match" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.retractAll("nonexistent(_)");
 }
 
 test "Engine.retractAll only removes matching predicate facts" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("animal(cat).");
@@ -1232,7 +1233,7 @@ test "freeTerm releases all allocated memory without leaks" {
 }
 
 test "Engine.query round-trips compound values via JSON" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("rel(a, b).");
     try engine.assertFact("rel(c, d).");
@@ -1247,7 +1248,7 @@ test "Engine.query round-trips compound values via JSON" {
 }
 
 test "iterateDeclaredDynamic includes preload-seeded predicates" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var it = engine.iterateDeclaredDynamic();
@@ -1262,7 +1263,7 @@ test "iterateDeclaredDynamic includes preload-seeded predicates" {
 }
 
 test "iterateDeclaredDynamic includes predicate after assertFact" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("feature(f019, test, planned).");
@@ -1276,7 +1277,7 @@ test "iterateDeclaredDynamic includes predicate after assertFact" {
 }
 
 test "iterateDeclaredDynamic keys have functor/arity format" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("tag(alpha).");
@@ -1297,7 +1298,7 @@ test "iterateDeclaredDynamic keys have functor/arity format" {
 }
 
 test "iterateDeclaredDynamic includes predicate from loadString dynamic directive" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.loadString(":- dynamic(rule/3). rule(a, b, c).");
@@ -1337,7 +1338,7 @@ test "g_engine_count increments and decrements correctly across Engine lifecycle
     // so we test sequential create/destroy pairs.
     const before = g_engine_count.load(.monotonic);
 
-    const e1 = try Engine.init(.{});
+    const e1 = try Engine.init(.{}, std.testing.io);
     const after_init = g_engine_count.load(.monotonic);
     try testing.expectEqual(before + 1, after_init);
 
@@ -1346,7 +1347,7 @@ test "g_engine_count increments and decrements correctly across Engine lifecycle
     try testing.expectEqual(before, after_deinit);
 
     // A second engine can be created after the first is destroyed.
-    const e2 = try Engine.init(.{});
+    const e2 = try Engine.init(.{}, std.testing.io);
     defer e2.deinit();
     try testing.expect(ffi.g_tpl_lib != null);
     try e2.assertFact("multi_engine_test(ok).");

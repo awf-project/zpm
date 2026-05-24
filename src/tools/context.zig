@@ -4,7 +4,6 @@ const mcp = @import("mcp");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
-var mutex = std.Thread.Mutex{};
 var engine: ?*Engine = null;
 var persistence_manager: ?*anyopaque = null;
 var memory_registry: ?*anyopaque = null;
@@ -12,95 +11,65 @@ var kb_dir: ?[]const u8 = null;
 var mount_manifest: ?*anyopaque = null;
 
 pub fn setEngine(e: *Engine) void {
-    mutex.lock();
-    defer mutex.unlock();
     engine = e;
 }
 
 pub fn clearEngine() void {
-    mutex.lock();
-    defer mutex.unlock();
     engine = null;
 }
 
 pub fn getEngine() ?*Engine {
-    mutex.lock();
-    defer mutex.unlock();
     return engine;
 }
 
 pub fn setPersistenceManager(pm: *anyopaque) void {
-    mutex.lock();
-    defer mutex.unlock();
     persistence_manager = pm;
 }
 
 pub fn clearPersistenceManager() void {
-    mutex.lock();
-    defer mutex.unlock();
     persistence_manager = null;
 }
 
 pub fn getPersistenceManagerAs(comptime T: type) ?*T {
-    mutex.lock();
-    defer mutex.unlock();
     const pm = persistence_manager orelse return null;
     return @ptrCast(@alignCast(pm));
 }
 
 pub fn setMemoryRegistry(reg: *anyopaque) void {
-    mutex.lock();
-    defer mutex.unlock();
     memory_registry = reg;
 }
 
 pub fn clearMemoryRegistry() void {
-    mutex.lock();
-    defer mutex.unlock();
     memory_registry = null;
 }
 
 pub fn getMemoryRegistryAs(comptime T: type) ?*T {
-    mutex.lock();
-    defer mutex.unlock();
     const mr = memory_registry orelse return null;
     return @ptrCast(@alignCast(mr));
 }
 
 pub fn setMountManifest(mf: *anyopaque) void {
-    mutex.lock();
-    defer mutex.unlock();
     mount_manifest = mf;
 }
 
 pub fn clearMountManifest() void {
-    mutex.lock();
-    defer mutex.unlock();
     mount_manifest = null;
 }
 
 pub fn getMountManifestAs(comptime T: type) ?*T {
-    mutex.lock();
-    defer mutex.unlock();
     const mm = mount_manifest orelse return null;
     return @ptrCast(@alignCast(mm));
 }
 
 pub fn setKbDir(dir: []const u8) void {
-    mutex.lock();
-    defer mutex.unlock();
     kb_dir = dir;
 }
 
 pub fn getKbDir() ?[]const u8 {
-    mutex.lock();
-    defer mutex.unlock();
     return kb_dir;
 }
 
 pub fn clearKbDir() void {
-    mutex.lock();
-    defer mutex.unlock();
     kb_dir = null;
 }
 

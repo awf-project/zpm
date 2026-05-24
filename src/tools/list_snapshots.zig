@@ -16,7 +16,7 @@ pub const tool = mcp.tools.Tool{
     .handler = handler,
 };
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const memory_name = context.resolveMemoryName(args);
     const reg = context.getMemoryRegistryAs(MemoryRegistry);
     var target_pm: ?*PersistenceManager = null;
@@ -56,14 +56,15 @@ test "handler returns empty snapshot list when no snapshots exist" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqualStrings("Snapshots: []", result.content[0].text.text);
 }
@@ -76,17 +77,18 @@ test "handler lists saved snapshots by name" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
     // Create a snapshot file so listSnapshots can find it
-    try tmp.dir.writeFile(.{ .sub_path = "alpha.pl", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "alpha.pl", .data = "" });
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "alpha") != null);
 }
@@ -98,6 +100,6 @@ test "handler returns ExecutionFailed when no persistence manager is set" {
 
     context.clearPersistenceManager();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

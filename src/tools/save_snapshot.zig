@@ -6,9 +6,9 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("name", "The name for the snapshot file", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "name", "The name for the snapshot file", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "save_snapshot",
@@ -26,7 +26,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
 
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -55,7 +55,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 const Engine = @import("../prolog/engine.zig").Engine;
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -64,10 +64,10 @@ test "handler returns InvalidArguments when name key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -79,23 +79,24 @@ test "handler saves snapshot and returns confirmation when engine and persistenc
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_snap" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_snap" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "test_snap") != null);
 }
@@ -108,25 +109,26 @@ test "handler creates snapshot file on disk" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "disk_snap" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "disk_snap" });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
-    _ = try tmp.dir.statFile("disk_snap.pl");
+    _ = try tmp.dir.statFile(std.testing.io, "disk_snap.pl", .{});
 }
 
 test "handler returns ExecutionFailed when no engine is set" {
@@ -136,10 +138,10 @@ test "handler returns ExecutionFailed when no engine is set" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "no_engine_snap" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "no_engine_snap" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

@@ -6,14 +6,13 @@ const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
 const validation = @import("tool_validation");
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 const Engine = @import("../prolog/engine.zig").Engine;
-
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("fact", "The Prolog fact to assert under the assumption", true);
-    _ = try schema.addString("assumption", "The assumption name (lowercase, alphanumeric with underscores)", true);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "fact", "The Prolog fact to assert under the assumption", true);
+    _ = try schema.addString(allocator, "assumption", "The assumption name (lowercase, alphanumeric with underscores)", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "assume_fact",
@@ -31,7 +30,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
 
@@ -81,7 +80,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     }
 
     if (target_pm) |pm| {
-        const ts = std.time.timestamp();
+        const ts = blk: {
+            var _ts: std.posix.timespec = undefined;
+            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+            break :blk _ts.sec;
+        };
         pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
         if (!already_justified) {
             pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_justification }) catch return mcp.tools.ToolError.ExecutionFailed;
@@ -98,16 +101,16 @@ test "handler asserts fact under assumption and returns confirmation" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -119,23 +122,23 @@ test "handler is idempotent when same fact and assumption are asserted twice" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "active(service)" });
-    try obj.put("assumption", .{ .string = "default_state" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "active(service)" });
+    try obj.put(allocator, "assumption", .{ .string = "default_state" });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
-    const result = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -144,11 +147,11 @@ test "handler returns InvalidArguments when fact key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -157,11 +160,11 @@ test "handler returns InvalidArguments when assumption key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -170,12 +173,12 @@ test "handler returns error result when fact is empty" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "" });
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "" });
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -184,12 +187,12 @@ test "handler returns InvalidArguments when assumption name starts with uppercas
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
-    try obj.put("assumption", .{ .string = "BadName" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
+    try obj.put(allocator, "assumption", .{ .string = "BadName" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -198,12 +201,12 @@ test "handler returns error result when fact contains rule syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "foo(X) :- bar(X)" });
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "foo(X) :- bar(X)" });
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -214,12 +217,12 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "likes(alice, bob)" });
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "likes(alice, bob)" });
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -231,28 +234,29 @@ test "handler journals fact and tms_justification as atomic group to WAL" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deployed(app, prod)" });
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deployed(app, prod)" });
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var content_buf: [2048]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "deployed(app, prod)") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "baseline") != null);
@@ -266,36 +270,37 @@ test "assume_fact.handler with named memory asserts qualified fact and journals 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     const test_seg_path = try std.fmt.allocPrint(allocator, "{s}/test_seg", .{dir_path});
     defer allocator.free(test_seg_path);
-    try std.fs.makeDirAbsolute(test_seg_path);
+    try std.Io.Dir.cwd().createDir(std.testing.io, test_seg_path, .default_dir);
 
-    var test_seg_dir = try std.fs.openDirAbsolute(test_seg_path, .{});
-    defer test_seg_dir.close();
-    var kfile = try test_seg_dir.createFile("knowledge.pl", .{});
-    defer kfile.close();
-    try kfile.writeAll(":- module(test_seg, []).\n");
+    var test_seg_dir = try std.Io.Dir.openDirAbsolute(std.testing.io, test_seg_path, .{});
+    defer test_seg_dir.close(std.testing.io);
+    var kfile = try test_seg_dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kfile.close(std.testing.io);
+    try kfile.writeStreamingAll(std.testing.io, ":- module(test_seg, []).\n");
 
     var registry = MemoryRegistry.init(allocator);
     defer registry.deinit();
-    try registry.mount("test_seg", test_seg_path, .project, .rw, engine);
+    try registry.mount("test_seg", test_seg_path, .project, .rw, engine, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "assumption_test(scenario)" });
-    try obj.put("assumption", .{ .string = "test_context" });
-    try obj.put("memory", .{ .string = "test_seg" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "assumption_test(scenario)" });
+    try obj.put(allocator, "assumption", .{ .string = "test_context" });
+    try obj.put(allocator, "memory", .{ .string = "test_seg" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var qr = try engine.query("test_seg:assumption_test(scenario).");
@@ -303,7 +308,7 @@ test "assume_fact.handler with named memory asserts qualified fact and journals 
     try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
 
     var jcontent_buf: [2048]u8 = undefined;
-    const jcontent = try tmp.dir.readFile("test_seg/journal.wal", &jcontent_buf);
+    const jcontent = try tmp.dir.readFile(std.testing.io, "test_seg/journal.wal", &jcontent_buf);
     try std.testing.expect(std.mem.indexOf(u8, jcontent, "test_seg:assumption_test(scenario)") != null);
     try std.testing.expect(std.mem.indexOf(u8, jcontent, "tms_justification") != null);
 }
@@ -316,14 +321,15 @@ test "assume_fact.handler without memory param asserts unqualified fact and jour
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
@@ -333,12 +339,12 @@ test "assume_fact.handler without memory param asserts unqualified fact and jour
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "config_option(debug, enabled)" });
-    try obj.put("assumption", .{ .string = "user_settings" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "config_option(debug, enabled)" });
+    try obj.put(allocator, "assumption", .{ .string = "user_settings" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var qr = try engine.query("config_option(debug, enabled).");
@@ -346,7 +352,7 @@ test "assume_fact.handler without memory param asserts unqualified fact and jour
     try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
 
     var jcontent_buf: [2048]u8 = undefined;
-    const jcontent = try tmp.dir.readFile("journal.wal", &jcontent_buf);
+    const jcontent = try tmp.dir.readFile(std.testing.io, "journal.wal", &jcontent_buf);
     try std.testing.expect(std.mem.indexOf(u8, jcontent, "config_option(debug, enabled)") != null);
     try std.testing.expect(std.mem.indexOf(u8, jcontent, "tms_justification") != null);
 }

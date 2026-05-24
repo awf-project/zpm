@@ -6,8 +6,9 @@ const registry = @import("cli/registry.zig");
 
 const version = @import("version.zig").version;
 
-pub fn main() !void {
-    var r = try cli.AppRunner.init(std.heap.page_allocator);
+pub fn main(init: std.process.Init) !void {
+    var r = cli.AppRunner.init(&init);
+    defer r.deinit();
     const app = try cli_app.buildApp(&r);
     return r.run(&app);
 }
@@ -23,10 +24,9 @@ test {
 }
 
 fn initTestServer() mcp.Server {
-    return mcp.Server.init(.{
+    return mcp.Server.init(std.testing.allocator, .{
         .name = "zpm",
         .version = version,
-        .allocator = std.testing.allocator,
     });
 }
 

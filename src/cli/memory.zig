@@ -121,8 +121,11 @@ fn createExec() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var ctx = bootstrap.initBootstrap(allocator) catch |err| {
+    var ctx = bootstrap.initBootstrap(allocator, io) catch |err| {
         std.debug.print("zpm memory create: {s}. Run 'zpm init' first.\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -134,18 +137,18 @@ fn createExec() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    defer obj.deinit();
-    if (create_name_slot) |val| try obj.put("name", .{ .string = val });
-    if (create_scope_slot) |val| try obj.put("scope", .{ .string = val });
+    var obj: std.json.ObjectMap = .{};
+    defer obj.deinit(allocator);
+    if (create_name_slot) |val| try obj.put(allocator, "name", .{ .string = val });
+    if (create_scope_slot) |val| try obj.put(allocator, "scope", .{ .string = val });
     const json_args: ?std.json.Value = if (obj.count() == 0) null else .{ .object = obj };
 
-    const result = create_memory.handler(allocator, json_args) catch |err| {
+    const result = create_memory.handler(null, io, allocator, json_args) catch |err| {
         std.debug.print("zpm memory create: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    const exit_code = try output.render(result, .text);
+    const exit_code = try output.render(result, .text, io);
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
@@ -153,8 +156,11 @@ fn mountExec() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var ctx = bootstrap.initBootstrap(allocator) catch |err| {
+    var ctx = bootstrap.initBootstrap(allocator, io) catch |err| {
         std.debug.print("zpm memory mount: {s}. Run 'zpm init' first.\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -166,19 +172,19 @@ fn mountExec() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    defer obj.deinit();
-    if (mount_name_slot) |val| try obj.put("name", .{ .string = val });
-    if (mount_mode_slot) |val| try obj.put("mode", .{ .string = val });
-    if (mount_scope_slot) |val| try obj.put("scope", .{ .string = val });
+    var obj: std.json.ObjectMap = .{};
+    defer obj.deinit(allocator);
+    if (mount_name_slot) |val| try obj.put(allocator, "name", .{ .string = val });
+    if (mount_mode_slot) |val| try obj.put(allocator, "mode", .{ .string = val });
+    if (mount_scope_slot) |val| try obj.put(allocator, "scope", .{ .string = val });
     const json_args: ?std.json.Value = if (obj.count() == 0) null else .{ .object = obj };
 
-    const result = mount_memory.handler(allocator, json_args) catch |err| {
+    const result = mount_memory.handler(null, io, allocator, json_args) catch |err| {
         std.debug.print("zpm memory mount: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    const exit_code = try output.render(result, .text);
+    const exit_code = try output.render(result, .text, io);
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
@@ -186,8 +192,11 @@ fn unmountExec() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var ctx = bootstrap.initBootstrap(allocator) catch |err| {
+    var ctx = bootstrap.initBootstrap(allocator, io) catch |err| {
         std.debug.print("zpm memory unmount: {s}. Run 'zpm init' first.\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -199,17 +208,17 @@ fn unmountExec() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    defer obj.deinit();
-    if (unmount_name_slot) |val| try obj.put("name", .{ .string = val });
+    var obj: std.json.ObjectMap = .{};
+    defer obj.deinit(allocator);
+    if (unmount_name_slot) |val| try obj.put(allocator, "name", .{ .string = val });
     const json_args: ?std.json.Value = if (obj.count() == 0) null else .{ .object = obj };
 
-    const result = unmount_memory.handler(allocator, json_args) catch |err| {
+    const result = unmount_memory.handler(null, io, allocator, json_args) catch |err| {
         std.debug.print("zpm memory unmount: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    const exit_code = try output.render(result, .text);
+    const exit_code = try output.render(result, .text, io);
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
@@ -217,8 +226,11 @@ fn listExec() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var ctx = bootstrap.initBootstrap(allocator) catch |err| {
+    var ctx = bootstrap.initBootstrap(allocator, io) catch |err| {
         std.debug.print("zpm memory list: {s}. Run 'zpm init' first.\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -230,24 +242,48 @@ fn listExec() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
-    const result = list_memories.handler(allocator, null) catch |err| {
+    const result = list_memories.handler(null, io, allocator, null) catch |err| {
         std.debug.print("zpm memory list: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    const exit_code = try output.render(result, .text);
+    const exit_code = try output.render(result, .text, io);
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
+fn makeTestInit(arena: *std.heap.ArenaAllocator, environ_map: *std.process.Environ.Map) std.process.Init {
+    return .{
+        .minimal = .{
+            .environ = .empty,
+            .args = .{ .vector = &.{} },
+        },
+        .arena = arena,
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .environ_map = environ_map,
+        .preopens = .empty,
+    };
+}
+
 test "buildCommand returns command named memory" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     try std.testing.expectEqualStrings("memory", cmd.name);
 }
 
 test "buildCommand returns 4 subcommands" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     try std.testing.expect(cmd.target == .subcommands);
@@ -255,7 +291,12 @@ test "buildCommand returns 4 subcommands" {
 }
 
 test "buildCommand subcommands are named create mount unmount list" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const subs = cmd.target.subcommands;
@@ -266,7 +307,12 @@ test "buildCommand subcommands are named create mount unmount list" {
 }
 
 test "create subcommand has required name and optional scope" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const opts = cmd.target.subcommands[0].options orelse return error.MissingOptions;
@@ -278,7 +324,12 @@ test "create subcommand has required name and optional scope" {
 }
 
 test "mount subcommand has required name and optional mode and scope" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const opts = cmd.target.subcommands[1].options orelse return error.MissingOptions;
@@ -292,7 +343,12 @@ test "mount subcommand has required name and optional mode and scope" {
 }
 
 test "unmount subcommand has required name" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const opts = cmd.target.subcommands[2].options orelse return error.MissingOptions;
@@ -302,7 +358,12 @@ test "unmount subcommand has required name" {
 }
 
 test "list subcommand has no options and an action target" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const list_cmd = cmd.target.subcommands[3];
@@ -311,7 +372,12 @@ test "list subcommand has no options and an action target" {
 }
 
 test "list subcommand targets listExec action" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const cmd = try buildCommand(&runner);
     const list_cmd = cmd.target.subcommands[3];

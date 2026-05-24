@@ -8,9 +8,9 @@ const Term = engine_mod.Term;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("assumption", "The assumption name to get justifications for", true);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "assumption", "The assumption name to get justifications for", true);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "get_justification",
@@ -28,7 +28,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
@@ -87,18 +87,18 @@ test "handler returns list of facts supported by assumption" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -110,7 +110,7 @@ test "handler returns all facts when assumption supports multiple facts" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -119,11 +119,11 @@ test "handler returns all facts when assumption supports multiple facts" {
     try engine.assertFact("tms_justification(deployed(app, prod), a1).");
     try engine.assertFact("tms_justification(active(service), a1).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "a1" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "a1" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "deployed(app, prod)") != null);
@@ -135,22 +135,22 @@ test "handler returns empty facts list when assumption supports no facts" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "nonexistent_assumption" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "nonexistent_assumption" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "[]") != null);
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -159,10 +159,10 @@ test "handler returns InvalidArguments when assumption key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -173,10 +173,10 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

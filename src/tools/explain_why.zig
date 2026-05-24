@@ -6,10 +6,10 @@ const term_utils = @import("term_utils");
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("fact", "The Prolog fact to explain (e.g. 'grandparent(tom, jim)')", true);
-    _ = try schema.addInteger("max_depth", "Maximum proof tree depth (default: unlimited)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "fact", "The Prolog fact to explain (e.g. 'grandparent(tom, jim)')", true);
+    _ = try schema.addInteger(allocator, "max_depth", "Maximum proof tree depth (default: unlimited)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "explain_why",
@@ -29,7 +29,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 
 const Engine = engine_mod.Engine;
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
     if (fact.len == 0) return mcp.tools.ToolError.InvalidArguments;
     const max_depth_opt = mcp.tools.getInteger(args, "max_depth");
@@ -57,7 +57,7 @@ fn buildExplainJson(
     proven: bool,
     max_depth_opt: ?i64,
 ) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const writer = &aw.writer;
 
@@ -78,7 +78,7 @@ fn buildExplainJson(
 
 fn buildProofTree(
     allocator: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     engine: *Engine,
     goal: []const u8,
     max_depth: usize,
@@ -153,17 +153,17 @@ test "handler returns proof tree for provable fact" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("risky(deploy_v3)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "risky(deploy_v3)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "risky(deploy_v3)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -178,15 +178,15 @@ test "handler returns proven false for unprovable fact" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "risky(deploy_v3)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "risky(deploy_v3)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -199,7 +199,7 @@ test "handler returns full proof tree for multi-level deduction chain" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -208,11 +208,11 @@ test "handler returns full proof tree for multi-level deduction chain" {
     try engine.assert("ancestor(X,Y) :- parent(X,Y)");
     try engine.assert("ancestor(X,Y) :- parent(X,Z), ancestor(Z,Y)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "ancestor(a,c)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "ancestor(a,c)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -227,7 +227,7 @@ test "handler returns InvalidArguments when fact arg is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -236,11 +236,11 @@ test "handler returns InvalidArguments when fact is empty string" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -251,11 +251,11 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "risky(x)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "risky(x)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -264,7 +264,7 @@ test "handler truncates proof tree at max_depth with marker" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -281,12 +281,12 @@ test "handler truncates proof tree at max_depth with marker" {
     try engine.assert("ancestor(X,Y) :- parent(X,Y)");
     try engine.assert("ancestor(X,Y) :- parent(X,Z), ancestor(Z,Y)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "ancestor(a,k)" });
-    try obj.put("max_depth", .{ .integer = 3 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "ancestor(a,k)" });
+    try obj.put(allocator, "max_depth", .{ .integer = 3 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -300,7 +300,7 @@ test "handler returns full tree when max_depth exceeds actual depth" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -309,12 +309,12 @@ test "handler returns full tree when max_depth exceeds actual depth" {
     try engine.assert("ancestor(X,Y) :- parent(X,Y)");
     try engine.assert("ancestor(X,Y) :- parent(X,Z), ancestor(Z,Y)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "ancestor(a,c)" });
-    try obj.put("max_depth", .{ .integer = 10 });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "ancestor(a,c)" });
+    try obj.put(allocator, "max_depth", .{ .integer = 10 });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;

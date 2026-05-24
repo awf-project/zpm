@@ -8,31 +8,34 @@ pub const Snapshot = struct {
     name: []const u8,
     path: []const u8,
 
-    pub fn generate(allocator: std.mem.Allocator, engine: *Engine, dir_path: []const u8, name: []const u8) !Snapshot {
+    pub fn generate(allocator: std.mem.Allocator, engine: *Engine, dir_path: []const u8, name: []const u8, io: std.Io) !Snapshot {
         const snapshot_name = try std.fmt.allocPrint(allocator, "{s}.pl", .{name});
         errdefer allocator.free(snapshot_name);
 
         const tmp_name = try std.fmt.allocPrint(allocator, "{s}.tmp", .{snapshot_name});
         defer allocator.free(tmp_name);
 
-        var dir = try std.fs.openDirAbsolute(dir_path, .{});
-        defer dir.close();
+        var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
+        defer dir.close(io);
 
         // Rename only after both writes succeed; drop the tmp on failure so
         // a half-written file is never promoted to final.
         {
-            const tmp_file = try dir.createFile(tmp_name, .{});
+            const tmp_file = try dir.createFile(io, tmp_name, .{});
             var close_tmp = true;
-            defer if (close_tmp) tmp_file.close();
-            writeClausesToFile(allocator, engine, tmp_file) catch |err| {
-                tmp_file.close();
+            defer if (close_tmp) tmp_file.close(io);
+            writeClausesToFile(allocator, engine, tmp_file, io) catch |err| {
+                tmp_file.close(io);
                 close_tmp = false;
-                dir.deleteFile(tmp_name) catch {};
+                dir.deleteFile(io, tmp_name) catch {};
                 return err;
             };
         }
 
-        try dir.rename(tmp_name, snapshot_name);
+        std.Io.Dir.rename(dir, tmp_name, dir, snapshot_name, io) catch |err| {
+            dir.deleteFile(io, tmp_name) catch {};
+            return err;
+        };
 
         const full_path = try std.fs.path.join(allocator, &.{ dir_path, snapshot_name });
         errdefer allocator.free(full_path);
@@ -53,29 +56,33 @@ pub const Snapshot = struct {
     }
 };
 
-fn writeClausesToFile(allocator: std.mem.Allocator, engine: *Engine, file: std.fs.File) !void {
-    const ts = std.time.timestamp();
+fn writeClausesToFile(allocator: std.mem.Allocator, engine: *Engine, file: std.Io.File, io: std.Io) !void {
+    const ts = blk: {
+        var _ts: std.posix.timespec = undefined;
+        _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    };
     var hdr_buf: [64]u8 = undefined;
     const hdr = try std.fmt.bufPrint(&hdr_buf, "%% zpm snapshot {d}\n", .{ts});
-    try file.writeAll(hdr);
+    try file.writeStreamingAll(io, hdr);
 
     var it = engine.iterateDeclaredDynamic();
     while (it.next()) |entry| {
         var dir_buf: [256]u8 = undefined;
         const directive = try std.fmt.bufPrint(&dir_buf, ":- dynamic({s}).\n", .{entry.key_ptr.*});
-        try file.writeAll(directive);
+        try file.writeStreamingAll(io, directive);
     }
 
     const dump = try engine.dumpDynamicPredicates(allocator);
     defer allocator.free(dump);
-    try file.writeAll(dump);
+    try file.writeStreamingAll(io, dump);
 }
 
-pub fn list(allocator: std.mem.Allocator, dir_path: []const u8) ![][]const u8 {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch {
+pub fn list(allocator: std.mem.Allocator, dir_path: []const u8, io: std.Io) ![][]const u8 {
+    var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch {
         return try allocator.alloc([]const u8, 0);
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var results: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -84,7 +91,7 @@ pub fn list(allocator: std.mem.Allocator, dir_path: []const u8) ![][]const u8 {
     }
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".pl")) continue;
         try results.append(allocator, try allocator.dupe(u8, entry.name));
@@ -98,19 +105,20 @@ test "generate creates snapshot file with correct name in persistence directory"
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "kb_snap");
+    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "kb_snap", std.testing.io);
     defer snap.deinit();
 
     try std.testing.expectEqualStrings("kb_snap.pl", snap.name);
-    _ = try tmp.dir.statFile("kb_snap.pl");
+    _ = try tmp.dir.statFile(std.testing.io, "kb_snap.pl", .{});
 }
 
 test "generate snapshot path is within persistence directory" {
@@ -118,15 +126,16 @@ test "generate snapshot path is within persistence directory" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "kb_snap");
+    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "kb_snap", std.testing.io);
     defer snap.deinit();
 
     try std.testing.expect(std.mem.startsWith(u8, snap.path, dir_path));
@@ -138,16 +147,17 @@ test "list returns only .pl files and excludes non-snapshot files" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    (try tmp.dir.createFile("snap1.pl", .{})).close();
-    (try tmp.dir.createFile("snap2.pl", .{})).close();
-    (try tmp.dir.createFile("journal.wal", .{})).close();
+    (try tmp.dir.createFile(std.testing.io, "snap1.pl", .{})).close(std.testing.io);
+    (try tmp.dir.createFile(std.testing.io, "snap2.pl", .{})).close(std.testing.io);
+    (try tmp.dir.createFile(std.testing.io, "journal.wal", .{})).close(std.testing.io);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const snapshots = try list(arena.allocator(), dir_path);
+    const snapshots = try list(arena.allocator(), dir_path, std.testing.io);
     try std.testing.expectEqual(@as(usize, 2), snapshots.len);
 }
 
@@ -156,18 +166,19 @@ test "restore loads snapshot file into engine without error" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "restore_snap");
+    var snap = try Snapshot.generate(arena.allocator(), engine, dir_path, "restore_snap", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
 
     try snap.restore(engine2);
@@ -178,12 +189,13 @@ test "list returns empty slice for empty directory" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const snapshots = try list(arena.allocator(), dir_path);
+    const snapshots = try list(arena.allocator(), dir_path, std.testing.io);
 
     try std.testing.expectEqual(@as(usize, 0), snapshots.len);
 }
@@ -191,20 +203,20 @@ test "list returns empty slice for empty directory" {
 test "save+restore round-trips rule with conjunction body" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("parent(alice, bob)");
     try engine.assertFact("parent(bob, carol)");
     try engine.loadString(":- dynamic(grandparent/2).\n");
     try engine.assertFact("(grandparent(X, Z) :- parent(X, Y), parent(Y, Z))");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "test", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -216,18 +228,18 @@ test "save+restore round-trips rule with conjunction body" {
 test "save+restore round-trips quoted atoms with spaces and uppercase" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.loadString(":- dynamic(feature_spec/3).\n");
     try engine.assertFact("feature_spec(f013, 'Tag-Triggered Release Workflows', 'M')");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "quoted");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "quoted", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -239,18 +251,18 @@ test "save+restore round-trips quoted atoms with spaces and uppercase" {
 test "save+restore preserves dynamic: assertz after restore succeeds" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.loadString(":- dynamic(task_status/2).\n");
     try engine.assertFact("task_status(f012, complete)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "dyn");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "dyn", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -265,15 +277,15 @@ test "save+restore preserves dynamic: assertz after restore succeeds" {
 test "restore replaces KB instead of appending (no duplicates on same engine)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("demo_item(alpha, 1, active)");
     try engine.assertFact("demo_item(beta, 2, active)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "replace");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "replace", std.testing.io);
     defer snap.deinit();
 
     // Restore onto the same live engine — must replace, not append.
@@ -292,17 +304,17 @@ test "restore replaces KB instead of appending (no duplicates on same engine)" {
 test "round-trip preserves multi-word quoted atoms" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("feature_spec(f013, 'Tag-Triggered Release Workflows', backlog)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_quoted");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_quoted", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -316,17 +328,17 @@ test "round-trip preserves multi-word quoted atoms" {
 test "round-trip preserves nested compound with embedded list" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("depends_on(foo(bar, baz), [x, y])");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_nested");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_nested", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -343,17 +355,17 @@ test "round-trip preserves nested compound with embedded list" {
 test "round-trip preserves atom containing escaped double quotes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("note(bug, 'He said \"hi\"')");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_esc");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "rt_esc", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -367,18 +379,18 @@ test "round-trip preserves atom containing escaped double quotes" {
 test "static-after-load: assertFact same functor after restore" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     // No explicit :- dynamic. The engine must emit it on first assertFact.
     try engine.assertFact("task_status(f020, draft)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "static_repro");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "static_repro", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -391,7 +403,7 @@ test "static-after-load: assertFact same functor after restore" {
 }
 
 test "static-after-load: assertFact-retractall-assertFact sanity" {
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("widget(a)");
@@ -407,16 +419,16 @@ test "static-after-load: assertFact-retractall-assertFact sanity" {
 test "snapshot file starts with %% zpm snapshot header" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "hdr_test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "hdr_test", std.testing.io);
     defer snap.deinit();
 
-    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "hdr_test.pl", 4096);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "hdr_test.pl", std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.startsWith(u8, content, "%% zpm snapshot "));
@@ -425,18 +437,18 @@ test "snapshot file starts with %% zpm snapshot header" {
 test "snapshot file contains :- dynamic directive for each predicate from declared_dynamic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("fact_a(1)");
     try engine.assertFact("fact_b(x, y)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "directives_test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "directives_test", std.testing.io);
     defer snap.deinit();
 
-    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "directives_test.pl", 8192);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "directives_test.pl", std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, ":- dynamic(fact_a/1)."));
@@ -446,17 +458,17 @@ test "snapshot file contains :- dynamic directive for each predicate from declar
 test "snapshot file emits :- dynamic directives before first clause" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("user_item(alpha, 1)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "order_test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "order_test", std.testing.io);
     defer snap.deinit();
 
-    const content = try tmp.dir.readFileAlloc(std.testing.allocator, "order_test.pl", 8192);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "order_test.pl", std.testing.allocator, .limited(8192));
     defer std.testing.allocator.free(content);
 
     const directive_pos = std.mem.indexOf(u8, content, ":- dynamic(user_item/2).") orelse
@@ -470,20 +482,20 @@ test "snapshot file emits :- dynamic directives before first clause" {
 test "restore makes four feature/3 facts queryable (US2 acceptance)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("feature(f001, 'Mcp Server', complete)");
     try engine.assertFact("feature(f002, 'Prolog Engine', complete)");
     try engine.assertFact("feature(f003, 'Persistence', complete)");
     try engine.assertFact("feature(f019, 'Fix Retract', planned)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_test", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -495,20 +507,20 @@ test "restore makes four feature/3 facts queryable (US2 acceptance)" {
 test "restore makes feature/3 schema count=4 via clause introspection (US2 schema acceptance)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     try engine.assertFact("feature(f001, 'Mcp Server', complete)");
     try engine.assertFact("feature(f002, 'Prolog Engine', complete)");
     try engine.assertFact("feature(f003, 'Persistence', complete)");
     try engine.assertFact("feature(f019, 'Fix Retract', planned)");
 
-    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_schema_test");
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "us2_schema_test", std.testing.io);
     defer snap.deinit();
 
-    const engine2 = try Engine.init(.{});
+    const engine2 = try Engine.init(.{}, std.testing.io);
     defer engine2.deinit();
     try snap.restore(engine2);
 
@@ -524,17 +536,17 @@ test "restore makes feature/3 schema count=4 via clause introspection (US2 schem
 test "generate propagates dump error and leaves no final snapshot file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
     // simulateHandleFailure makes dumpDynamicPredicates return QueryFailed.
-    var engine = try Engine.init(.{});
+    var engine = try Engine.init(.{}, std.testing.io);
     engine.simulateHandleFailure();
     defer engine.deinit();
 
-    const result = Snapshot.generate(std.testing.allocator, engine, dir_path, "should_not_exist");
+    const result = Snapshot.generate(std.testing.allocator, engine, dir_path, "should_not_exist", std.testing.io);
     try std.testing.expectError(engine_mod.EngineError.QueryFailed, result);
 
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile("should_not_exist.pl"));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile("should_not_exist.pl.tmp"));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "should_not_exist.pl", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "should_not_exist.pl.tmp", .{}));
 }

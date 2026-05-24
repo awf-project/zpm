@@ -14,7 +14,7 @@ pub const tool = mcp.tools.Tool{
     .handler = handler,
 };
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const query_str = "tms_justification(_, A)";
@@ -70,14 +70,14 @@ test "handler returns assumption names when assumptions exist" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -89,7 +89,7 @@ test "handler returns deduplicated assumption names" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
@@ -99,7 +99,7 @@ test "handler returns deduplicated assumption names" {
     try engine.assertFact("tms_justification(active(service), a1).");
     try engine.assertFact("tms_justification(deployed(app, prod), a2).");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     // a1 appears twice in tms_justification but must appear once in result
@@ -113,11 +113,11 @@ test "handler returns empty list when no assumptions are registered" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "[]") != null);
@@ -130,6 +130,6 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

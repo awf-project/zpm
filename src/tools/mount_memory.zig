@@ -12,11 +12,11 @@ const parseScope = manifest_mod.parseScope;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("name", "Memory name to mount", true);
-    _ = try schema.addString("mode", "Mount mode: rw or ro (default: rw)", false);
-    _ = try schema.addString("scope", "Memory scope: \"project\" or \"global\" (default: \"project\")", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "name", "Memory name to mount", true);
+    _ = try schema.addString(allocator, "mode", "Mount mode: rw or ro (default: rw)", false);
+    _ = try schema.addString(allocator, "scope", "Memory scope: \"project\" or \"global\" (default: \"project\")", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "mount_memory",
@@ -39,10 +39,12 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 /// memory; create_memory has its own resolver that creates dirs.
 fn resolveGlobalPath(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     const base = blk: {
-        if (std.posix.getenv("XDG_DATA_HOME")) |xdg| {
+        if (std.c.getenv("XDG_DATA_HOME")) |xdg_raw| {
+            const xdg = std.mem.span(xdg_raw);
             if (xdg.len > 0) break :blk try allocator.dupe(u8, xdg);
         }
-        if (std.posix.getenv("HOME")) |home| {
+        if (std.c.getenv("HOME")) |home_raw| {
+            const home = std.mem.span(home_raw);
             break :blk try std.fmt.allocPrint(allocator, "{s}/.local/share", .{home});
         }
         return error.HomeNotSet;
@@ -78,7 +80,7 @@ fn writeManifestEntry(
     manifest.write() catch return mcp.tools.ToolError.ExecutionFailed;
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
     const mode_str = mcp.tools.getString(args, "mode") orelse "rw";
     const mode: MemoryMode = if (std.mem.eql(u8, mode_str, "ro")) .ro else .rw;
@@ -101,13 +103,16 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     };
     defer allocator.free(disk_path);
 
-    std.fs.accessAbsolute(disk_path, .{}) catch {
-        const msg = std.fmt.allocPrint(allocator, "Memory directory not found: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
-        return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
-    };
+    {
+        var check_dir = std.Io.Dir.openDirAbsolute(io, disk_path, .{}) catch {
+            const msg = std.fmt.allocPrint(allocator, "Memory directory not found: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+            return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
+        };
+        check_dir.close(io);
+    }
 
     const already_mounted = blk: {
-        reg.mount(name, disk_path, scope, mode, engine) catch |err| switch (err) {
+        reg.mount(name, disk_path, scope, mode, engine, io) catch |err| switch (err) {
             error.AlreadyMounted => break :blk true,
             else => {
                 const msg = std.fmt.allocPrint(allocator, "Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
@@ -156,9 +161,10 @@ test "mount_memory handler with valid name mounts memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -170,19 +176,19 @@ test "mount_memory handler with valid name mounts memory" {
     context.setKbDir(dir_path);
     defer context.clearKbDir();
 
-    try tmp.dir.makeDir("mount_mem");
-    var sub = try tmp.dir.openDir("mount_mem", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(mount_mem, []).\n");
+    try tmp.dir.createDir(std.testing.io, "mount_mem", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "mount_mem", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(mount_mem, []).\n");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "mount_mem" });
-    try obj.put("mode", .{ .string = "rw" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "mount_mem" });
+    try obj.put(allocator, "mode", .{ .string = "rw" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -199,9 +205,10 @@ test "mount_memory handler is idempotent for already-mounted memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -214,21 +221,21 @@ test "mount_memory handler is idempotent for already-mounted memory" {
     defer context.clearKbDir();
     context.clearMountManifest();
 
-    try tmp.dir.makeDir("dup_mem");
-    var sub = try tmp.dir.openDir("dup_mem", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(dup_mem, []).\n");
+    try tmp.dir.createDir(std.testing.io, "dup_mem", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "dup_mem", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(dup_mem, []).\n");
 
-    try registry.mount("dup_mem", try std.fmt.allocPrint(allocator, "{s}/dup_mem", .{dir_path}), .project, .rw, engine);
+    try registry.mount("dup_mem", try std.fmt.allocPrint(allocator, "{s}/dup_mem", .{dir_path}), .project, .rw, engine, std.testing.io);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "dup_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "dup_mem" });
     const args = std.json.Value{ .object = obj };
 
     // Second mount must succeed (idempotent), not return is_error=true.
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -240,9 +247,10 @@ test "mount_memory handler returns error for non-existent memory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -254,16 +262,16 @@ test "mount_memory handler returns error for non-existent memory" {
     context.setKbDir(dir_path);
     defer context.clearKbDir();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "nonexistent_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "nonexistent_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
 test "mount_memory handler with null args returns InvalidArguments" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -272,10 +280,10 @@ test "mount_memory handler with missing name returns InvalidArguments" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -286,11 +294,11 @@ test "mount_memory handler returns ExecutionFailed when registry unavailable" {
 
     context.clearMemoryRegistry();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -302,9 +310,10 @@ test "mount_memory handler writes entry to manifest with the supplied mode" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -318,24 +327,24 @@ test "mount_memory handler writes entry to manifest with the supplied mode" {
 
     var manifest_path_buf: [std.fs.max_path_bytes + 20]u8 = undefined;
     const manifest_path = try std.fmt.bufPrint(&manifest_path_buf, "{s}/mounts.json", .{dir_path});
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    try tmp.dir.makeDir("mani_mem");
-    var sub = try tmp.dir.openDir("mani_mem", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(mani_mem, []).\n");
+    try tmp.dir.createDir(std.testing.io, "mani_mem", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "mani_mem", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(mani_mem, []).\n");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "mani_mem" });
-    try obj.put("mode", .{ .string = "rw" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "mani_mem" });
+    try obj.put(allocator, "mode", .{ .string = "rw" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), manifest.entries.items.len);
     const entry = manifest.findEntry("mani_mem");
@@ -351,9 +360,10 @@ test "mount_memory handler with mode=ro persists mode=ro in the manifest entry" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -367,24 +377,24 @@ test "mount_memory handler with mode=ro persists mode=ro in the manifest entry" 
 
     var manifest_path_buf: [std.fs.max_path_bytes + 20]u8 = undefined;
     const manifest_path = try std.fmt.bufPrint(&manifest_path_buf, "{s}/mounts.json", .{dir_path});
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    try tmp.dir.makeDir("mani_ro_mem");
-    var sub = try tmp.dir.openDir("mani_ro_mem", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(mani_ro_mem, []).\n");
+    try tmp.dir.createDir(std.testing.io, "mani_ro_mem", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "mani_ro_mem", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(mani_ro_mem, []).\n");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "mani_ro_mem" });
-    try obj.put("mode", .{ .string = "ro" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "mani_ro_mem" });
+    try obj.put(allocator, "mode", .{ .string = "ro" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     const entry = manifest.findEntry("mani_ro_mem");
     try std.testing.expect(entry != null);
@@ -399,9 +409,10 @@ test "mount_memory handler re-mounting an already-manifest-listed memory updates
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -415,7 +426,7 @@ test "mount_memory handler re-mounting an already-manifest-listed memory updates
 
     var manifest_path_buf: [std.fs.max_path_bytes + 20]u8 = undefined;
     const manifest_path = try std.fmt.bufPrint(&manifest_path_buf, "{s}/mounts.json", .{dir_path});
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
 
     try manifest.addEntry(.{
@@ -427,19 +438,19 @@ test "mount_memory handler re-mounting an already-manifest-listed memory updates
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    try tmp.dir.makeDir("dup_mani");
-    var sub = try tmp.dir.openDir("dup_mani", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(dup_mani, []).\n");
+    try tmp.dir.createDir(std.testing.io, "dup_mani", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "dup_mani", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(dup_mani, []).\n");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "dup_mani" });
-    try obj.put("mode", .{ .string = "ro" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "dup_mani" });
+    try obj.put(allocator, "mode", .{ .string = "ro" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), manifest.entries.items.len);
     const entry = manifest.findEntry("dup_mani");
@@ -455,9 +466,10 @@ test "mount_memory handler with no manifest in context succeeds without writing 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -470,18 +482,18 @@ test "mount_memory handler with no manifest in context succeeds without writing 
     defer context.clearKbDir();
     context.clearMountManifest();
 
-    try tmp.dir.makeDir("no_mani_mem");
-    var sub = try tmp.dir.openDir("no_mani_mem", .{});
-    defer sub.close();
-    var kf = try sub.createFile("knowledge.pl", .{});
-    defer kf.close();
-    try kf.writeAll(":- module(no_mani_mem, []).\n");
+    try tmp.dir.createDir(std.testing.io, "no_mani_mem", .default_dir);
+    var sub = try tmp.dir.openDir(std.testing.io, "no_mani_mem", .{});
+    defer sub.close(std.testing.io);
+    var kf = try sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kf.close(std.testing.io);
+    try kf.writeStreamingAll(std.testing.io, ":- module(no_mani_mem, []).\n");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "no_mani_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "no_mani_mem" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -497,21 +509,22 @@ test "mount_memory handler with scope=global resolves path under XDG_DATA_HOME a
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     // Pre-create the global memory layout under the synthetic XDG_DATA_HOME
-    try tmp.dir.makePath("zpm/kb/glob_mem");
-    var glob_sub = try tmp.dir.openDir("zpm/kb/glob_mem", .{});
-    defer glob_sub.close();
-    var glob_kf = try glob_sub.createFile("knowledge.pl", .{});
-    defer glob_kf.close();
-    try glob_kf.writeAll(":- module(glob_mem, []).\n");
+    try tmp.dir.createDirPath(std.testing.io, "zpm/kb/glob_mem");
+    var glob_sub = try tmp.dir.openDir(std.testing.io, "zpm/kb/glob_mem", .{});
+    defer glob_sub.close(std.testing.io);
+    var glob_kf = try glob_sub.createFile(std.testing.io, "knowledge.pl", .{});
+    defer glob_kf.close(std.testing.io);
+    try glob_kf.writeStreamingAll(std.testing.io, ":- module(glob_mem, []).\n");
 
     const xdg_c = try allocator.dupeZ(u8, dir_path);
     _ = setenv("XDG_DATA_HOME", xdg_c.ptr, 1);
     defer _ = unsetenv("XDG_DATA_HOME");
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -525,17 +538,17 @@ test "mount_memory handler with scope=global resolves path under XDG_DATA_HOME a
 
     var manifest_path_buf: [std.fs.max_path_bytes + 20]u8 = undefined;
     const manifest_path = try std.fmt.bufPrint(&manifest_path_buf, "{s}/mounts.json", .{dir_path});
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "glob_mem" });
-    try obj.put("scope", .{ .string = "global" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "glob_mem" });
+    try obj.put(allocator, "scope", .{ .string = "global" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     const entry = manifest.findEntry("glob_mem");
@@ -554,14 +567,15 @@ test "mount_memory handler with scope=global returns error when global directory
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     // Synthetic XDG_DATA_HOME with NO zpm/kb/<name> created — accessAbsolute should fail
     const xdg_c = try allocator.dupeZ(u8, dir_path);
     _ = setenv("XDG_DATA_HOME", xdg_c.ptr, 1);
     defer _ = unsetenv("XDG_DATA_HOME");
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -574,12 +588,12 @@ test "mount_memory handler with scope=global returns error when global directory
     defer context.clearKbDir();
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "absent_global" });
-    try obj.put("scope", .{ .string = "global" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "absent_global" });
+    try obj.put(allocator, "scope", .{ .string = "global" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -588,11 +602,11 @@ test "mount_memory handler with unknown scope returns error result" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "any" });
-    try obj.put("scope", .{ .string = "bogus" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "any" });
+    try obj.put(allocator, "scope", .{ .string = "bogus" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }

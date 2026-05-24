@@ -24,8 +24,7 @@ pub fn buildApp(runner: *cli.AppRunner) !cli.App {
 }
 
 fn versionAction() anyerror!void {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    stdout.writeAll("zpm " ++ version ++ "\n") catch {};
+    std.debug.print("zpm " ++ version ++ "\n", .{});
 }
 
 fn assembleCommands(runner: *cli.AppRunner) ![]cli.Command {
@@ -58,12 +57,33 @@ fn assembleCommands(runner: *cli.AppRunner) ![]cli.Command {
     return runner.allocCommands(tmp[0..]);
 }
 
+/// Minimal std.process.Init for test use only.
+/// Wraps std.testing.allocator and std.testing.io into the shape AppRunner.init expects.
+fn makeTestInit(arena: *std.heap.ArenaAllocator, environ_map: *std.process.Environ.Map) std.process.Init {
+    return .{
+        .minimal = .{
+            .environ = .empty,
+            .args = .{ .vector = &.{} },
+        },
+        .arena = arena,
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .environ_map = environ_map,
+        .preopens = .empty,
+    };
+}
+
 test "versionAction returns without error" {
     try versionAction();
 }
 
 test "buildApp returns app with correct number of subcommands" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const app = try buildApp(&runner);
     try std.testing.expect(app.command.target == .subcommands);
@@ -74,7 +94,12 @@ test "buildApp returns app with correct number of subcommands" {
 }
 
 test "buildApp first four subcommands are init, serve, upgrade, version" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const app = try buildApp(&runner);
     const subs = app.command.target.subcommands;
@@ -85,7 +110,12 @@ test "buildApp first four subcommands are init, serve, upgrade, version" {
 }
 
 test "buildApp fifth subcommand is the memory group with 4 subcommands" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const app = try buildApp(&runner);
     const subs = app.command.target.subcommands;
@@ -95,7 +125,12 @@ test "buildApp fifth subcommand is the memory group with 4 subcommands" {
 }
 
 test "buildApp tool subcommands match registry kebab names" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const app = try buildApp(&runner);
     const subs = app.command.target.subcommands;
@@ -106,7 +141,12 @@ test "buildApp tool subcommands match registry kebab names" {
 }
 
 test "buildApp every tool subcommand has --format option" {
-    var runner = try cli.AppRunner.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+    const fake_init = makeTestInit(&arena, &environ_map);
+    var runner = cli.AppRunner.init(&fake_init);
     defer runner.deinit();
     const app = try buildApp(&runner);
     const subs = app.command.target.subcommands;

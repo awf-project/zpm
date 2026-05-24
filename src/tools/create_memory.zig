@@ -15,10 +15,10 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("name", "Memory name (lowercase, alphanumeric with underscores)", true);
-    _ = try schema.addString("scope", "Memory scope: \"project\" or \"global\" (default: \"project\")", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "name", "Memory name (lowercase, alphanumeric with underscores)", true);
+    _ = try schema.addString(allocator, "scope", "Memory scope: \"project\" or \"global\" (default: \"project\")", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "create_memory",
@@ -42,13 +42,13 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 /// `$HOME` (in tests) or a freshly-provisioned account (no `~/.local/share`)
 /// produces a working `zpm/kb/` chain without the caller having to pre-create
 /// intermediate directories.
-fn ensureDirAbsolute(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+fn ensureDirAbsolute(io: std.Io, path: []const u8) !void {
+    std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             const parent = std.fs.path.dirname(path) orelse return err;
-            try ensureDirAbsolute(parent);
-            std.fs.makeDirAbsolute(path) catch |err2| switch (err2) {
+            try ensureDirAbsolute(io, parent);
+            std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err2| switch (err2) {
                 error.PathAlreadyExists => return,
                 else => return err2,
             };
@@ -57,12 +57,14 @@ fn ensureDirAbsolute(path: []const u8) !void {
     };
 }
 
-fn resolveGlobalPath(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+fn resolveGlobalPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     const base = blk: {
-        if (std.posix.getenv("XDG_DATA_HOME")) |xdg| {
+        if (std.c.getenv("XDG_DATA_HOME")) |xdg_raw| {
+            const xdg = std.mem.span(xdg_raw);
             if (xdg.len > 0) break :blk try allocator.dupe(u8, xdg);
         }
-        if (std.posix.getenv("HOME")) |home| {
+        if (std.c.getenv("HOME")) |home_raw| {
+            const home = std.mem.span(home_raw);
             break :blk try std.fmt.allocPrint(allocator, "{s}/.local/share", .{home});
         }
         return error.HomeNotSet;
@@ -71,7 +73,7 @@ fn resolveGlobalPath(allocator: std.mem.Allocator, name: []const u8) ![]const u8
 
     const kb_dir = try std.fmt.allocPrint(allocator, "{s}/zpm/kb", .{base});
     defer allocator.free(kb_dir);
-    try ensureDirAbsolute(kb_dir);
+    try ensureDirAbsolute(io, kb_dir);
 
     return std.fmt.allocPrint(allocator, "{s}/zpm/kb/{s}", .{ base, name });
 }
@@ -102,7 +104,7 @@ fn writeManifestEntry(
     manifest.write() catch return mcp.tools.ToolError.ExecutionFailed;
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!isValidAtomName(name)) {
         const msg = std.fmt.allocPrint(allocator, "Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
@@ -119,11 +121,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     const disk_path = switch (scope) {
         .project => std.fmt.allocPrint(allocator, "{s}/{s}", .{ kb, name }) catch return mcp.tools.ToolError.OutOfMemory,
-        .global => resolveGlobalPath(allocator, name) catch return mcp.tools.ToolError.ExecutionFailed,
+        .global => resolveGlobalPath(io, allocator, name) catch return mcp.tools.ToolError.ExecutionFailed,
     };
     defer allocator.free(disk_path);
 
-    reg.create(name, disk_path) catch |err| {
+    reg.create(io, name, disk_path) catch |err| {
         const msg = switch (err) {
             error.AlreadyExists => std.fmt.allocPrint(allocator, "Memory already exists: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
             error.InvalidName => std.fmt.allocPrint(allocator, "Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
@@ -134,7 +136,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 
     if (context.getMountManifestAs(MountManifest)) |manifest_ptr| {
         writeManifestEntry(allocator, manifest_ptr, name, disk_path, scope) catch |err| {
-            std.fs.deleteTreeAbsolute(disk_path) catch {};
+            std.Io.Dir.cwd().deleteTree(io, disk_path) catch {};
             return err;
         };
     }
@@ -161,7 +163,8 @@ test "create_memory handler with valid name returns success text" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -171,11 +174,11 @@ test "create_memory handler with valid name returns success text" {
     defer context.clearKbDir();
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "my_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "my_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -186,16 +189,16 @@ test "create_memory handler with invalid name returns error" {
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "my-memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "my-memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
 test "create_memory handler with null args returns InvalidArguments" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -204,10 +207,10 @@ test "create_memory handler with missing name returns InvalidArguments" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -219,11 +222,11 @@ test "create_memory handler returns ExecutionFailed when registry unavailable" {
     context.clearMemoryRegistry();
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_memory" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_memory" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -236,16 +239,17 @@ test "create_memory handler with scope=project adds entry to manifest with relat
     defer tmp.cleanup();
 
     // Create the .zpm/kb/ directory structure so reg.create can make subdirs inside it
-    try tmp.dir.makePath(".zpm/kb");
+    try tmp.dir.createDirPath(std.testing.io, ".zpm/kb");
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_root = try tmp.dir.realpath(".", &path_buf);
+    const project_root_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const project_root = path_buf[0..project_root_len];
 
     // kb_dir is the absolute path; project root is its dirname parent (.zpm is inside it)
     const kb_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/kb", .{project_root});
 
     const manifest_path = try std.fmt.allocPrint(allocator, "{s}/mounts.json", .{project_root});
-    var manifest = try MountManifest.init(std.testing.allocator, manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
 
     var registry = MemoryRegistry.init(std.testing.allocator);
@@ -259,12 +263,12 @@ test "create_memory handler with scope=project adds entry to manifest with relat
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "my_memory" });
-    try obj.put("scope", .{ .string = "project" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "my_memory" });
+    try obj.put(allocator, "scope", .{ .string = "project" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     // Verify the manifest entry stores a project-relative path, not the absolute disk_path
@@ -280,7 +284,8 @@ test "create_memory handler with scope=global resolves path under XDG_DATA_HOME"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     // Isolate XDG_DATA_HOME to the tmp dir so the test is hermetic
     const xdg_c = try allocator.dupeZ(u8, dir_path);
@@ -297,12 +302,12 @@ test "create_memory handler with scope=global resolves path under XDG_DATA_HOME"
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "global_mem" });
-    try obj.put("scope", .{ .string = "global" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "global_mem" });
+    try obj.put(allocator, "scope", .{ .string = "global" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -314,10 +319,11 @@ test "create_memory handler with scope=global falls back to HOME when XDG_DATA_H
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     // Save and override HOME, unset XDG_DATA_HOME — fully hermetic
-    const orig_home = std.posix.getenv("HOME");
+    const orig_home = if (std.c.getenv("HOME")) |raw| std.mem.span(raw) else null;
     var orig_home_buf: [std.fs.max_path_bytes]u8 = undefined;
     const saved_home: ?[]const u8 = if (orig_home) |h| blk: {
         @memcpy(orig_home_buf[0..h.len], h);
@@ -349,12 +355,12 @@ test "create_memory handler with scope=global falls back to HOME when XDG_DATA_H
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "fallback_mem" });
-    try obj.put("scope", .{ .string = "global" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "fallback_mem" });
+    try obj.put(allocator, "scope", .{ .string = "global" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -366,7 +372,8 @@ test "create_memory handler with no manifest in context succeeds without writing
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -378,11 +385,11 @@ test "create_memory handler with no manifest in context succeeds without writing
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "degraded_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "degraded_mem" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 }
 
@@ -394,7 +401,8 @@ test "create_memory handler returns ExecutionFailed when manifest write fails" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -406,19 +414,19 @@ test "create_memory handler returns ExecutionFailed when manifest write fails" {
 
     // Point manifest at a non-existent subdirectory so manifest.write() returns WriteError
     const bad_manifest_path = try std.fmt.allocPrint(allocator, "{s}/no_such_subdir/mounts.json", .{dir_path});
-    var manifest = try MountManifest.init(std.testing.allocator, bad_manifest_path);
+    var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, bad_manifest_path);
     defer manifest.deinit();
 
     context.setMountManifest(@ptrCast(&manifest));
     defer context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "fail_mem" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "fail_mem" });
     const args = std.json.Value{ .object = obj };
 
     // reg.create succeeds (disk_path is inside dir_path which exists);
     // manifest.write() then fails because no_such_subdir/ does not exist → ExecutionFailed
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -430,7 +438,8 @@ test "create_memory handler with unknown scope returns error result with message
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -442,12 +451,12 @@ test "create_memory handler with unknown scope returns error result with message
 
     context.clearMountManifest();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("name", .{ .string = "test_mem" });
-    try obj.put("scope", .{ .string = "invalid_scope" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "name", .{ .string = "test_mem" });
+    try obj.put(allocator, "scope", .{ .string = "invalid_scope" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
     try std.testing.expectEqualStrings("Invalid scope: invalid_scope", result.content[0].text.text);

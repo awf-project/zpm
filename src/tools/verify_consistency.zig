@@ -6,9 +6,9 @@ const isValidAtomName = @import("tool_validation").isValidAtomName;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("scope", "Optional scope pattern for filtering violation predicates", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "scope", "Optional scope pattern for filtering violation predicates", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "verify_consistency",
@@ -25,7 +25,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
     const scope = mcp.tools.getString(args, "scope");
 
@@ -75,7 +75,7 @@ fn termToStr(allocator: std.mem.Allocator, term: engine_mod.Term) ![]const u8 {
         .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
         .variable => |s| allocator.dupe(u8, s),
         .list => |items| blk: {
-            var aw: std.io.Writer.Allocating = .init(allocator);
+            var aw: std.Io.Writer.Allocating = .init(allocator);
             defer aw.deinit();
             const w = &aw.writer;
             try w.writeByte('[');
@@ -89,7 +89,7 @@ fn termToStr(allocator: std.mem.Allocator, term: engine_mod.Term) ![]const u8 {
             break :blk aw.toOwnedSlice();
         },
         .compound => |c| blk: {
-            var aw: std.io.Writer.Allocating = .init(allocator);
+            var aw: std.Io.Writer.Allocating = .init(allocator);
             defer aw.deinit();
             const w = &aw.writer;
             try w.writeAll(c.functor);
@@ -107,7 +107,7 @@ fn termToStr(allocator: std.mem.Allocator, term: engine_mod.Term) ![]const u8 {
 }
 
 fn buildViolationsJson(allocator: std.mem.Allocator, violations: []const []const u8) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
 
@@ -128,14 +128,14 @@ test "handler returns violations when integrity rule fires" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("risky(deploy_v3)");
     try engine.assert("integrity_violation(X) :- risky(X)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -149,13 +149,13 @@ test "handler returns empty violations when no integrity rules defined" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("some_fact(value)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -169,14 +169,14 @@ test "handler returns empty violations when rules exist but no facts violate the
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assert("integrity_violation(X) :- risky(X), approved(X)");
     try engine.assertFact("risky(a)");
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -188,11 +188,11 @@ test "handler returns valid result when args are null" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
 
     try std.testing.expect(!result.is_error);
 }
@@ -204,7 +204,7 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -213,18 +213,18 @@ test "handler filters violations by scope when scope arg provided" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("risky(access_key)");
     try engine.assert("integrity_violation(X) :- risky(X)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("scope", .{ .string = "deployment" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "scope", .{ .string = "deployment" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;
@@ -236,18 +236,18 @@ test "handler returns violations when scope matches rule head" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
     try engine.assertFact("risky(deploy_v3)");
     try engine.assert("integrity_violation_deployment(X) :- risky(X)");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("scope", .{ .string = "deployment" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "scope", .{ .string = "deployment" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     const text = result.content[0].text.text;

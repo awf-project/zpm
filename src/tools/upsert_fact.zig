@@ -8,10 +8,10 @@ const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("fact", "The Prolog fact to upsert (replaces existing clauses matching same functor and first argument)", true);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "fact", "The Prolog fact to upsert (replaces existing clauses matching same functor and first argument)", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "upsert_fact",
@@ -29,7 +29,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     };
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const fact = mcp.tools.getString(args, "fact") orelse return mcp.tools.ToolError.InvalidArguments;
 
     if (std.mem.indexOf(u8, fact, ":-") != null) {
@@ -57,7 +57,11 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     engine.assertFact(qualified_fact) catch return mcp.tools.ToolError.ExecutionFailed;
 
     if (target_pm) |pm| {
-        const ts = std.time.timestamp();
+        const ts = blk: {
+            var _ts: std.posix.timespec = undefined;
+            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+            break :blk _ts.sec;
+        };
         pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = qualified_pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
         pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
@@ -72,7 +76,7 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
 // "foo(a)"       -> "foo(a)"
 // "atom"         -> "atom"
 fn buildUpsertPattern(allocator: std.mem.Allocator, fact: []const u8) ![]const u8 {
-    var stripped = std.mem.trimRight(u8, fact, " \t\n\r");
+    var stripped = std.mem.trimEnd(u8, fact, " \t\n\r");
     if (stripped.len > 0 and stripped[stripped.len - 1] == '.') stripped = stripped[0 .. stripped.len - 1];
 
     const paren_pos = std.mem.indexOf(u8, stripped, "(") orelse {
@@ -115,16 +119,16 @@ test "handler inserts fact when no prior matching fact exists" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deploy_status(app1, running)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deploy_status(app1, running)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     var qr = try engine.query("deploy_status(app1, X).");
@@ -137,18 +141,18 @@ test "handler replaces existing fact with same functor and first argument" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
     try engine.assertFact("deploy_status(app1, running).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deploy_status(app1, stopped)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deploy_status(app1, stopped)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     var qr = try engine.query("deploy_status(app1, X).");
@@ -157,7 +161,7 @@ test "handler replaces existing fact with same functor and first argument" {
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -166,11 +170,11 @@ test "handler returns error result when fact contains rule syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deploy_status(app1, X) :- active(X)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deploy_status(app1, X) :- active(X)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 }
 
@@ -181,11 +185,11 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deploy_status(app1, running)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deploy_status(app1, running)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -197,27 +201,28 @@ test "handler journals retractAll pattern and new fact as atomic group to WAL" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("fact", .{ .string = "deploy_status(app1, running)" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "fact", .{ .string = "deploy_status(app1, running)" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var content_buf: [2048]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "deploy_status(app1,") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "deploy_status(app1, running)") != null);
 }

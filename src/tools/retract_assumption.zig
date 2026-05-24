@@ -11,10 +11,10 @@ const Term = engine_mod.Term;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
-    defer schema.deinit();
-    _ = try schema.addString("assumption", "The assumption name to retract", true);
-    _ = try schema.addString("memory", "Target memory segment (optional, defaults to default memory)", false);
-    const built = try schema.build();
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "assumption", "The assumption name to retract", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
 
     return .{
         .name = "retract_assumption",
@@ -119,7 +119,11 @@ pub fn retractOneAssumption(
     if (pm) |mgr| {
         var entries: std.ArrayList(JournalEntry) = .empty;
         defer entries.deinit(allocator);
-        const ts = std.time.timestamp();
+        const ts = blk: {
+            var _ts: std.posix.timespec = undefined;
+            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
+            break :blk _ts.sec;
+        };
         entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
         for (qualified_orphans.items) |qualified_orphan| {
             entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = qualified_orphan }) catch return mcp.tools.ToolError.OutOfMemory;
@@ -130,7 +134,7 @@ pub fn retractOneAssumption(
     return orphan_facts.items.len;
 }
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
@@ -165,7 +169,7 @@ test "handler retracts assumption and removes unjustified fact" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -173,11 +177,11 @@ test "handler retracts assumption and removes unjustified fact" {
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -189,7 +193,7 @@ test "handler preserves fact when other justification exists" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -198,11 +202,11 @@ test "handler preserves fact when other justification exists" {
     try engine.assertFact("tms_justification(active(service), assumption_a).");
     try engine.assertFact("tms_justification(active(service), assumption_b).");
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "assumption_a" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "assumption_a" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
 }
@@ -212,15 +216,15 @@ test "handler returns error for unknown assumption" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "nonexistent" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "nonexistent" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -235,36 +239,37 @@ test "handler does not write a WAL entry for unknown assumption" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "nonexistent" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "nonexistent" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
 
-    tmp.dir.access("journal.wal", .{}) catch |err| {
+    tmp.dir.access(std.testing.io, "journal.wal", .{}) catch |err| {
         try std.testing.expectEqual(error.FileNotFound, err);
         return;
     };
     var content_buf: [512]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expectEqual(@as(usize, 0), content.len);
 }
 
 test "handler returns InvalidArguments when args are null" {
-    const result = handler(std.testing.allocator, null);
+    const result = handler(null, std.testing.io, std.testing.allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -273,10 +278,10 @@ test "handler returns InvalidArguments when assumption key is missing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const obj = std.json.ObjectMap.init(allocator);
+    const obj: std.json.ObjectMap = .{};
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.InvalidArguments, result);
 }
 
@@ -287,11 +292,11 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     context.clearEngine();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = handler(allocator, args);
+    const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }
 
@@ -303,9 +308,10 @@ test "handler journals retracted assumption name to WAL" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -313,20 +319,20 @@ test "handler journals retracted assumption name to WAL" {
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    const result = try handler(allocator, args);
+    const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
     var content_buf: [1024]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
     try std.testing.expect(std.mem.indexOf(u8, content, "baseline") != null);
 }
 
@@ -338,9 +344,10 @@ test "handler journals per-fact retractall entries to WAL" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
     defer context.clearEngine();
@@ -348,19 +355,19 @@ test "handler journals per-fact retractall entries to WAL" {
     try engine.assertFact("deployed(app, prod).");
     try engine.assertFact("tms_justification(deployed(app, prod), baseline).");
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("assumption", .{ .string = "baseline" });
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "assumption", .{ .string = "baseline" });
     const args = std.json.Value{ .object = obj };
 
-    _ = try handler(allocator, args);
+    _ = try handler(null, std.testing.io, allocator, args);
 
     var content_buf: [2048]u8 = undefined;
-    const content = try tmp.dir.readFile("journal.wal", &content_buf);
+    const content = try tmp.dir.readFile(std.testing.io, "journal.wal", &content_buf);
 
     // WAL must contain the TMS link pattern, not the raw assumption name alone
     try std.testing.expect(std.mem.indexOf(u8, content, "tms_justification(_,baseline)") != null);

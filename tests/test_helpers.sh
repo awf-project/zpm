@@ -87,7 +87,7 @@ send_mcp_persist() {
     local input="$1" dir="$2"
     mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb" "$dir/.zpm/kb/default"
     printf ':- module(default, []).\n' > "$dir/.zpm/kb/default/knowledge.pl"
-    (cd "$dir" && printf '%s' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+    (cd "$dir" && printf '%s\n' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 }
 
 send_mcp() {
@@ -153,7 +153,7 @@ run_dual_transport_scenario() {
     local escaped="${cli_chain//(/\\(}"
     escaped="${escaped//)/\\)}"
     local cli_cmd="$BINARY ${escaped//&&/\&\& $BINARY}"
-    cli_output=$(cd "$cli_dir" && timeout "$TIMEOUT" bash -c "$cli_cmd" 2>&1) || true
+    cli_output=$(cd "$cli_dir" && timeout "$TIMEOUT" bash -c "$cli_cmd" 2>/dev/null) || true
     rm -rf "$cli_dir"
 
     local mcp_dir mcp_output

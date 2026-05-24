@@ -9,7 +9,7 @@ pub const OutputFormat = enum {
 pub fn renderWriter(
     result: mcp.tools.ToolResult,
     format: OutputFormat,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
 ) !u8 {
     switch (format) {
         .text => {
@@ -40,10 +40,11 @@ pub fn renderWriter(
 pub fn render(
     result: mcp.tools.ToolResult,
     format: OutputFormat,
+    io: std.Io,
 ) !u8 {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    const stdout = std.Io.File.stdout();
     var buf: [4096]u8 = undefined;
-    var fw = stdout.writer(&buf);
+    var fw = stdout.writer(io, &buf);
     const code = try renderWriter(result, format, &fw.interface);
     try fw.interface.flush();
     return code;
@@ -54,7 +55,7 @@ test "renderWriter writes text content to writer" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const result = try mcp.tools.textResult(allocator, "hello output");
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const code = try renderWriter(result, .text, &aw.writer);
     try std.testing.expectEqual(@as(u8, 0), code);
@@ -66,7 +67,7 @@ test "renderWriter prefixes ERROR: on is_error result" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const result = try mcp.tools.errorResult(allocator, "execution failed");
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const code = try renderWriter(result, .text, &aw.writer);
     try std.testing.expectEqual(@as(u8, 1), code);
@@ -78,7 +79,7 @@ test "renderWriter json outputs array with JSON-escaped text" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const result = try mcp.tools.textResult(allocator, "line1\nline2\"");
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     _ = try renderWriter(result, .json, &aw.writer);
     const written = aw.written();

@@ -905,7 +905,7 @@ done
 echo "Test: zpm serve processes MCP initialize (US2)"
 SERVE_TMPDIR=$(mktemp -d)
 mkdir -p "$SERVE_TMPDIR/.zpm/data" "$SERVE_TMPDIR/.zpm/kb"
-SERVE_RESPONSE=$(cd "$SERVE_TMPDIR" && printf '%s' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+SERVE_RESPONSE=$(cd "$SERVE_TMPDIR" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 rm -rf "$SERVE_TMPDIR"
 assert_contains "zpm serve returns correct server name" "$SERVE_RESPONSE" '"name":"zpm"'
 assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"protocolVersion":"2025-11-25"'
@@ -959,7 +959,7 @@ echo "Test: zpm serve from subdirectory finds parent .zpm/ (US4)"
 UPWARD_ROOT=$(mktemp -d)
 mkdir -p "$UPWARD_ROOT/.zpm/data" "$UPWARD_ROOT/.zpm/kb"
 mkdir -p "$UPWARD_ROOT/src/subpkg"
-UPWARD_RESPONSE=$(cd "$UPWARD_ROOT/src/subpkg" && printf '%s' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+UPWARD_RESPONSE=$(cd "$UPWARD_ROOT/src/subpkg" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 assert_contains "zpm serve from nested subdir returns server name" "$UPWARD_RESPONSE" '"name":"zpm"'
 assert_contains "zpm serve from nested subdir returns protocol version" "$UPWARD_RESPONSE" '"protocolVersion":"2025-11-25"'
 rm -rf "$UPWARD_ROOT"
@@ -1070,7 +1070,7 @@ mkdir -p "$SUBDIRS_DIR/.zpm"
 SUBDIRS_INPUT="${INIT_REQ}
 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
 {\"jsonrpc\":\"2.0\",\"id\":500,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
-SUBDIRS_RESPONSE=$(cd "$SUBDIRS_DIR" && printf '%s' "$SUBDIRS_INPUT" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+SUBDIRS_RESPONSE=$(cd "$SUBDIRS_DIR" && printf '%s\n' "$SUBDIRS_INPUT" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 SUBDIRS_INIT_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":1')
 SUBDIRS_STATUS_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":500')
 assert_contains "auto-create subdirs: MCP handshake succeeds" "$SUBDIRS_INIT_LINE" '"name":"zpm"'
@@ -1489,7 +1489,7 @@ SNAP_QUERY_62="${INIT_REQ}
 "
 RESPONSE=$(send_mcp_persist "$SNAP_QUERY_62" "$PERSIST_DIR_61")
 QUERY_62_LINE=$(echo "$RESPONSE" | grep '"id":149')
-BINDING_COUNT=$(echo "$QUERY_62_LINE" | grep -o '\\"F\\":' | wc -l | tr -d ' ')
+BINDING_COUNT=$(echo "$QUERY_62_LINE" | sed 's/,"structuredContent":.*//' | grep -o '\\"F\\":' | wc -l | tr -d ' ')
 if [ "$BINDING_COUNT" -eq 4 ] 2>/dev/null; then
     green "  PASS: query_logic returns exactly 4 bindings for feature/3 after restore"
     PASS=$((PASS + 1))

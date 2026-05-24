@@ -2,7 +2,6 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
-
 pub const tool = mcp.tools.Tool{
     .name = "get_persistence_status",
     .description = "Query the health and status of the persistence subsystem",
@@ -15,7 +14,7 @@ pub const tool = mcp.tools.Tool{
     .handler = handler,
 };
 
-pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
+pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     _ = args;
     const pm = context.getPersistenceManagerAs(PersistenceManager) orelse return mcp.tools.ToolError.ExecutionFailed;
 
@@ -26,9 +25,9 @@ pub fn handler(allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.To
     };
 
     const journal_size = blk: {
-        var dir = std.fs.openDirAbsolute(pm.dir_path, .{}) catch break :blk @as(u64, 0);
-        defer dir.close();
-        const stat = dir.statFile("journal.wal") catch break :blk @as(u64, 0);
+        var dir = std.Io.Dir.openDirAbsolute(io, pm.dir_path, .{}) catch break :blk @as(u64, 0);
+        defer dir.close(io);
+        const stat = dir.statFile(io, "journal.wal", .{}) catch break :blk @as(u64, 0);
         break :blk stat.size;
     };
 
@@ -58,14 +57,15 @@ test "handler returns status report with key fields when persistence manager is 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
 
     const text = result.content[0].text.text;
@@ -82,9 +82,10 @@ test "handler reports non-zero journal size after entries are written" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path);
+    var pm = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
     defer pm.deinit();
 
     try pm.journalMutation(JournalEntry{ .timestamp = 1713000000, .clause = "fact(status_test)" });
@@ -93,7 +94,7 @@ test "handler reports non-zero journal size after entries are written" {
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    const result = try handler(allocator, null);
+    const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
 
     const text = result.content[0].text.text;
@@ -108,6 +109,6 @@ test "handler returns ExecutionFailed when no persistence manager is set" {
 
     context.clearPersistenceManager();
 
-    const result = handler(allocator, null);
+    const result = handler(null, std.testing.io, allocator, null);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
 }

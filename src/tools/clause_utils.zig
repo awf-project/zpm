@@ -49,7 +49,7 @@ pub fn isISOOperator(name: []const u8, arity: i64) bool {
 }
 
 pub fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("clause(");
@@ -73,7 +73,7 @@ pub fn buildClauseQuery(allocator: std.mem.Allocator, name: []const u8, arity: i
 /// The caller can then retrieve A0..An-1 from the solution bindings to reconstruct
 /// the concrete head with actual argument values.
 pub fn buildClauseQueryNamed(allocator: std.mem.Allocator, name: []const u8, arity: i64, body: []const u8) ![]u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("clause(");
@@ -301,7 +301,7 @@ test "predicateKind returns both when facts and rules exist" {
 }
 
 test "countClauses returns correct count for asserted facts" {
-    const engine = try engine_mod.Engine.init(.{});
+    const engine = try engine_mod.Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     try engine.assertFact("foo(1).");
@@ -313,7 +313,7 @@ test "countClauses returns correct count for asserted facts" {
 }
 
 test "countClauses returns zero when no clauses match" {
-    const engine = try engine_mod.Engine.init(.{});
+    const engine = try engine_mod.Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
     const count = try countClauses(engine, std.testing.allocator, "nonexistent", 1, "true");

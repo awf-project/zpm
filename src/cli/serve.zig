@@ -7,10 +7,14 @@ const context = @import("../tools/context.zig");
 const version = @import("../version.zig").version;
 
 pub fn serveAction() anyerror!void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var ctx = bootstrap.initBootstrap(alloc) catch |err| switch (err) {
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var ctx = bootstrap.initBootstrap(alloc, io) catch |err| switch (err) {
         project.ProjectError.NotFound => {
             std.debug.print("No .zpm/ directory found. Run `zpm init` to initialize a project.\n", .{});
             std.process.exit(1);
@@ -28,12 +32,11 @@ pub fn serveAction() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
-    var server = mcp.Server.init(.{
+    var server = mcp.Server.init(alloc, .{
         .name = "zpm",
         .version = version,
         .title = "ZPM MCP Server",
         .description = "Prolog inference engine accessible via the Model Context Protocol",
-        .allocator = alloc,
     });
     defer server.deinit();
 
@@ -41,5 +44,5 @@ pub fn serveAction() anyerror!void {
         try server.addTool(try def.build(alloc));
     }
 
-    try server.run(.stdio);
+    try server.run(io, alloc, .stdio);
 }

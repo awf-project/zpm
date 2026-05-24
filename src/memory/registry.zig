@@ -60,23 +60,23 @@ pub const MemoryRegistry = struct {
         self.mounted.deinit();
     }
 
-    pub fn create(self: *MemoryRegistry, name: []const u8, disk_path: []const u8) !void {
+    pub fn create(self: *MemoryRegistry, io: std.Io, name: []const u8, disk_path: []const u8) !void {
         if (!isValidAtomName(name)) return MemoryError.InvalidName;
 
-        std.fs.makeDirAbsolute(disk_path) catch |err| switch (err) {
+        std.Io.Dir.cwd().createDir(io, disk_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => return MemoryError.AlreadyExists,
             else => return err,
         };
 
-        var dir = try std.fs.openDirAbsolute(disk_path, .{});
-        defer dir.close();
+        var dir = try std.Io.Dir.openDirAbsolute(io, disk_path, .{});
+        defer dir.close(io);
 
         const header = try std.fmt.allocPrint(self.allocator, ":- module({s}, []).\n", .{name});
         defer self.allocator.free(header);
 
-        var file = try dir.createFile("knowledge.pl", .{});
-        defer file.close();
-        try file.writeAll(header);
+        var file = try dir.createFile(io, "knowledge.pl", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, header);
     }
 
     pub fn mount(
@@ -86,6 +86,7 @@ pub const MemoryRegistry = struct {
         scope: MemoryScope,
         mode: MemoryMode,
         engine: *Engine,
+        io: std.Io,
     ) !void {
         if (self.mounted.contains(name)) return MemoryError.AlreadyMounted;
         if (!isValidAtomName(name)) return MemoryError.InvalidName;
@@ -96,7 +97,7 @@ pub const MemoryRegistry = struct {
         const owned_path = try self.allocator.dupe(u8, disk_path);
         errdefer self.allocator.free(owned_path);
 
-        var pm = try PersistenceManager.init(self.allocator, disk_path, disk_path);
+        var pm = try PersistenceManager.init(self.allocator, disk_path, disk_path, io);
         errdefer pm.deinit();
 
         {
@@ -163,28 +164,27 @@ test "MemoryRegistry.getMounted returns null for unknown" {
 test "MemoryRegistry.create rejects invalid names" {
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
-    try std.testing.expectError(MemoryError.InvalidName, reg.create("my-memory", "/tmp/x"));
-    try std.testing.expectError(MemoryError.InvalidName, reg.create("123abc", "/tmp/x"));
-    try std.testing.expectError(MemoryError.InvalidName, reg.create("", "/tmp/x"));
+    try std.testing.expectError(MemoryError.InvalidName, reg.create(std.testing.io, "my-memory", "/tmp/x"));
+    try std.testing.expectError(MemoryError.InvalidName, reg.create(std.testing.io, "123abc", "/tmp/x"));
+    try std.testing.expectError(MemoryError.InvalidName, reg.create(std.testing.io, "", "/tmp/x"));
 }
 
 test "MemoryRegistry.create with valid name creates directory and knowledge.pl" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
     const mem_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/mymem", .{base});
     defer std.testing.allocator.free(mem_path);
 
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.create("mymem", mem_path);
-    var mem_dir = try tmp.dir.openDir("mymem", .{});
-    defer mem_dir.close();
-    var file = try mem_dir.openFile("knowledge.pl", .{});
-    defer file.close();
-    const content = try file.readToEndAlloc(std.testing.allocator, 1024);
+    try reg.create(std.testing.io, "mymem", mem_path);
+    var mem_dir = try tmp.dir.openDir(std.testing.io, "mymem", .{});
+    defer mem_dir.close(std.testing.io);
+    const content = try mem_dir.readFileAlloc(std.testing.io, "knowledge.pl", std.testing.allocator, .limited(1024));
     defer std.testing.allocator.free(content);
     try std.testing.expect(std.mem.indexOf(u8, content, ":- module(mymem, []).") != null);
 }
@@ -193,29 +193,31 @@ test "MemoryRegistry.create rejects duplicate" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
     const mem_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dup", .{base});
     defer std.testing.allocator.free(mem_path);
 
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.create("dup", mem_path);
-    try std.testing.expectError(MemoryError.AlreadyExists, reg.create("dup", mem_path));
+    try reg.create(std.testing.io, "dup", mem_path);
+    try std.testing.expectError(MemoryError.AlreadyExists, reg.create(std.testing.io, "dup", mem_path));
 }
 
 test "MemoryRegistry.mount and getMounted" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("myns", base, .project, .rw, engine);
+    try reg.mount("myns", base, .project, .rw, engine, std.testing.io);
     const entry = reg.getMounted("myns");
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("myns", entry.?.name);
@@ -227,29 +229,31 @@ test "MemoryRegistry.mount rejects already-mounted" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("myns", base, .project, .rw, engine);
-    try std.testing.expectError(MemoryError.AlreadyMounted, reg.mount("myns", base, .project, .rw, engine));
+    try reg.mount("myns", base, .project, .rw, engine, std.testing.io);
+    try std.testing.expectError(MemoryError.AlreadyMounted, reg.mount("myns", base, .project, .rw, engine, std.testing.io));
 }
 
 test "MemoryRegistry.unmount removes entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("myns", base, .project, .rw, engine);
+    try reg.mount("myns", base, .project, .rw, engine, std.testing.io);
     try reg.unmount("myns");
     try std.testing.expect(reg.getMounted("myns") == null);
 }
@@ -270,14 +274,15 @@ test "MemoryRegistry.listMounted returns names of mounted memories" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("ns1", base, .project, .rw, engine);
+    try reg.mount("ns1", base, .project, .rw, engine, std.testing.io);
     const names = try reg.listMounted(std.testing.allocator);
     defer {
         for (names) |n| std.testing.allocator.free(n);
@@ -290,14 +295,15 @@ test "MemoryRegistry.mount with global scope stores MemoryScope.global" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("global_mem", base, .global, .rw, engine);
+    try reg.mount("global_mem", base, .global, .rw, engine, std.testing.io);
     const entry = reg.getMounted("global_mem");
     try std.testing.expect(entry != null);
     try std.testing.expectEqual(MemoryScope.global, entry.?.scope);
@@ -307,29 +313,31 @@ test "MemoryRegistry.mount rejects invalid names" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try std.testing.expectError(MemoryError.InvalidName, reg.mount("my-invalid", base, .project, .rw, engine));
-    try std.testing.expectError(MemoryError.InvalidName, reg.mount("123bad", base, .project, .rw, engine));
+    try std.testing.expectError(MemoryError.InvalidName, reg.mount("my-invalid", base, .project, .rw, engine, std.testing.io));
+    try std.testing.expectError(MemoryError.InvalidName, reg.mount("123bad", base, .project, .rw, engine, std.testing.io));
 }
 
 test "MemoryRegistry.mount with read-only mode stores MemoryMode.ro" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const base = try tmp.dir.realpath(".", &path_buf);
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
 
-    const engine = try Engine.init(.{});
+    const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
 
-    try reg.mount("readonly_mem", base, .project, .ro, engine);
+    try reg.mount("readonly_mem", base, .project, .ro, engine, std.testing.io);
     const entry = reg.getMounted("readonly_mem");
     try std.testing.expect(entry != null);
     try std.testing.expectEqual(MemoryMode.ro, entry.?.mode);

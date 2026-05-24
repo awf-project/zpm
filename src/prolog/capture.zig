@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const c = std.c;
 
 /// Process-wide counter used to build unique temp filenames. We combine pid +
 /// counter because callers may invoke this reentrantly (e.g. nested capture
@@ -17,8 +18,8 @@ var g_counter = std.atomic.Value(u32).init(0);
 
 pub const Capture = struct {
     allocator: std.mem.Allocator,
-    saved_out_fd: ?posix.fd_t = null,
-    saved_err_fd: ?posix.fd_t = null,
+    saved_out_fd: ?c_int = null,
+    saved_err_fd: ?c_int = null,
     tmp_out_fd: ?posix.fd_t = null,
     tmp_err_fd: ?posix.fd_t = null,
     path_out: ?[:0]u8 = null,
@@ -47,17 +48,21 @@ pub const Capture = struct {
         );
         errdefer self.allocator.free(path_out);
 
-        const saved_out = try posix.dup(posix.STDOUT_FILENO);
-        errdefer posix.close(saved_out);
+        const saved_out = blk: {
+            const r = std.c.dup(posix.STDOUT_FILENO);
+            if (r == -1) return error.Unexpected;
+            break :blk r;
+        };
+        errdefer _ = std.c.close(saved_out);
 
-        const out_fd = try posix.open(path_out, .{
-            .ACCMODE = .RDWR,
-            .CREAT = true,
-            .TRUNC = true,
-        }, 0o600);
-        errdefer posix.close(out_fd);
+        const out_fd = blk: {
+            const r = std.c.open(path_out.ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o600));
+            if (r == -1) return error.Unexpected;
+            break :blk @as(posix.fd_t, @intCast(r));
+        };
+        errdefer _ = std.c.close(out_fd);
 
-        try posix.dup2(out_fd, posix.STDOUT_FILENO);
+        if (std.c.dup2(out_fd, posix.STDOUT_FILENO) == -1) return error.Unexpected;
 
         self.saved_out_fd = saved_out;
         self.tmp_out_fd = out_fd;
@@ -75,17 +80,17 @@ pub const Capture = struct {
             ) catch return; // stderr capture is best-effort
             errdefer self.allocator.free(path_err);
 
-            const saved_err = posix.dup(posix.STDERR_FILENO) catch return;
-            errdefer posix.close(saved_err);
+            const saved_err_r = std.c.dup(posix.STDERR_FILENO);
+            if (saved_err_r == -1) return;
+            const saved_err = saved_err_r;
+            errdefer _ = std.c.close(saved_err);
 
-            const err_fd = posix.open(path_err, .{
-                .ACCMODE = .RDWR,
-                .CREAT = true,
-                .TRUNC = true,
-            }, 0o600) catch return;
-            errdefer posix.close(err_fd);
+            const err_fd_raw = std.c.open(path_err.ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o600));
+            if (err_fd_raw == -1) return;
+            const err_fd = @as(posix.fd_t, @intCast(err_fd_raw));
+            errdefer _ = std.c.close(err_fd);
 
-            posix.dup2(err_fd, posix.STDERR_FILENO) catch return;
+            if (std.c.dup2(err_fd, posix.STDERR_FILENO) == -1) return;
 
             self.saved_err_fd = saved_err;
             self.tmp_err_fd = err_fd;
@@ -100,28 +105,30 @@ pub const Capture = struct {
         flushStdout();
         const fd = self.tmp_out_fd orelse return try self.allocator.alloc(u8, 0);
 
-        posix.lseek_END(fd, 0) catch {};
-        const file_end = posix.lseek_CUR_get(fd) catch 0;
+        _ = c.lseek64(fd, 0, std.c.SEEK.END);
+        const file_end = c.lseek64(fd, 0, std.c.SEEK.CUR);
         if (file_end == 0) {
             return try self.allocator.alloc(u8, 0);
         }
 
-        const buf = try self.allocator.alloc(u8, @intCast(file_end));
+        const size: usize = @intCast(file_end);
+        const buf = try self.allocator.alloc(u8, size);
         errdefer self.allocator.free(buf);
 
-        try posix.lseek_SET(fd, 0);
-        const got = try posix.read(fd, buf);
+        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
+        var total: usize = 0;
+        while (total < size) {
+            const got = try posix.read(fd, buf[total..]);
+            if (got == 0) break;
+            total += got;
+        }
 
-        // Reset for next capture. We lseek the raw fd back to 0 AND tell
-        // libc's stdio layer via fseek, otherwise glibc keeps the stale
-        // offset and the next printf writes past the truncated region,
-        // causing captured dump_vars output to appear staggered or missing.
-        posix.lseek_SET(fd, 0) catch {};
-        posix.ftruncate(fd, 0) catch {};
+        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
+        _ = std.c.ftruncate64(fd, 0);
         _ = fseek(stdout_ptr.*, 0, 0);
 
-        if (got < buf.len) {
-            return try self.allocator.realloc(buf, got);
+        if (total < size) {
+            return try self.allocator.realloc(buf, total);
         }
         return buf;
     }
@@ -132,20 +139,26 @@ pub const Capture = struct {
         const fd = self.tmp_err_fd orelse return try self.allocator.alloc(u8, 0);
         flushStderr();
 
-        posix.lseek_END(fd, 0) catch {};
-        const file_end = posix.lseek_CUR_get(fd) catch 0;
+        _ = c.lseek64(fd, 0, std.c.SEEK.END);
+        const file_end = c.lseek64(fd, 0, std.c.SEEK.CUR);
         if (file_end == 0) {
             return try self.allocator.alloc(u8, 0);
         }
 
-        const buf = try self.allocator.alloc(u8, @intCast(file_end));
+        const size: usize = @intCast(file_end);
+        const buf = try self.allocator.alloc(u8, size);
         errdefer self.allocator.free(buf);
 
-        try posix.lseek_SET(fd, 0);
-        const got = try posix.read(fd, buf);
+        _ = c.lseek64(fd, 0, std.c.SEEK.SET);
+        var total: usize = 0;
+        while (total < size) {
+            const got = try posix.read(fd, buf[total..]);
+            if (got == 0) break;
+            total += got;
+        }
 
-        if (got < buf.len) {
-            return try self.allocator.realloc(buf, got);
+        if (total < size) {
+            return try self.allocator.realloc(buf, total);
         }
         return buf;
     }
@@ -157,31 +170,31 @@ pub const Capture = struct {
         flushStderr();
 
         if (self.saved_out_fd) |saved| {
-            posix.dup2(saved, posix.STDOUT_FILENO) catch {};
-            posix.close(saved);
+            _ = std.c.dup2(saved, posix.STDOUT_FILENO);
+            _ = std.c.close(saved);
             self.saved_out_fd = null;
         }
         if (self.tmp_out_fd) |fd| {
-            posix.close(fd);
+            _ = std.c.close(fd);
             self.tmp_out_fd = null;
         }
         if (self.path_out) |p| {
-            posix.unlink(p) catch {};
+            _ = std.c.unlink(p);
             self.allocator.free(p);
             self.path_out = null;
         }
 
         if (self.saved_err_fd) |saved| {
-            posix.dup2(saved, posix.STDERR_FILENO) catch {};
-            posix.close(saved);
+            _ = std.c.dup2(saved, posix.STDERR_FILENO);
+            _ = std.c.close(saved);
             self.saved_err_fd = null;
         }
         if (self.tmp_err_fd) |fd| {
-            posix.close(fd);
+            _ = std.c.close(fd);
             self.tmp_err_fd = null;
         }
         if (self.path_err) |p| {
-            posix.unlink(p) catch {};
+            _ = std.c.unlink(p);
             self.allocator.free(p);
             self.path_err = null;
         }
@@ -218,7 +231,7 @@ test "Capture roundtrips stdout writes" {
     errdefer cap.end();
 
     const msg = "hello capture\n";
-    _ = try posix.write(posix.STDOUT_FILENO, msg);
+    _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
 
     const got = try cap.readAndReset();
     defer testing.allocator.free(got);
@@ -232,12 +245,12 @@ test "Capture readAndReset clears buffer between reads" {
     try cap.begin(false);
     errdefer cap.end();
 
-    _ = try posix.write(posix.STDOUT_FILENO, "first\n");
+    _ = std.c.write(posix.STDOUT_FILENO, "first\n", 6);
     const first = try cap.readAndReset();
     defer testing.allocator.free(first);
     try testing.expectEqualStrings("first\n", first);
 
-    _ = try posix.write(posix.STDOUT_FILENO, "second\n");
+    _ = std.c.write(posix.STDOUT_FILENO, "second\n", 7);
     const second = try cap.readAndReset();
     defer testing.allocator.free(second);
     try testing.expectEqualStrings("second\n", second);
@@ -250,8 +263,8 @@ test "Capture stderr captures writes separately from stdout" {
     try cap.begin(true);
     errdefer cap.end();
 
-    _ = try posix.write(posix.STDOUT_FILENO, "out\n");
-    _ = try posix.write(posix.STDERR_FILENO, "err\n");
+    _ = std.c.write(posix.STDOUT_FILENO, "out\n", 4);
+    _ = std.c.write(posix.STDERR_FILENO, "err\n", 4);
 
     const out = try cap.readAndReset();
     defer testing.allocator.free(out);

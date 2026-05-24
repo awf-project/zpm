@@ -37,3 +37,9 @@ hugo_stats.json
 
 # Git worktrees
 .worktrees/
+
+# Dead Rust FFI (replaced by Trealla C FFI)
+ffi/zpm-prolog-ffi/
+
+# Zig package cache
+zig-pkg/
