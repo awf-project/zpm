@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-24
+
 ### Added
 - **F025**: `rename_predicate` MCP tool and CLI subcommand — atomically rename a Prolog functor across facts, rule bodies, and TMS justifications
   - `old_functor` and `new_functor` parameters (required); optional `arity`, `memory`, `dry_run`, `propagate_cross_memory_refs`
