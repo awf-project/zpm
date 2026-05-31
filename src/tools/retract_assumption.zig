@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const nowSeconds = @import("../persistence/wal.zig").nowSeconds;
 const engine_mod = @import("../prolog/engine.zig");
 const Engine = engine_mod.Engine;
 const term_utils = @import("term_utils");
@@ -47,12 +48,11 @@ pub fn retractOneAssumption(
     assumption: []const u8,
     memory_name: []const u8,
 ) mcp.tools.ToolError!usize {
+    _ = memory_name; // per-segment engine: clauses are unqualified
     const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(raw_query);
-    const query_str = context.qualifyClause(allocator, memory_name, raw_query) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(query_str);
 
-    var qr = engine.query(query_str) catch return mcp.tools.ToolError.ExecutionFailed;
+    var qr = engine.query(raw_query) catch return mcp.tools.ToolError.ExecutionFailed;
     defer qr.deinit();
 
     var fact_strings: std.ArrayList([]u8) = .empty;
@@ -70,18 +70,14 @@ pub fn retractOneAssumption(
         };
     }
 
-    const raw_retract = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(raw_retract);
-    const retract_pattern = context.qualifyClause(allocator, memory_name, raw_retract) catch return mcp.tools.ToolError.OutOfMemory;
+    const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
 
     var orphan_facts: std.ArrayList([]const u8) = .empty;
     defer orphan_facts.deinit(allocator);
 
     for (fact_strings.items) |fact_str| {
-        const raw_check = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
-        defer allocator.free(raw_check);
-        const check_query = context.qualifyClause(allocator, memory_name, raw_check) catch continue;
+        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
         defer allocator.free(check_query);
 
         const has_other = blk: {
@@ -95,38 +91,21 @@ pub fn retractOneAssumption(
         }
     }
 
-    var qualified_orphans: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (qualified_orphans.items) |s| allocator.free(s);
-        qualified_orphans.deinit(allocator);
-    }
-    for (orphan_facts.items) |fact_str| {
-        const qualified_orphan = context.qualifyClause(allocator, memory_name, fact_str) catch {
-            qualified_orphans.append(allocator, allocator.dupe(u8, fact_str) catch continue) catch continue;
-            continue;
-        };
-        qualified_orphans.append(allocator, qualified_orphan) catch {
-            allocator.free(qualified_orphan);
-            continue;
-        };
-    }
-
+    // `orphan_facts` items are borrowed slices from `fact_strings` (no separate
+    // ownership). Use them directly — no duplication needed. `fact_strings` is
+    // kept alive by its own defer until the end of this function.
     engine.retractAll(retract_pattern) catch {};
-    for (qualified_orphans.items) |qualified_orphan| {
-        engine.retractAll(qualified_orphan) catch {};
+    for (orphan_facts.items) |orphan| {
+        engine.retractAll(orphan) catch {};
     }
 
     if (pm) |mgr| {
         var entries: std.ArrayList(JournalEntry) = .empty;
         defer entries.deinit(allocator);
-        const ts = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        };
+        const ts = nowSeconds();
         entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = retract_pattern }) catch return mcp.tools.ToolError.OutOfMemory;
-        for (qualified_orphans.items) |qualified_orphan| {
-            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = qualified_orphan }) catch return mcp.tools.ToolError.OutOfMemory;
+        for (orphan_facts.items) |orphan| {
+            entries.append(allocator, .{ .timestamp = ts, .op = .retractall, .clause = orphan }) catch return mcp.tools.ToolError.OutOfMemory;
         }
         mgr.journalMutations(entries.items) catch return mcp.tools.ToolError.ExecutionFailed;
     }
@@ -145,15 +124,13 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     // Check if assumption exists before attempting retraction
     const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(raw_query);
-    const query_str = context.qualifyClause(allocator, memory_name, raw_query) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(query_str);
 
-    var qr = engine.query(query_str) catch return mcp.tools.ToolError.ExecutionFailed;
+    var qr = engine.query(raw_query) catch return mcp.tools.ToolError.ExecutionFailed;
     defer qr.deinit();
     if (qr.solutions.len == 0) return unknownAssumption(allocator, assumption);
 

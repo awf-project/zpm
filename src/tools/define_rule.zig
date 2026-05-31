@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const nowSeconds = @import("../persistence/wal.zig").nowSeconds;
 const Engine = @import("../prolog/engine.zig").Engine;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -39,27 +40,19 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
     const rule = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(rule);
 
-    const qualified_rule = context.qualifyClause(allocator, memory_name, rule) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_rule);
-
-    engine.assert(qualified_rule) catch {
+    engine.assert(rule) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        }, .clause = qualified_rule }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = nowSeconds(), .clause = rule }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     const msg = std.fmt.allocPrint(allocator, "Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);

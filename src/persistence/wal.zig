@@ -28,6 +28,16 @@ pub const JournalEntry = struct {
     clause: []const u8,
 };
 
+pub fn nowSeconds() i64 {
+    var ts: std.posix.timespec = undefined;
+    if (std.c.clock_gettime(std.posix.CLOCK.REALTIME, &ts) != 0) return 0;
+    return ts.sec;
+}
+
+test "nowSeconds returns a positive epoch timestamp" {
+    try std.testing.expect(nowSeconds() > 0);
+}
+
 const JournalEntryJson = struct {
     ts: i64,
     op: []const u8,

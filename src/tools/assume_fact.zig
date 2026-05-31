@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const nowSeconds = @import("../persistence/wal.zig").nowSeconds;
 const validation = @import("tool_validation");
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 const Engine = @import("../prolog/engine.zig").Engine;
@@ -47,47 +48,36 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const justification = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(justification);
-
-    const qualified_fact = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_fact);
-
-    const qualified_justification = context.qualifyClause(allocator, memory_name, justification) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_justification);
 
     // Check idempotency first so the journal mirrors the engine ops —
     // assertz appends, so journaling unconditionally would double the
     // justification at replay time.
     const already_justified = blk: {
-        var qr = engine.query(qualified_justification) catch break :blk false;
+        var qr = engine.query(justification) catch break :blk false;
         defer qr.deinit();
         break :blk qr.solutions.len > 0;
     };
 
-    engine.assertFact(qualified_fact) catch {
+    engine.assertFact(fact) catch {
         const msg = std.fmt.allocPrint(allocator, "assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (!already_justified) {
-        engine.assertFact(qualified_justification) catch return mcp.tools.ToolError.ExecutionFailed;
+        engine.assertFact(justification) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
     if (target_pm) |pm| {
-        const ts = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        };
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+        const ts = nowSeconds();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
         if (!already_justified) {
-            pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_justification }) catch return mcp.tools.ToolError.ExecutionFailed;
+            pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = justification }) catch return mcp.tools.ToolError.ExecutionFailed;
         }
     }
 
@@ -290,7 +280,7 @@ test "assume_fact.handler with named memory asserts qualified fact and journals 
 
     var registry = MemoryRegistry.init(allocator);
     defer registry.deinit();
-    try registry.mount("test_seg", test_seg_path, .project, .rw, engine, std.testing.io);
+    try registry.mount("test_seg", test_seg_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
@@ -303,13 +293,15 @@ test "assume_fact.handler with named memory asserts qualified fact and journals 
     const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
-    var qr = try engine.query("test_seg:assumption_test(scenario).");
+    // The fact lives UNQUALIFIED in the segment's dedicated engine (B001 / #54).
+    const seg = registry.getMounted("test_seg").?;
+    var qr = try seg.engine.query("assumption_test(scenario).");
     defer qr.deinit();
     try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
 
     var jcontent_buf: [2048]u8 = undefined;
     const jcontent = try tmp.dir.readFile(std.testing.io, "test_seg/journal.wal", &jcontent_buf);
-    try std.testing.expect(std.mem.indexOf(u8, jcontent, "test_seg:assumption_test(scenario)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "assumption_test(scenario)") != null);
     try std.testing.expect(std.mem.indexOf(u8, jcontent, "tms_justification") != null);
 }
 

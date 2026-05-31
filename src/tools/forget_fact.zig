@@ -36,25 +36,17 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const qualified = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified);
-
-    engine.retractFact(qualified) catch {
+    engine.retractFact(fact) catch {
         const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        }, .op = .retract, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = wal.nowSeconds(), .op = .retract, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     const msg = std.fmt.allocPrint(allocator, "Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);

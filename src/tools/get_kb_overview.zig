@@ -32,7 +32,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 }
 
 pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const engine = context.getEngine() orelse
+    const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
     var size = parseSampleSize(args);
@@ -1003,7 +1003,7 @@ test "handler with mounted segments returns name scope mode in mounts items" {
 
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
-    try reg.mount("mymem", dir_path, .project, .rw, engine, std.testing.io);
+    try reg.mount("mymem", dir_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 
@@ -1045,9 +1045,9 @@ test "handler with multiple mounts returns items sorted lexicographically" {
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
     // Insert in non-alphabetic order — the lexicographic sort must reorder them.
-    try reg.mount("zoo", path_z, .project, .rw, engine, std.testing.io);
-    try reg.mount("apple", path_a, .project, .rw, engine, std.testing.io);
-    try reg.mount("middle", path_m, .project, .rw, engine, std.testing.io);
+    try reg.mount("zoo", path_z, .project, .rw, std.testing.io);
+    try reg.mount("apple", path_a, .project, .rw, std.testing.io);
+    try reg.mount("middle", path_m, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 

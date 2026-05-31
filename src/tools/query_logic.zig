@@ -31,25 +31,31 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const goal = mcp.tools.getString(args, "goal") orelse return mcp.tools.ToolError.InvalidArguments;
     if (goal.len == 0) return mcp.tools.errorResult(allocator, "Goal must not be empty") catch return mcp.tools.ToolError.OutOfMemory;
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const memory_name = context.resolveMemoryName(args);
-    if (!std.mem.eql(u8, memory_name, "default")) {
-        const reg = context.getMemoryRegistryAs(MemoryRegistry);
-        if (reg) |r| {
-            if (r.getMounted(memory_name) == null) {
-                const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
-                return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
-            }
-        } else {
+    const explicit_memory = context.resolveMemoryName(args);
+
+    // Resolve which memory the query targets and the goal to run against its
+    // engine. An explicit `memory` arg wins; otherwise a leading `mod:` prefix
+    // on the goal selects a mounted segment (cross-memory read, F021). Each
+    // segment owns its engine and stores clauses UNQUALIFIED, so the routed goal
+    // drops the prefix (B001 / zpm #54).
+    const routed = if (!std.mem.eql(u8, explicit_memory, "default"))
+        context.RoutedGoal{ .memory_name = explicit_memory, .goal = goal }
+    else
+        context.routeGoalByModule(goal);
+
+    const memory_name = routed.memory_name;
+    // Single registry lookup: getEngineForMemory returns null for an unmounted
+    // segment; the default memory maps to the global engine instead.
+    const engine = context.getEngineForMemory(memory_name) orelse {
+        if (!context.isDefaultMemory(memory_name)) {
             const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         }
-    }
-    const qualified_goal = context.qualifyClause(allocator, memory_name, goal) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_goal);
+        return mcp.tools.ToolError.ExecutionFailed;
+    };
 
-    var query_result = engine.query(qualified_goal) catch {
+    var query_result = engine.query(routed.goal) catch {
         return mcp.tools.errorResult(allocator, "Query execution failed") catch return mcp.tools.ToolError.OutOfMemory;
     };
     defer query_result.deinit();
@@ -221,15 +227,12 @@ test "named memory query routes to qualified goal" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    // Create the knowledge.pl file required by registry.mount
+    // The fact lives in the segment's knowledge.pl, which mount loads into the
+    // segment's dedicated engine (per-segment isolation, B001 / zpm #54). Facts
+    // are stored UNQUALIFIED in that engine — no module prefix.
     var kfile = try tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
     defer kfile.close(std.testing.io);
-    try kfile.writeStreamingAll(std.testing.io, ":- module(feature_auth, []).\n");
-
-    // Fact exists only in the feature_auth module namespace, not globally.
-    // Without memory dispatch the unqualified search returns [] — this test fails RED.
-    try engine.loadString(
-        \\:- module(feature_auth, []).
+    try kfile.writeStreamingAll(std.testing.io,
         \\:- dynamic(task_status/2).
         \\task_status(auth_check, done).
         \\
@@ -237,7 +240,7 @@ test "named memory query routes to qualified goal" {
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("feature_auth", dir_path, .project, .ro, engine, std.testing.io);
+    try registry.mount("feature_auth", dir_path, .project, .ro, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 

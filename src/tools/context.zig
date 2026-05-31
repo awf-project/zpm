@@ -4,22 +4,37 @@ const mcp = @import("mcp");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
-var engine: ?*Engine = null;
+/// True when `name` is a bare lowercase Prolog atom (matches the segment-name
+/// grammar). Inlined rather than imported from validation.zig to avoid a module
+/// aliasing conflict when context.zig is compiled into several test modules.
+fn isBareAtom(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (name[0] < 'a' or name[0] > 'z') return false;
+    for (name[1..]) |c| switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_' => {},
+        else => return false,
+    };
+    return true;
+}
+
+// Process-global handler state. The MCP server runs a single STDIO transport on
+// one thread, so these are read and written without synchronization by design.
+var g_engine: ?*Engine = null;
 var persistence_manager: ?*anyopaque = null;
 var memory_registry: ?*anyopaque = null;
 var kb_dir: ?[]const u8 = null;
 var mount_manifest: ?*anyopaque = null;
 
 pub fn setEngine(e: *Engine) void {
-    engine = e;
+    g_engine = e;
 }
 
 pub fn clearEngine() void {
-    engine = null;
+    g_engine = null;
 }
 
 pub fn getEngine() ?*Engine {
-    return engine;
+    return g_engine;
 }
 
 pub fn setPersistenceManager(pm: *anyopaque) void {
@@ -103,14 +118,74 @@ pub fn resolveMemoryName(args: ?std.json.Value) []const u8 {
     };
 }
 
-pub fn qualifyClause(allocator: std.mem.Allocator, memory_name: []const u8, clause: []const u8) ![]const u8 {
-    if (isDefaultMemory(memory_name)) return allocator.dupe(u8, clause);
-    return std.fmt.allocPrint(allocator, "{s}:{s}", .{ memory_name, clause });
+/// Resolve the engine backing a memory: the global engine for the default
+/// memory, or the segment's dedicated engine for a mounted name. Returns null
+/// if the global engine is unset or the named segment is not mounted.
+pub fn getEngineForMemory(memory_name: []const u8) ?*Engine {
+    if (isDefaultMemory(memory_name)) return g_engine;
+    const reg = getMemoryRegistryAs(MemoryRegistry) orelse return null;
+    const entry = reg.getMounted(memory_name) orelse return null;
+    return entry.engine;
+}
+
+/// Resolve the PersistenceManager for `memory_name`.
+///
+/// For named (non-default) memories, returns the segment's PM from the
+/// MemoryRegistry. For the default memory, returns the global PM from
+/// `getPersistenceManagerAs`. Returns null if neither is available.
+///
+/// This is the canonical PM-resolution pattern shared by save_snapshot and
+/// restore_snapshot. See `context.default_memory_name` for the bypass rationale.
+pub fn resolvePersistenceManager(memory_name: []const u8) ?*PersistenceManager {
+    const reg = getMemoryRegistryAs(MemoryRegistry);
+    if (reg) |r| {
+        if (!isDefaultMemory(memory_name)) {
+            if (r.getMounted(memory_name)) |entry| return &entry.pm;
+        }
+    }
+    return getPersistenceManagerAs(PersistenceManager);
+}
+
+pub const RoutedGoal = struct {
+    /// The memory the goal targets. "default" when no recognised prefix.
+    memory_name: []const u8,
+    /// The goal with any recognised `mod:` prefix stripped — to run against the
+    /// segment's own engine, where clauses live UNQUALIFIED (B001 / zpm #54).
+    goal: []const u8,
+};
+
+/// Interpret a leading `mod:` prefix on a goal as a cross-memory selector.
+///
+/// Module-qualified goals (`feature_auth:task_status(X)`) used to resolve in a
+/// single shared engine; with per-segment engines they instead route to the
+/// named segment's engine and run unqualified there. The prefix is only treated
+/// as a memory selector when `mod` is an actually-mounted segment — otherwise
+/// the colon belongs to the term itself (operators, dict syntax) and the goal
+/// is left untouched against the default engine.
+///
+/// Returns slices into `goal`; no allocation.
+pub fn routeGoalByModule(goal: []const u8) RoutedGoal {
+    const colon = std.mem.indexOfScalar(u8, goal, ':') orelse
+        return .{ .memory_name = default_memory_name, .goal = goal };
+
+    const prefix = std.mem.trim(u8, goal[0..colon], " \t");
+    // A valid module selector is a bare lowercase atom — reject quoted atoms,
+    // empty prefixes, and anything that is not a mounted segment.
+    if (!isBareAtom(prefix))
+        return .{ .memory_name = default_memory_name, .goal = goal };
+
+    const reg = getMemoryRegistryAs(MemoryRegistry) orelse
+        return .{ .memory_name = default_memory_name, .goal = goal };
+    if (reg.getMounted(prefix) == null)
+        return .{ .memory_name = default_memory_name, .goal = goal };
+
+    return .{ .memory_name = prefix, .goal = std.mem.trim(u8, goal[colon + 1 ..], " \t") };
 }
 
 pub const ResolvedMemory = struct {
     memory_name: []const u8,
     pm: ?*PersistenceManager,
+    engine: ?*Engine,
 };
 
 pub const MemoryResolutionResult = union(enum) {
@@ -132,13 +207,14 @@ pub fn resolveWritableMemory(
                 if (entry.mode == .ro) {
                     return .{ .tool_result = mcp.tools.errorResult(allocator, "Memory is read-only") catch return mcp.tools.ToolError.OutOfMemory };
                 }
-                return .{ .resolved = .{ .memory_name = memory_name, .pm = &entry.pm } };
+                return .{ .resolved = .{ .memory_name = memory_name, .pm = &entry.pm, .engine = entry.engine } };
             }
         }
         const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
+        defer allocator.free(msg);
         return .{ .tool_result = mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory };
     }
-    return .{ .resolved = .{ .memory_name = memory_name, .pm = getPersistenceManagerAs(PersistenceManager) } };
+    return .{ .resolved = .{ .memory_name = memory_name, .pm = getPersistenceManagerAs(PersistenceManager), .engine = g_engine } };
 }
 
 test "getEngine returns null before setEngine is called" {
@@ -162,7 +238,7 @@ test "getMemoryRegistryAs returns null when clearMemoryRegistry was called" {
     try std.testing.expectEqual(@as(?*DummyType, null), getMemoryRegistryAs(DummyType));
 }
 
-test "setMemoryRegistry stores registry pointer under mutex" {
+test "setMemoryRegistry stores and retrieves registry pointer" {
     clearMemoryRegistry();
     defer clearMemoryRegistry();
     const DummyRegistry = struct { value: u32 };
@@ -227,16 +303,36 @@ test "resolveMemoryName returns value when memory key is present and non-empty" 
     try std.testing.expectEqualStrings("feature_auth", result);
 }
 
-test "qualifyClause returns dupe when memory_name is default" {
-    const result = try qualifyClause(std.testing.allocator, "default", "fact(x)");
-    defer std.testing.allocator.free(result);
-    try std.testing.expectEqualStrings("fact(x)", result);
+test "routeGoalByModule leaves unprefixed goal on default" {
+    clearMemoryRegistry();
+    const r = routeGoalByModule("task_status(X, done)");
+    try std.testing.expectEqualStrings("default", r.memory_name);
+    try std.testing.expectEqualStrings("task_status(X, done)", r.goal);
 }
 
-test "qualifyClause returns prefixed clause for named memory" {
-    const result = try qualifyClause(std.testing.allocator, "feature_auth", "fact(x)");
-    defer std.testing.allocator.free(result);
-    try std.testing.expectEqualStrings("feature_auth:fact(x)", result);
+test "routeGoalByModule ignores prefix when segment is not mounted" {
+    clearMemoryRegistry();
+    const r = routeGoalByModule("feature_auth:task_status(X)");
+    try std.testing.expectEqualStrings("default", r.memory_name);
+    try std.testing.expectEqualStrings("feature_auth:task_status(X)", r.goal);
+}
+
+test "routeGoalByModule routes a mounted-segment prefix to that segment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const base = path_buf[0..base_len];
+
+    var reg = MemoryRegistry.init(std.testing.allocator);
+    defer reg.deinit();
+    try reg.mount("feature_auth", base, .project, .rw, std.testing.io);
+    setMemoryRegistry(@ptrCast(&reg));
+    defer clearMemoryRegistry();
+
+    const r = routeGoalByModule("feature_auth:task_status(X, done)");
+    try std.testing.expectEqualStrings("feature_auth", r.memory_name);
+    try std.testing.expectEqualStrings("task_status(X, done)", r.goal);
 }
 
 test "resolveWritableMemory returns default PM when no args" {

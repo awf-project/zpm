@@ -68,7 +68,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     var matching: std.ArrayList([]u8) = .empty;
     defer {
@@ -76,9 +76,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         matching.deinit(allocator);
     }
 
-    const list_query = context.qualifyClause(allocator, memory_name, "tms_justification(_,A)") catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(list_query);
-    var list_qr = engine.query(list_query) catch {
+    var list_qr = engine.query("tms_justification(_,A)") catch {
         const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': 0 assumption(s) removed", .{pattern}) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(msg);
         return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;

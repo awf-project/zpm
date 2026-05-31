@@ -19,6 +19,9 @@ zig-cache/
 # AWF runtime data
 .awf/storage/states/
 .awf/storage/logs/
+# AWF generated symlinks (regenerated per-machine by setup-project-{roles,skills}.sh)
+.awf/roles/
+.awf/skills/
 
 # Temporary files
 *.tmp

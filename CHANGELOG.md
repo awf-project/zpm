@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **B001**: `clear_context --memory <segment>` now retracts facts from the target segment instead of the default memory
+  - Root cause: `parseHeadFunctorArity` was stripping the module prefix from clauses, causing `retractall(seg:foo(_))` to retract from `user:foo(_)` instead
+  - Fix: Extended `HeadFunctorArity` with an optional `module` field; updated `declareDynamic` and cache keying to preserve module qualification in `retractall` calls
+  - Impact: `clear_context` with the `--memory` flag (and MCP `memory` parameter) now correctly targets the specified segment; default memory is unaffected
+
 ## [0.4.0] - 2026-05-24
 
 ### Added

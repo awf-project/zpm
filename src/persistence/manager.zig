@@ -96,6 +96,14 @@ pub const PersistenceManager = struct {
 
     pub fn saveSnapshot(self: *PersistenceManager, engine: *Engine, name: []const u8) !void {
         if (self.status != .active) return;
+        // Guard: for per-segment PMs, snapshot_dir_path == disk_path (the same
+        // directory that holds knowledge.pl). A snapshot named "knowledge" would
+        // produce knowledge.pl and silently overwrite the segment's base file on
+        // the next write cycle. Reject names that, after appending ".pl", would
+        // collide with knowledge.pl regardless of which PM variant is in use.
+        if (std.mem.eql(u8, name, "knowledge") or std.mem.eql(u8, name, "knowledge.pl")) {
+            return error.InvalidName;
+        }
         var snap = try snapshot_mod.Snapshot.generate(self.allocator, engine, self.snapshot_dir_path, name, self.io);
         defer snap.deinit();
         if (self.wal) |*w| {
@@ -119,6 +127,11 @@ pub const PersistenceManager = struct {
     }
 
     pub fn restoreSnapshot(self: *PersistenceManager, engine: *Engine, name: []const u8) !void {
+        // Mirror the save guard: "knowledge" would resolve to knowledge.pl which
+        // is the segment base file, not a user snapshot.
+        if (std.mem.eql(u8, name, "knowledge") or std.mem.eql(u8, name, "knowledge.pl")) {
+            return error.InvalidName;
+        }
         const snap_name = if (std.mem.endsWith(u8, name, ".pl"))
             try self.allocator.dupe(u8, name)
         else

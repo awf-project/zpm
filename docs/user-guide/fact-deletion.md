@@ -42,6 +42,16 @@ Use `clear_context` to remove all facts matching a pattern in one operation. Use
 
 This removes all `project/2` facts where the first argument is `beta`, regardless of the second argument.
 
+### Clear from a Specific Memory Segment
+
+To clear facts from a specific memory segment (instead of the default memory), pass the `memory` parameter:
+
+```bash
+zpm clear-context --category "task_status(_, _)" --memory feature_auth
+```
+
+This removes all `task_status/2` facts from the `feature_auth` memory segment only. Facts with the same pattern in other memories remain untouched.
+
 ### Clear an Entire Predicate
 
 To remove all facts for a functor, use wildcards for every argument:

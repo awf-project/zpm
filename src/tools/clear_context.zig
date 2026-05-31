@@ -5,6 +5,7 @@ const PersistenceManager = @import("../persistence/manager.zig").PersistenceMana
 const wal = @import("../persistence/wal.zig");
 const JournalEntry = wal.JournalEntry;
 const Engine = @import("../prolog/engine.zig").Engine;
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
@@ -37,22 +38,14 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const qualified = context.qualifyClause(allocator, memory_name, category) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified);
-
-    engine.retractAll(qualified) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.retractAll(category) catch return mcp.tools.ToolError.ExecutionFailed;
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        }, .op = .retractall, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = wal.nowSeconds(), .op = .retractall, .clause = category }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     const msg = std.fmt.allocPrint(allocator, "Cleared: {s}", .{category}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
@@ -180,4 +173,104 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     const result = handler(null, std.testing.io, allocator, args);
     try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+}
+
+// B001 (zpm #54): clearing a named segment must clear ONLY that segment and
+// leave the default memory intact. Isolation comes from each segment owning a
+// dedicated engine (MemoryEntry.engine) that stores clauses UNQUALIFIED —
+// Trealla cannot retract module-qualified clauses, so this is achieved with
+// separate engines, not module prefixes in one shared engine.
+test "clear_context --memory clears only segment, leaves default intact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    // Default/global engine.
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    try std.Io.Dir.cwd().createDir(std.testing.io, feature_path, .default_dir);
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", feature_path, .project, .rw, std.testing.io);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    // Same predicate name in both memories; facts live in separate engines.
+    const seg = registry.getMounted("feature_auth").?;
+    try seg.engine.assertFact("foo(a).");
+    try engine.assertFact("foo(b).");
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "category", .{ .string = "foo(_)" });
+    try obj.put(allocator, "memory", .{ .string = "feature_auth" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(null, std.testing.io, allocator, args);
+    try std.testing.expect(!result.is_error);
+
+    var qr_seg = try seg.engine.query("foo(X)");
+    defer qr_seg.deinit();
+    try std.testing.expectEqual(@as(usize, 0), qr_seg.solutions.len);
+
+    var qr_def = try engine.query("foo(X)");
+    defer qr_def.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr_def.solutions.len);
+    try std.testing.expectEqualStrings("b", qr_def.solutions[0].bindings.get("X").?.atom);
+}
+
+test "clear_context --memory does not touch default-module facts of same name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    try std.Io.Dir.cwd().createDir(std.testing.io, feature_path, .default_dir);
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", feature_path, .project, .rw, std.testing.io);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    const seg = registry.getMounted("feature_auth").?;
+    try seg.engine.assertFact("foo(a).");
+    try engine.assertFact("foo(b).");
+
+    var qr_before = try engine.query("foo(X)");
+    defer qr_before.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr_before.solutions.len);
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "category", .{ .string = "foo(_)" });
+    try obj.put(allocator, "memory", .{ .string = "feature_auth" });
+    const args = std.json.Value{ .object = obj };
+
+    _ = try handler(null, std.testing.io, allocator, args);
+
+    var qr_after = try engine.query("foo(X)");
+    defer qr_after.deinit();
+    try std.testing.expectEqual(@as(usize, 1), qr_after.solutions.len);
+    try std.testing.expectEqualStrings("b", qr_after.solutions[0].bindings.get("X").?.atom);
 }

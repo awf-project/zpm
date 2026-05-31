@@ -2193,6 +2193,70 @@ QUERY_CROSS_LINE=$(echo "$RESPONSE" | grep '"id":2655')
 
 assert_contains "cross-memory rename returns success" "$RENAME_CROSS_LINE" '"isError":false'
 assert_contains "cross-memory response contains cross_memory_impact" "$RENAME_CROSS_LINE" '\"cross_memory_impact\"'
-assert_contains "after cross-memory rename, audit_rule query returns binding" "$QUERY_CROSS_LINE" 'default_f'
+# Per ADR-0006 (per-segment engine isolation, B001/#54): a rule whose BODY
+# resolves a goal in another memory (audit_rule(X) :- default:task_status(X))
+# cannot be evaluated — resolution runs inside the audit engine's solver, which
+# has no access to the default engine's clauses. The rename still PROPAGATES the
+# reference (rewrites default:task_status -> default:feature_status, asserted
+# above), but executing that body returns no binding. Deprecated by design.
+assert_contains "cross-memory rule body does not resolve across engines (ADR-0006)" "$QUERY_CROSS_LINE" '[]'
+
+# Feature: B001
+# --- test_clear_context_memory_segment_regression ---
+
+echo "Test: clear_context --memory retracts only from segment (B001)"
+PERSIST_DIR_B001=$(mktemp -d)
+SEGMENT_CLEAR_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":3000,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3001,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3002,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(a)\",\"memory\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3003,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"foo(X)\",\"memory\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3004,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"foo(_)\",\"memory\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3005,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"foo(X)\",\"memory\":\"pr_test\"}}}"
+RESPONSE=$(send_mcp_persist "$SEGMENT_CLEAR_INPUT" "$PERSIST_DIR_B001")
+SEGMENT_CREATE_LINE=$(echo "$RESPONSE" | grep '"id":3000')
+SEGMENT_MOUNT_LINE=$(echo "$RESPONSE" | grep '"id":3001')
+SEGMENT_REMEMBER_LINE=$(echo "$RESPONSE" | grep '"id":3002')
+SEGMENT_QUERY_BEFORE_LINE=$(echo "$RESPONSE" | grep '"id":3003')
+SEGMENT_CLEAR_LINE=$(echo "$RESPONSE" | grep '"id":3004')
+SEGMENT_QUERY_AFTER_LINE=$(echo "$RESPONSE" | grep '"id":3005')
+
+assert_contains "B001 segment: create_memory pr_test succeeds" "$SEGMENT_CREATE_LINE" '"isError":false'
+assert_contains "B001 segment: mount_memory pr_test succeeds" "$SEGMENT_MOUNT_LINE" '"isError":false'
+assert_contains "B001 segment: remember_fact foo(a) to pr_test succeeds" "$SEGMENT_REMEMBER_LINE" '"isError":false'
+assert_contains "B001 segment: query_logic foo(X) in pr_test returns a before clear" "$SEGMENT_QUERY_BEFORE_LINE" 'a'
+assert_contains "B001 segment: clear_context foo(_) in pr_test succeeds" "$SEGMENT_CLEAR_LINE" '"isError":false'
+assert_contains "B001 segment: query_logic foo(X) in pr_test returns empty after clear" "$SEGMENT_QUERY_AFTER_LINE" '[]'
+rm -rf "$PERSIST_DIR_B001"
+
+echo "Test: clear_context --memory asymmetry guard — default fact survives segment clear (B001)"
+PERSIST_DIR_B001_ASYM=$(mktemp -d)
+ASYMMETRY_GUARD_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":3010,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(b)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3011,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3012,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3013,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(a)\",\"memory\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3014,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"foo(_)\",\"memory\":\"pr_test\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3015,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"foo(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3016,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"foo(X)\",\"memory\":\"pr_test\"}}}"
+RESPONSE=$(send_mcp_persist "$ASYMMETRY_GUARD_INPUT" "$PERSIST_DIR_B001_ASYM")
+ASYM_REMEMBER_DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":3010')
+ASYM_CREATE_LINE=$(echo "$RESPONSE" | grep '"id":3011')
+ASYM_MOUNT_LINE=$(echo "$RESPONSE" | grep '"id":3012')
+ASYM_REMEMBER_SEG_LINE=$(echo "$RESPONSE" | grep '"id":3013')
+ASYM_CLEAR_LINE=$(echo "$RESPONSE" | grep '"id":3014')
+ASYM_QUERY_DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":3015')
+ASYM_QUERY_SEG_LINE=$(echo "$RESPONSE" | grep '"id":3016')
+
+assert_contains "B001 asymmetry: remember_fact foo(b) to default succeeds" "$ASYM_REMEMBER_DEFAULT_LINE" '"isError":false'
+assert_contains "B001 asymmetry: create_memory pr_test succeeds" "$ASYM_CREATE_LINE" '"isError":false'
+assert_contains "B001 asymmetry: mount_memory pr_test succeeds" "$ASYM_MOUNT_LINE" '"isError":false'
+assert_contains "B001 asymmetry: remember_fact foo(a) to pr_test succeeds" "$ASYM_REMEMBER_SEG_LINE" '"isError":false'
+assert_contains "B001 asymmetry: clear_context foo(_) in pr_test succeeds" "$ASYM_CLEAR_LINE" '"isError":false'
+assert_contains "B001 asymmetry: default foo(X) returns b after segment clear" "$ASYM_QUERY_DEFAULT_LINE" 'b'
+assert_contains "B001 asymmetry: pr_test foo(X) returns empty after segment clear" "$ASYM_QUERY_SEG_LINE" '[]'
+rm -rf "$PERSIST_DIR_B001_ASYM"
 
 test_summary
