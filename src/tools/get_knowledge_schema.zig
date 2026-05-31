@@ -25,7 +25,7 @@ const PredicateEntry = struct {
 };
 
 pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const engine = context.getEngine() orelse
+    const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
     var entries: std.ArrayList(PredicateEntry) = .empty;
@@ -35,11 +35,8 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     }
 
     const query_str = "current_predicate(F/A),functor(H,F,A),predicate_property(H,dynamic)";
-    const memory_name = context.resolveMemoryName(args);
-    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_query);
 
-    var schema_result = engine.query(qualified_query) catch {
+    var schema_result = engine.query(query_str) catch {
         const json = buildSchemaJson(allocator, entries.items) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(json);
         return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;

@@ -40,30 +40,20 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const pattern = buildUpsertPattern(allocator, fact) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(pattern);
 
-    const qualified_pattern = context.qualifyClause(allocator, memory_name, pattern) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_pattern);
-    const qualified_fact = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_fact);
-
-    engine.retractAll(qualified_pattern) catch return mcp.tools.ToolError.ExecutionFailed;
-    engine.assertFact(qualified_fact) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.retractAll(pattern) catch return mcp.tools.ToolError.ExecutionFailed;
+    engine.assertFact(fact) catch return mcp.tools.ToolError.ExecutionFailed;
 
     if (target_pm) |pm| {
-        const ts = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        };
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = qualified_pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
-        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = qualified_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
+        const ts = wal.nowSeconds();
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .op = .retractall, .clause = pattern }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
     const msg = std.fmt.allocPrint(allocator, "Upserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;

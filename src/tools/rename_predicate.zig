@@ -5,6 +5,7 @@ const engine_mod = @import("../prolog/engine.zig");
 const Engine = engine_mod.Engine;
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const nowSeconds = @import("../persistence/wal.zig").nowSeconds;
 const validation = @import("tool_validation");
 const clause_utils = @import("tool_clause_utils");
 const term_utils = @import("term_utils");
@@ -125,26 +126,22 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         return mcp.tools.errorResult(allocator, "old_functor and new_functor are identical: self-rename is a no-op") catch return mcp.tools.ToolError.OutOfMemory;
     }
 
-    // 8. Resolve engine.
-    const engine = context.getEngine() orelse
+    // 8. Resolve writable memory once. This single call yields the memory name,
+    //    the backing engine (segment-dedicated for a named memory, global for
+    //    default), and the PersistenceManager for journaling — resolving twice
+    //    would race if the segment were unmounted between calls.
+    const resolved = switch (try context.resolveWritableMemory(allocator, args)) {
+        .tool_result => |r| return r,
+        .resolved => |m| m,
+    };
+    const memory_name = resolved.memory_name;
+
+    // 9. Engine backing this memory.
+    const engine = resolved.engine orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
-    // 9. Resolve writable memory.
-    const memory_name = context.resolveMemoryName(args);
-    const resolution = try context.resolveWritableMemory(allocator, args);
-    switch (resolution) {
-        .tool_result => |r| return r,
-        .resolved => {},
-    }
-
-    // Retrieve PM for journaling (may be null in tests without a PM configured).
-    const pm_opt: ?*PersistenceManager = blk: {
-        const res2 = context.resolveWritableMemory(allocator, args) catch break :blk null;
-        switch (res2) {
-            .resolved => |r| break :blk r.pm,
-            .tool_result => break :blk null,
-        }
-    };
+    // PM for journaling (may be null in tests without a PM configured).
+    const pm_opt: ?*PersistenceManager = resolved.pm;
 
     // 10. Disambiguate arity when omitted: if multiple arities exist, error.
     const effective_arity: ?i64 = blk: {
@@ -153,11 +150,8 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         const raw_q = std.fmt.allocPrint(allocator, "current_predicate({s}/A)", .{old_functor}) catch
             return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(raw_q);
-        const qual_q = context.qualifyClause(allocator, memory_name, raw_q) catch
-            return mcp.tools.ToolError.OutOfMemory;
-        defer allocator.free(qual_q);
 
-        var arity_result = engine.query(qual_q) catch break :blk null;
+        var arity_result = engine.query(raw_q) catch break :blk null;
         defer arity_result.deinit();
 
         var found_arities: std.ArrayList(i64) = .empty;
@@ -303,20 +297,16 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
                 allocator.dupe(u8, new_head) catch continue;
             defer allocator.free(assert_str);
 
-            const qual_retract = context.qualifyClause(allocator, memory_name, retract_str) catch continue;
+            const qual_retract = allocator.dupe(u8, retract_str) catch continue;
             defer allocator.free(qual_retract);
-            const qual_assert = context.qualifyClause(allocator, memory_name, assert_str) catch continue;
+            const qual_assert = allocator.dupe(u8, assert_str) catch continue;
             defer allocator.free(qual_assert);
 
             engine.retractFact(qual_retract) catch {};
             engine.assertFact(qual_assert) catch continue;
 
             if (pm_opt) |pm| {
-                const ts = blk: {
-                    var _ts: std.posix.timespec = undefined;
-                    _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-                    break :blk _ts.sec;
-                };
+                const ts = nowSeconds();
                 const entries = [_]JournalEntry{
                     .{ .timestamp = ts, .op = .retract, .clause = qual_retract },
                     .{ .timestamp = ts, .op = .assert, .clause = qual_assert },
@@ -340,11 +330,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
             engine.assertFact(new_tms) catch {};
 
             if (pm_opt) |pm| {
-                const ts = blk: {
-                    var _ts: std.posix.timespec = undefined;
-                    _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-                    break :blk _ts.sec;
-                };
+                const ts = nowSeconds();
                 const entries = [_]JournalEntry{
                     .{ .timestamp = ts, .op = .retract, .clause = old_tms },
                     .{ .timestamp = ts, .op = .assert, .clause = new_tms },
@@ -356,6 +342,11 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         // Cross-memory propagation.
         if (propagate) {
             for (cross_refs.items) |r| {
+                // Resolve the engine that owns this cross-memory ref's segment.
+                // Each segment has a dedicated engine (B001 / zpm #54); using the
+                // target memory's engine here would write into the wrong KB.
+                const ref_engine = context.getEngineForMemory(r.memory) orelse continue;
+
                 const new_body = rewriteBody(allocator, r.body, old_functor, new_functor) catch continue;
                 defer allocator.free(new_body);
 
@@ -364,14 +355,8 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
                 const bare_assert = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ r.head, new_body }) catch continue;
                 defer allocator.free(bare_assert);
 
-                // Qualify the retract/assert to the owning memory segment.
-                const retract_str = context.qualifyClause(allocator, r.memory, bare_retract) catch continue;
-                defer allocator.free(retract_str);
-                const assert_str = context.qualifyClause(allocator, r.memory, bare_assert) catch continue;
-                defer allocator.free(assert_str);
-
-                engine.retractFact(retract_str) catch {};
-                engine.assertFact(assert_str) catch {};
+                ref_engine.retractFact(bare_retract) catch {};
+                ref_engine.assertFact(bare_assert) catch {};
 
                 const mem_copy = allocator.dupe(u8, r.memory) catch continue;
                 rewritten.append(allocator, mem_copy) catch {
@@ -441,9 +426,10 @@ fn collectClausesForArity(
     memory_name: []const u8,
     out: *std.ArrayList(ClauseInfo),
 ) void {
+    _ = memory_name; // per-segment engine: clauses are unqualified
     const raw_clause_q = clause_utils.buildClauseQueryNamed(allocator, functor, arity, "Body") catch return;
     defer allocator.free(raw_clause_q);
-    const clause_q = context.qualifyClause(allocator, memory_name, raw_clause_q) catch return;
+    const clause_q = allocator.dupe(u8, raw_clause_q) catch return;
     defer allocator.free(clause_q);
 
     var clause_result = engine.query(clause_q) catch return;
@@ -531,7 +517,7 @@ fn scanSegmentCrossMemoryRefs(
     out: *std.ArrayList(predicate_types.CrossMemoryRef),
 ) void {
     const raw_preds_query = "current_predicate(F/A)";
-    const all_preds_query = context.qualifyClause(allocator, scan_segment, raw_preds_query) catch return;
+    const all_preds_query = allocator.dupe(u8, raw_preds_query) catch return;
     defer allocator.free(all_preds_query);
     var pred_result = engine.query(all_preds_query) catch return;
     defer pred_result.deinit();
@@ -552,7 +538,7 @@ fn scanSegmentCrossMemoryRefs(
 
         const raw_clause_q = clause_utils.buildClauseQueryNamed(allocator, pred_name, pred_arity, "Body") catch continue;
         defer allocator.free(raw_clause_q);
-        const clause_q = context.qualifyClause(allocator, scan_segment, raw_clause_q) catch continue;
+        const clause_q = allocator.dupe(u8, raw_clause_q) catch continue;
         defer allocator.free(clause_q);
 
         var clause_result = engine.query(clause_q) catch continue;
@@ -602,6 +588,8 @@ fn scanCrossMemoryRefs(
     scanSegmentCrossMemoryRefs(allocator, engine, functor, arity_opt, memory_name, out);
 
     // Scan all other mounted memories for qualified calls `memory_name:functor`.
+    // Each segment has its own dedicated engine (B001 / zpm #54); resolve it via
+    // getEngineForMemory so we query the right engine, not the target's engine.
     const reg = context.getMemoryRegistryAs(@import("../memory/registry.zig").MemoryRegistry) orelse return;
     const mounted_names = reg.listMounted(allocator) catch return;
     defer {
@@ -612,7 +600,8 @@ fn scanCrossMemoryRefs(
     for (mounted_names) |seg| {
         // Skip the target memory itself (already scanned above).
         if (std.mem.eql(u8, seg, memory_name)) continue;
-        scanSegmentCrossMemoryRefs(allocator, engine, functor, arity_opt, seg, out);
+        const seg_engine = context.getEngineForMemory(seg) orelse continue;
+        scanSegmentCrossMemoryRefs(allocator, seg_engine, functor, arity_opt, seg, out);
     }
 }
 
@@ -677,8 +666,9 @@ fn collectRuleBodyRefs(
     rule_rewrites: *std.ArrayList(RewrittenRuleBody),
     rule_ids: *std.ArrayList([]const u8),
 ) void {
+    _ = memory_name; // per-segment engine: clauses are unqualified
     const raw_preds_q = "current_predicate(F/A)";
-    const all_preds_q = context.qualifyClause(allocator, memory_name, raw_preds_q) catch return;
+    const all_preds_q = allocator.dupe(u8, raw_preds_q) catch return;
     defer allocator.free(all_preds_q);
     var pred_result = engine.query(all_preds_q) catch return;
     defer pred_result.deinit();
@@ -701,7 +691,7 @@ fn collectRuleBodyRefs(
 
         const raw_clause_q = clause_utils.buildClauseQueryNamed(allocator, pred_name, pred_arity, "Body") catch continue;
         defer allocator.free(raw_clause_q);
-        const clause_q = context.qualifyClause(allocator, memory_name, raw_clause_q) catch continue;
+        const clause_q = allocator.dupe(u8, raw_clause_q) catch continue;
         defer allocator.free(clause_q);
 
         var clause_result = engine.query(clause_q) catch continue;

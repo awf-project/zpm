@@ -73,7 +73,7 @@ fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths, 
     errdefer manifest.deinit();
 
     try manifest.addEntry(.{
-        .name = "default",
+        .name = context.default_memory_name,
         .path = ".zpm/kb/default",
         .scope = .project,
         .mode = .rw,
@@ -84,7 +84,7 @@ fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths, 
     var iter = kb.iterate();
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
-        if (std.mem.eql(u8, entry.name, "default")) continue;
+        if (context.isDefaultMemory(entry.name)) continue;
         const rel_path = std.fmt.allocPrint(allocator, ".zpm/kb/{s}", .{entry.name}) catch continue;
         defer allocator.free(rel_path);
         manifest.addEntry(.{
@@ -146,6 +146,13 @@ pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context 
     };
     if (saved_stdout) |fd| restoreStdout(fd);
     errdefer engine.deinit();
+    // setEngine is wired here (not by the caller) because loadKnowledgeBase
+    // runs immediately after and several internal helpers it calls resolve the
+    // engine from context.getEngine(). All other globals — PM, registry,
+    // manifest, kb_dir — are wired by the caller after initBootstrap returns,
+    // because they live by value in Context and only the caller holds a stable
+    // address for them. Engine is the exception: it is heap-allocated (*Engine),
+    // so its address is stable even before the caller receives the Context.
     context.setEngine(engine);
     errdefer context.clearEngine();
 
@@ -184,6 +191,10 @@ pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context 
         try manifest.write();
     }
 
+    // paths.kb_dir is always an absolute path produced by project.discover()
+    // in the form "<project_root>/.zpm/kb", so dirname is always non-null.
+    // The `orelse unreachable` is safe: an empty or root-only path cannot
+    // satisfy project.discover() (it requires a .zpm directory to exist).
     const zpm_dir = std.fs.path.dirname(paths.kb_dir) orelse unreachable;
     const project_root = std.fs.path.dirname(zpm_dir) orelse unreachable;
 
@@ -198,7 +209,7 @@ pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context 
         defer allocator.free(disk_path);
 
         // Always create the default directory if absent.
-        if (std.mem.eql(u8, entry.name, "default")) {
+        if (context.isDefaultMemory(entry.name)) {
             std.Io.Dir.cwd().createDir(io, disk_path, .default_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
@@ -214,10 +225,19 @@ pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context 
             d.close(io);
         }
 
-        registry.mount(entry.name, disk_path, entry.scope, entry.mode, engine, io) catch |err| {
-            std.log.warn("failed to mount '{s}': {}", .{ entry.name, err });
-            continue;
-        };
+        // The default memory reuses the already-loaded global engine (unowned);
+        // named segments get their own dedicated engine (see B001 / zpm #54).
+        if (context.isDefaultMemory(entry.name)) {
+            registry.mountShared(entry.name, disk_path, entry.scope, entry.mode, engine, io) catch |err| {
+                std.log.warn("failed to mount '{s}': {}", .{ entry.name, err });
+                continue;
+            };
+        } else {
+            registry.mount(entry.name, disk_path, entry.scope, entry.mode, io) catch |err| {
+                std.log.warn("failed to mount '{s}': {}", .{ entry.name, err });
+                continue;
+            };
+        }
     }
 
     return Context{

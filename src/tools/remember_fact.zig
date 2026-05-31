@@ -3,6 +3,7 @@ const mcp = @import("mcp");
 const context = @import("context.zig");
 const PersistenceManager = @import("../persistence/manager.zig").PersistenceManager;
 const JournalEntry = @import("../persistence/wal.zig").JournalEntry;
+const nowSeconds = @import("../persistence/wal.zig").nowSeconds;
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 const Engine = @import("../prolog/engine.zig").Engine;
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
@@ -36,25 +37,17 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         .tool_result => |r| return r,
         .resolved => |m| m,
     };
-    const memory_name = mem.memory_name;
     const target_pm = mem.pm;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const qualified = context.qualifyClause(allocator, memory_name, fact) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified);
-
-    engine.assertFact(qualified) catch {
+    engine.assertFact(fact) catch {
         const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
-        pm.journalMutation(JournalEntry{ .timestamp = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        }, .clause = qualified }) catch return mcp.tools.ToolError.ExecutionFailed;
+        pm.journalMutation(JournalEntry{ .timestamp = nowSeconds(), .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
     if (std.fmt.allocPrint(allocator, "zpm_source({s}, interactive).", .{fact}) catch null) |sc| {
         defer allocator.free(sc);
@@ -262,7 +255,7 @@ test "remember_fact.handler with named memory asserts qualified fact and journal
 
     var registry = MemoryRegistry.init(allocator);
     defer registry.deinit();
-    try registry.mount("feature_auth", feature_path, .project, .rw, engine, std.testing.io);
+    try registry.mount("feature_auth", feature_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
@@ -274,13 +267,15 @@ test "remember_fact.handler with named memory asserts qualified fact and journal
     const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(!result.is_error);
 
-    var qr = try engine.query("feature_auth:enabled(darkmode).");
+    // Fact lives UNQUALIFIED in the segment's dedicated engine (B001 / #54).
+    const seg = registry.getMounted("feature_auth").?;
+    var qr = try seg.engine.query("enabled(darkmode).");
     defer qr.deinit();
     try std.testing.expectEqual(@as(usize, 1), qr.solutions.len);
 
     var jcontent_buf: [2048]u8 = undefined;
     const jcontent = try tmp.dir.readFile(std.testing.io, "feature_auth/journal.wal", &jcontent_buf);
-    try std.testing.expect(std.mem.indexOf(u8, jcontent, "feature_auth:enabled(darkmode)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jcontent, "enabled(darkmode)") != null);
 }
 
 test "remember_fact.handler without memory param asserts unqualified fact and journals to default PM" {
@@ -353,7 +348,7 @@ test "remember_fact.handler with read-only memory returns error with read-only m
 
     var registry = MemoryRegistry.init(allocator);
     defer registry.deinit();
-    try registry.mount("ro_mem", ro_path, .project, .ro, engine, std.testing.io);
+    try registry.mount("ro_mem", ro_path, .project, .ro, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 

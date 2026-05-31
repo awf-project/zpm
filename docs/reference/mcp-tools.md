@@ -1584,6 +1584,25 @@ If the `fact` argument is missing, null, or empty:
 }
 ```
 
+### Request with Memory Segment
+
+To target a specific memory segment, pass the `memory` parameter:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "clear_context",
+    "arguments": {
+      "category": "task_status(_, _)",
+      "memory": "feature_auth"
+    }
+  }
+}
+```
+
 ### Input Schema
 
 ```json
@@ -1593,6 +1612,10 @@ If the `fact` argument is missing, null, or empty:
     "category": {
       "type": "string",
       "description": "A Prolog pattern to match facts for bulk deletion (e.g. \"project(beta, _)\", \"role(_, _)\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["category"]

@@ -32,16 +32,12 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const assumption = mcp.tools.getString(args, "assumption") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!validation.isValidAtomName(assumption)) return mcp.tools.ToolError.InvalidArguments;
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const query_str = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
-    const memory_name = context.resolveMemoryName(args);
-    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_query);
-
-    var qr = engine.query(qualified_query) catch {
+    var qr = engine.query(query_str) catch {
         return buildResponse(allocator, &.{});
     };
     defer qr.deinit();

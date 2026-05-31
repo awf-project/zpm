@@ -111,7 +111,7 @@ fn enumeratePredicateBodies(
     // `predicate_property(H,dynamic)` (which under-reports user-declared
     // dynamic predicates inside loaded modules).
     const raw_preds_query = "current_predicate(F/A)";
-    const all_preds_query = context.qualifyClause(allocator, memory_name, raw_preds_query) catch return;
+    const all_preds_query = allocator.dupe(u8, raw_preds_query) catch return;
     defer allocator.free(all_preds_query);
     var pred_result = engine.query(all_preds_query) catch return;
     defer pred_result.deinit();
@@ -136,7 +136,7 @@ fn enumeratePredicateBodies(
         // conjunction into B's variable positions).
         const raw_clause_query = clause_utils.buildClauseQuery(allocator, pred_name, pred_arity, "Body") catch continue;
         defer allocator.free(raw_clause_query);
-        const clause_query = context.qualifyClause(allocator, memory_name, raw_clause_query) catch continue;
+        const clause_query = allocator.dupe(u8, raw_clause_query) catch continue;
         defer allocator.free(clause_query);
 
         var clause_result = engine.query(clause_query) catch continue;
@@ -224,9 +224,6 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const memory_name = context.resolveMemoryName(args);
     const include_cross_refs = parseBoolArg(obj, "include_cross_memory_refs", true);
 
-    const engine = context.getEngine() orelse
-        return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
-
     const is_all = std.mem.eql(u8, memory_name, "__all__");
 
     if (!context.isDefaultMemory(memory_name) and !is_all) {
@@ -244,6 +241,12 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         }
     }
+
+    // Backs the single-memory path. For `__all__`, the loop below resolves each
+    // segment's own engine instead. Facts and their tms_justification/2 records
+    // live unqualified in per-segment engines (B001, zpm #54; ADR-0006).
+    const engine = context.getEngineForMemory(if (is_all) context.default_memory_name else memory_name) orelse
+        return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
     var rules: std.ArrayList(RuleRef) = .empty;
     defer {
@@ -313,17 +316,18 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         }
 
         for (segments.items) |seg| {
-            collectRules(allocator, engine, functor, arity_arg, seg, &rules) catch {};
-            direct_facts_total += countDirectFacts(allocator, engine, functor, arity_arg, seg) catch 0;
-            collectCrossMemoryRefs(allocator, engine, functor, arity_arg, seg, &cross_refs) catch {};
+            // Each segment is backed by its own engine; facts AND their
+            // tms_justification/2 records are stored unqualified there
+            // (B001 / zpm #54; per-segment isolation per ADR-0006). Skip a
+            // segment whose engine cannot be resolved rather than silently
+            // scanning the wrong engine.
+            const seg_engine = context.getEngineForMemory(seg) orelse continue;
+            collectRules(allocator, seg_engine, functor, arity_arg, seg, &rules) catch {};
+            direct_facts_total += countDirectFacts(allocator, seg_engine, functor, arity_arg, seg) catch 0;
+            collectCrossMemoryRefs(allocator, seg_engine, functor, arity_arg, seg, &cross_refs) catch {};
 
-            // ADR-0009: `tms_justification/2` is GLOBAL — never module-scoped.
-            // `mod:tms_justification(F, Name)` fails for any non-default mod, so
-            // skip the call to avoid wasted Prolog round-trips. The default
-            // segment alone captures every TMS justification fact.
-            if (!context.isDefaultMemory(seg)) continue;
-
-            if (collectAssumptionRefs(allocator, engine, functor, arity_arg, seg)) |seg_refs| {
+            // Assumptions live in the same per-segment engine as their facts.
+            if (collectAssumptionRefs(allocator, seg_engine, functor, arity_arg, seg)) |seg_refs| {
                 defer allocator.free(seg_refs);
                 for (seg_refs) |r| {
                     assumption_refs.append(allocator, r) catch {
@@ -382,10 +386,11 @@ fn countDirectFacts(
     arity_arg: ?i64,
     memory_name: []const u8,
 ) !usize {
+    _ = memory_name; // per-segment engine: clauses are unqualified
     if (arity_arg) |arity| {
         const raw_query = clause_utils.buildClauseQuery(allocator, functor, arity, "true") catch return 0;
         defer allocator.free(raw_query);
-        const clause_query = context.qualifyClause(allocator, memory_name, raw_query) catch return 0;
+        const clause_query = allocator.dupe(u8, raw_query) catch return 0;
         defer allocator.free(clause_query);
         var result = engine.query(clause_query) catch return 0;
         defer result.deinit();
@@ -399,7 +404,7 @@ fn countDirectFacts(
         .{functor},
     );
     defer allocator.free(raw_arities_query);
-    const all_arities_query = context.qualifyClause(allocator, memory_name, raw_arities_query) catch return 0;
+    const all_arities_query = allocator.dupe(u8, raw_arities_query) catch return 0;
     defer allocator.free(all_arities_query);
 
     var pred_result = engine.query(all_arities_query) catch return 0;
@@ -415,7 +420,7 @@ fn countDirectFacts(
         };
         const raw_clause_query = clause_utils.buildClauseQuery(allocator, functor, arity, "true") catch continue;
         defer allocator.free(raw_clause_query);
-        const clause_query = context.qualifyClause(allocator, memory_name, raw_clause_query) catch continue;
+        const clause_query = allocator.dupe(u8, raw_clause_query) catch continue;
         defer allocator.free(clause_query);
         var result = engine.query(clause_query) catch continue;
         defer result.deinit();
@@ -487,7 +492,7 @@ fn collectAssumptionRefs(
         refs.deinit(allocator);
     }
 
-    const qualified = context.qualifyClause(allocator, memory_name, "tms_justification(F, Name)") catch return refs.toOwnedSlice(allocator);
+    const qualified = allocator.dupe(u8, "tms_justification(F, Name)") catch return refs.toOwnedSlice(allocator);
     defer allocator.free(qualified);
     var qr = engine.query(qualified) catch return refs.toOwnedSlice(allocator);
     defer qr.deinit();
@@ -1499,6 +1504,8 @@ test "handler with memory: \"__all__\" and two mounted memories iterates both an
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    // Per-segment rules live UNQUALIFIED in each segment's knowledge.pl; mount
+    // loads them into that segment's dedicated engine (B001 / zpm #54).
     var tmp_tasks = std.testing.tmpDir(.{});
     defer tmp_tasks.cleanup();
     var path_buf_tasks: [std.fs.max_path_bytes]u8 = undefined;
@@ -1506,7 +1513,12 @@ test "handler with memory: \"__all__\" and two mounted memories iterates both an
     const tasks_path = path_buf_tasks[0..tasks_path_len];
     var tasks_kf = try tmp_tasks.dir.createFile(std.testing.io, "knowledge.pl", .{});
     defer tasks_kf.close(std.testing.io);
-    try tasks_kf.writeStreamingAll(std.testing.io, ":- module(tasks, []).\n");
+    try tasks_kf.writeStreamingAll(std.testing.io,
+        \\:- dynamic(target/2).
+        \\:- dynamic(tasks_rule/1).
+        \\tasks_rule(X) :- target(X, t).
+        \\
+    );
 
     var tmp_audit = std.testing.tmpDir(.{});
     defer tmp_audit.cleanup();
@@ -1515,36 +1527,25 @@ test "handler with memory: \"__all__\" and two mounted memories iterates both an
     const audit_path = path_buf_audit[0..audit_path_len];
     var audit_kf = try tmp_audit.dir.createFile(std.testing.io, "knowledge.pl", .{});
     defer audit_kf.close(std.testing.io);
-    try audit_kf.writeStreamingAll(std.testing.io, ":- module(audit, []).\n");
-
-    const engine = try Engine.init(.{}, std.testing.io);
-    defer engine.deinit();
-    context.setEngine(engine);
-    defer context.clearEngine();
-
-    // Default-segment rule (global namespace).
-    try engine.assert("default_rule(X) :- target(X, d)");
-
-    // Per-segment rules: load module content with dynamic decl + clause.
-    try engine.loadString(
-        \\:- module(tasks, []).
-        \\:- dynamic(target/2).
-        \\:- dynamic(tasks_rule/1).
-        \\tasks_rule(X) :- target(X, t).
-        \\
-    );
-    try engine.loadString(
-        \\:- module(audit, []).
+    try audit_kf.writeStreamingAll(std.testing.io,
         \\:- dynamic(target/2).
         \\:- dynamic(audit_rule/1).
         \\audit_rule(X) :- target(X, a).
         \\
     );
 
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    // Default-segment rule (global engine).
+    try engine.assert("default_rule(X) :- target(X, d)");
+
     var reg = MemoryRegistry.init(std.testing.allocator);
     defer reg.deinit();
-    try reg.mount("tasks", tasks_path, .project, .rw, engine, std.testing.io);
-    try reg.mount("audit", audit_path, .project, .rw, engine, std.testing.io);
+    try reg.mount("tasks", tasks_path, .project, .rw, std.testing.io);
+    try reg.mount("audit", audit_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&reg));
     defer context.clearMemoryRegistry();
 

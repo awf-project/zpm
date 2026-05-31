@@ -67,6 +67,7 @@ fn writeManifestEntry(
     };
     defer allocator.free(path);
 
+    const pre_existing = manifest.findEntry(name) != null;
     manifest.addEntry(.{
         .name = name,
         .path = path,
@@ -77,7 +78,13 @@ fn writeManifestEntry(
         else => return mcp.tools.ToolError.ExecutionFailed,
     };
 
-    manifest.write() catch return mcp.tools.ToolError.ExecutionFailed;
+    manifest.write() catch {
+        // Roll back the in-memory addition so a failed disk write cannot leave a
+        // phantom entry that a later mount/list would observe (B001 #54). Only
+        // remove an entry we actually added — never one that pre-existed.
+        if (!pre_existing) manifest.removeEntry(name);
+        return mcp.tools.ToolError.ExecutionFailed;
+    };
 }
 
 pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
@@ -92,7 +99,6 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
     };
 
     const reg = context.getMemoryRegistryAs(MemoryRegistry) orelse return mcp.tools.ToolError.ExecutionFailed;
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const disk_path = switch (scope) {
         .project => blk: {
@@ -111,8 +117,9 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
         check_dir.close(io);
     }
 
+    // MemoryError variants are defined in src/memory/registry.zig.
     const already_mounted = blk: {
-        reg.mount(name, disk_path, scope, mode, engine, io) catch |err| switch (err) {
+        reg.mount(name, disk_path, scope, mode, io) catch |err| switch (err) {
             error.AlreadyMounted => break :blk true,
             else => {
                 const msg = std.fmt.allocPrint(allocator, "Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
@@ -228,7 +235,7 @@ test "mount_memory handler is idempotent for already-mounted memory" {
     defer kf.close(std.testing.io);
     try kf.writeStreamingAll(std.testing.io, ":- module(dup_mem, []).\n");
 
-    try registry.mount("dup_mem", try std.fmt.allocPrint(allocator, "{s}/dup_mem", .{dir_path}), .project, .rw, engine, std.testing.io);
+    try registry.mount("dup_mem", try std.fmt.allocPrint(allocator, "{s}/dup_mem", .{dir_path}), .project, .rw, std.testing.io);
 
     var obj: std.json.ObjectMap = .{};
     try obj.put(allocator, "name", .{ .string = "dup_mem" });

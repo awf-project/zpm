@@ -26,7 +26,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 }
 
 pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse return mcp.tools.ToolError.ExecutionFailed;
     const scope = mcp.tools.getString(args, "scope");
 
     var violations: std.ArrayList([]const u8) = .empty;
@@ -43,11 +43,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     } else allocator.dupe(u8, "integrity_violation(X)") catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
-    const memory_name = context.resolveMemoryName(args);
-    const qualified_query = context.qualifyClause(allocator, memory_name, query_str) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_query);
-
-    var query_result = engine.query(qualified_query) catch {
+    var query_result = engine.query(query_str) catch {
         const json = buildViolationsJson(allocator, violations.items) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(json);
         return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;

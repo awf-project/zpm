@@ -149,6 +149,17 @@ zpm query-logic --goal "feature_auth:task_done(X)"
 
 This resolves against the `feature_auth` module regardless of which memory is the current default target. Both memories must be mounted.
 
+## Clear Facts from a Specific Memory
+
+The `clear_context` tool respects the `--memory` flag to target a specific segment:
+
+```bash
+# Remove all task_status/2 facts from the feature_auth memory only
+zpm clear-context --category "task_status(_, _)" --memory feature_auth
+```
+
+Facts matching the same pattern in other memories are unaffected.
+
 ## Default Memory
 
 On startup, zpm automatically creates and mounts a `default` memory in `.zpm/kb/default/`. When no `--memory` flag or `memory` parameter is provided, all operations target this memory — preserving full backward compatibility with pre-F021 behavior.

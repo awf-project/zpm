@@ -11,6 +11,4 @@
 inputs:
   version: v0.4.0
   project_number: 4
-  agents: zig:zig-engineer,web:test-automator
-  skills: zig:zig-language,zig:zig-testing,zig:zig-memory,zig:zig-errors,zig:zig-build,zig:zig-comptime,zig:zig-cli,zig:zig-interop-c,zig:zig-otel,zig:zig-yaml
 

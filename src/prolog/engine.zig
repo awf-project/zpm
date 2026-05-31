@@ -74,6 +74,13 @@ pub const Engine = struct {
     io: std.Io,
 
     pub fn init(config: EngineConfig, io: std.Io) EngineError!*Engine {
+        // page_allocator is intentional here: the Engine struct is long-lived
+        // (process lifetime), heap-allocated so callers hold a stable *Engine
+        // pointer, and only ever created once or twice per process. Injecting an
+        // allocator parameter here would require plumbing it through every call
+        // site and every test, with no practical benefit — the allocation is
+        // never freed until deinit(). The internal GPA covers all per-query
+        // allocations; page_allocator is only used for the Engine wrapper itself.
         const self = std.heap.page_allocator.create(Engine) catch return EngineError.OutOfMemory;
         self.gpa = std.heap.DebugAllocator(.{}).init;
         self.allocator = self.gpa.allocator();
@@ -139,8 +146,8 @@ pub const Engine = struct {
         };
         // Seed with preload-declared dynamics so subsequent assertFact on
         // these functors skips the redundant declaration.
-        self.markDynamic("zpm_source", 2) catch {};
-        self.markDynamic("tms_justification", 2) catch {};
+        self.markDynamic(null, "zpm_source", 2) catch {};
+        self.markDynamic(null, "tms_justification", 2) catch {};
         return self;
     }
 
@@ -170,10 +177,15 @@ pub const Engine = struct {
         }
     }
 
-    /// Insert an owned `F/A` key into declared_dynamic if not already present.
-    fn markDynamic(self: *Engine, functor: []const u8, arity: usize) EngineError!void {
-        const key = std.fmt.allocPrint(self.allocator, "{s}/{d}", .{ functor, arity }) catch
-            return EngineError.OutOfMemory;
+    /// Insert an owned cache key into declared_dynamic if not already present.
+    /// Key format: `"{mod}:{F}/{A}"` when module is non-null, else `"{F}/{A}"`.
+    fn markDynamic(self: *Engine, module: ?[]const u8, functor: []const u8, arity: usize) EngineError!void {
+        const key = if (module) |mod|
+            std.fmt.allocPrint(self.allocator, "{s}:{s}/{d}", .{ mod, functor, arity }) catch
+                return EngineError.OutOfMemory
+        else
+            std.fmt.allocPrint(self.allocator, "{s}/{d}", .{ functor, arity }) catch
+                return EngineError.OutOfMemory;
         if (self.declared_dynamic.contains(key)) {
             self.allocator.free(key);
             return;
@@ -184,10 +196,13 @@ pub const Engine = struct {
         };
     }
 
-    /// Check whether `F/A` is already declared dynamic in this engine.
-    fn isDynamic(self: *Engine, functor: []const u8, arity: usize) bool {
-        var buf: [128]u8 = undefined;
-        const key = std.fmt.bufPrint(&buf, "{s}/{d}", .{ functor, arity }) catch return false;
+    /// Check whether a predicate is already declared dynamic in this engine.
+    fn isDynamic(self: *Engine, module: ?[]const u8, functor: []const u8, arity: usize) bool {
+        var buf: [256]u8 = undefined;
+        const key = if (module) |mod|
+            std.fmt.bufPrint(&buf, "{s}:{s}/{d}", .{ mod, functor, arity }) catch return false
+        else
+            std.fmt.bufPrint(&buf, "{s}/{d}", .{ functor, arity }) catch return false;
         return self.declared_dynamic.contains(key);
     }
 
@@ -197,17 +212,32 @@ pub const Engine = struct {
 
     /// Emit `:- dynamic(F/A).` to Trealla and remember the key. Idempotent
     /// at both the engine-cache level and the Prolog-VM level.
-    fn declareDynamic(self: *Engine, functor: []const u8, arity: usize) EngineError!void {
-        if (self.isDynamic(functor, arity)) return;
-        const code = std.fmt.allocPrintSentinel(
-            self.allocator,
-            ":- dynamic({s}/{d}).",
-            .{ functor, arity },
-            0,
-        ) catch return EngineError.OutOfMemory;
-        defer self.allocator.free(code);
-        _ = self.evalSilently(code);
-        try self.markDynamic(functor, arity);
+    ///
+    /// Module-qualified declarations use loadString (pl_consult path) because
+    /// pl_eval skips directive processing (is_consulting=false), which means
+    /// `:- dynamic(mod:F/A).` via evalSilently never creates the Trealla module
+    /// or marks the predicate dynamic. The pl_consult path auto-creates modules.
+    fn declareDynamic(self: *Engine, module: ?[]const u8, functor: []const u8, arity: usize) EngineError!void {
+        if (self.isDynamic(module, functor, arity)) return;
+        if (module) |mod| {
+            const source = std.fmt.allocPrint(
+                self.allocator,
+                ":- dynamic({s}:{s}/{d}).\n",
+                .{ mod, functor, arity },
+            ) catch return EngineError.OutOfMemory;
+            defer self.allocator.free(source);
+            self.loadString(source) catch {};
+        } else {
+            const code = std.fmt.allocPrintSentinel(
+                self.allocator,
+                ":- dynamic({s}/{d}).",
+                .{ functor, arity },
+                0,
+            ) catch return EngineError.OutOfMemory;
+            defer self.allocator.free(code);
+            _ = self.evalSilently(code);
+        }
+        try self.markDynamic(module, functor, arity);
     }
 
     fn checkSandbox(self: *Engine) EngineError!void {
@@ -275,7 +305,7 @@ pub const Engine = struct {
         const has_rule = std.mem.indexOf(u8, stripped, ":-") != null;
 
         if (parseHeadFunctorArity(stripped)) |fa| {
-            self.declareDynamic(fa.functor, fa.arity) catch {};
+            self.declareDynamic(fa.module, fa.functor, fa.arity) catch {};
         }
         const code = if (has_rule)
             std.fmt.allocPrintSentinel(
@@ -339,16 +369,41 @@ pub const Engine = struct {
     }
 
     pub fn retractAll(self: *Engine, head: []const u8) EngineError!void {
-        const stripped = stripDot(head);
+        // Trim once so that parseHeadFunctorArity and the bare-head slice
+        // computation below both operate on the exact same string. If we
+        // trimmed independently, a leading space in `head` could make the
+        // `mod.len+1` offset into the independently-trimmed `s` land on the
+        // wrong character.
+        const stripped = std.mem.trim(u8, stripDot(head), " \t\n\r");
         if (stripped.len == 0) return EngineError.RetractFailed;
         if (self.handle == null) return EngineError.RetractFailed;
 
-        const code = std.fmt.allocPrintSentinel(
-            self.allocator,
-            "retractall({s}).",
-            .{stripped},
-            0,
-        ) catch return EngineError.OutOfMemory;
+        // For module-qualified heads, use M:retractall(H) rather than
+        // retractall(M:H). Trealla evaluates retractall(M:H) in the current
+        // context module (user), so the explicit module prefix M is ignored and
+        // retracts land in user instead of M. M:retractall(H) calls retractall
+        // from within M's context, targeting the correct module.
+        const code = blk: {
+            if (parseHeadFunctorArity(stripped)) |fa| {
+                if (fa.module) |mod| {
+                    // mod is a sub-slice of `stripped` starting at index 0;
+                    // bare is everything after "mod:".
+                    const bare = stripped[mod.len + 1 ..]; // skip "mod:"
+                    break :blk std.fmt.allocPrintSentinel(
+                        self.allocator,
+                        "{s}:retractall({s}).",
+                        .{ mod, bare },
+                        0,
+                    ) catch return EngineError.OutOfMemory;
+                }
+            }
+            break :blk std.fmt.allocPrintSentinel(
+                self.allocator,
+                "retractall({s}).",
+                .{stripped},
+                0,
+            ) catch return EngineError.OutOfMemory;
+        };
         defer self.allocator.free(code);
 
         // retractall/1 succeeds per ISO Prolog even if nothing matches; we
@@ -359,13 +414,30 @@ pub const Engine = struct {
     /// Retract all clauses of every user-declared dynamic predicate while
     /// preserving the `:- dynamic(F/A)` declarations. Used by snapshot
     /// restore to make a reload replace instead of append.
+    ///
+    /// Invariant: per-segment engines MUST NOT have module-qualified keys in
+    /// declared_dynamic (format `seg:F/A`). Such keys would generate
+    /// `retractall(seg:foo(_))` which Trealla cannot execute — this is the
+    /// exact isolation bug documented in B001 / zpm #54. Per-segment engines
+    /// store all predicates UNQUALIFIED. Module-qualified keys are only
+    /// legitimate in the (legacy) shared-engine model, which is no longer used.
+    /// If a qualified key is encountered here, it is skipped defensively to
+    /// avoid producing a broken retractall goal.
     pub fn resetUserKnowledge(self: *Engine) EngineError!void {
         if (self.handle == null) return EngineError.RetractFailed;
 
         var it = self.declared_dynamic.iterator();
         while (it.next()) |entry| {
             const key = entry.key_ptr.*;
-            const slash = std.mem.indexOfScalar(u8, key, '/') orelse continue;
+
+            // Safety guard: per-segment engines must never have module-qualified
+            // keys (format `seg:F/A`). Trealla cannot retract module-qualified
+            // clauses (B001), so skip any such key rather than emit a broken
+            // `retractall(seg:foo(_))` goal. Real per-segment engines never
+            // reach this branch via normal operation; the guard is defensive.
+            if (std.mem.indexOfScalar(u8, key, ':') != null) continue;
+
+            const slash = std.mem.lastIndexOfScalar(u8, key, '/') orelse continue;
             const functor = key[0..slash];
             const arity = std.fmt.parseInt(usize, key[slash + 1 ..], 10) catch continue;
 
@@ -412,7 +484,7 @@ pub const Engine = struct {
                             const functor = std.mem.trim(u8, rest[j..slash], " \t");
                             const arity_str = std.mem.trim(u8, rest[slash + 1 .. close], " \t");
                             if (std.fmt.parseInt(usize, arity_str, 10)) |arity| {
-                                self.markDynamic(functor, arity) catch {};
+                                self.markDynamic(null, functor, arity) catch {};
                             } else |_| {}
                             pos += close + 1;
                             continue;
@@ -847,6 +919,7 @@ fn escapeForPrologAtom(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 pub const HeadFunctorArity = struct {
+    module: ?[]const u8 = null,
     functor: []const u8,
     arity: usize,
 };
@@ -870,14 +943,14 @@ pub fn parseHeadFunctorArity(clause: []const u8) ?HeadFunctorArity {
         s;
     if (head_raw.len == 0) return null;
 
-    // Strip module prefix (mod:pred → pred) from unquoted terms so
-    // declareDynamic receives the bare functor name.
+    var module: ?[]const u8 = null;
     const head = head: {
         if (head_raw[0] != '\'') {
             if (std.mem.indexOf(u8, head_raw, ":")) |colon| {
-                const stripped = head_raw[colon + 1 ..];
-                if (stripped.len == 0) return null;
-                break :head stripped;
+                const bare = head_raw[colon + 1 ..];
+                if (bare.len == 0) return null;
+                module = head_raw[0..colon];
+                break :head bare;
             }
         }
         break :head head_raw;
@@ -905,7 +978,7 @@ pub fn parseHeadFunctorArity(clause: []const u8) ?HeadFunctorArity {
 
     while (i < head.len and (head[i] == ' ' or head[i] == '\t')) : (i += 1) {}
     if (i >= head.len or head[i] != '(') {
-        return .{ .functor = functor, .arity = 0 };
+        return .{ .module = module, .functor = functor, .arity = 0 };
     }
 
     i += 1;
@@ -937,7 +1010,7 @@ pub fn parseHeadFunctorArity(clause: []const u8) ?HeadFunctorArity {
             '"' => in_dq = true,
             '(', '[', '{' => depth += 1,
             ')' => {
-                if (depth == 0) return .{ .functor = functor, .arity = arity };
+                if (depth == 0) return .{ .module = module, .functor = functor, .arity = arity };
                 depth -= 1;
             },
             ']', '}' => {
@@ -1201,6 +1274,50 @@ test "Engine.retractAll only removes matching predicate facts" {
     try testing.expectEqualStrings("cat", result.solutions[0].bindings.get("X").?.atom);
 }
 
+// B001 (zpm #54): Trealla cannot retract module-qualified clauses, so segment
+// isolation uses one dedicated engine per segment, NOT module prefixes in a
+// shared engine. These tests lock in that engine-level invariant: retractAll on
+// one engine never touches a same-named predicate in another engine.
+test "engine cross-module retract leaves default module intact" {
+    const seg_engine = try Engine.init(.{}, std.testing.io);
+    defer seg_engine.deinit();
+    const default_engine = try Engine.init(.{}, std.testing.io);
+    defer default_engine.deinit();
+
+    try seg_engine.assertFact("foo(a).");
+    try default_engine.assertFact("foo(b).");
+    try seg_engine.retractAll("foo(_)");
+
+    var seg_result = try seg_engine.query("foo(X)");
+    defer seg_result.deinit();
+    try testing.expectEqual(@as(usize, 0), seg_result.solutions.len);
+
+    var def_result = try default_engine.query("foo(X)");
+    defer def_result.deinit();
+    try testing.expectEqual(@as(usize, 1), def_result.solutions.len);
+    try testing.expectEqualStrings("b", def_result.solutions[0].bindings.get("X").?.atom);
+}
+
+test "engine cross-module retract on default leaves segment intact" {
+    const seg_engine = try Engine.init(.{}, std.testing.io);
+    defer seg_engine.deinit();
+    const default_engine = try Engine.init(.{}, std.testing.io);
+    defer default_engine.deinit();
+
+    try seg_engine.assertFact("foo(a).");
+    try default_engine.assertFact("foo(b).");
+    try default_engine.retractAll("foo(_)");
+
+    var def_result = try default_engine.query("foo(X)");
+    defer def_result.deinit();
+    try testing.expectEqual(@as(usize, 0), def_result.solutions.len);
+
+    var seg_result = try seg_engine.query("foo(X)");
+    defer seg_result.deinit();
+    try testing.expectEqual(@as(usize, 1), seg_result.solutions.len);
+    try testing.expectEqualStrings("a", seg_result.solutions[0].bindings.get("X").?.atom);
+}
+
 test "escapeForPrologAtom escapes single quotes and backslashes" {
     const out = try escapeForPrologAtom(testing.allocator, "a'b\\c");
     defer testing.allocator.free(out);
@@ -1311,25 +1428,175 @@ test "iterateDeclaredDynamic includes predicate from loadString dynamic directiv
     try testing.expect(found);
 }
 
-test "parseHeadFunctorArity strips module prefix from qualified term" {
-    const result = parseHeadFunctorArity("feature_auth:task_status(login, done)");
-    try testing.expect(result != null);
-    try testing.expectEqualStrings("task_status", result.?.functor);
-    try testing.expectEqual(@as(usize, 2), result.?.arity);
+test "markDynamic keys null module as bare F/A" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic(null, "foo", 1);
+
+    try testing.expect(engine.declared_dynamic.contains("foo/1"));
 }
 
-test "parseHeadFunctorArity strips module prefix from zero-arity qualified term" {
-    const result = parseHeadFunctorArity("my_mod:flag");
-    try testing.expect(result != null);
-    try testing.expectEqualStrings("flag", result.?.functor);
-    try testing.expectEqual(@as(usize, 0), result.?.arity);
+test "markDynamic null module zero arity still works" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic(null, "foo", 0);
+
+    try testing.expect(engine.declared_dynamic.contains("foo/0"));
+}
+
+test "markDynamic keys qualified predicates under mod:F/A" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic("seg", "foo", 1);
+
+    try testing.expect(engine.declared_dynamic.contains("seg:foo/1"));
+    try testing.expect(!engine.declared_dynamic.contains("foo/1"));
+}
+
+test "isDynamic distinguishes null vs qualified module" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic(null, "foo", 1);
+
+    try testing.expect(engine.isDynamic(null, "foo", 1));
+    try testing.expect(!engine.isDynamic("seg", "foo", 1));
+}
+
+test "isDynamic returns true for qualified module only after qualified markDynamic" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic("seg", "foo", 1);
+
+    try testing.expect(engine.isDynamic("seg", "foo", 1));
+    try testing.expect(!engine.isDynamic(null, "foo", 1));
+}
+
+test "markDynamic is idempotent for qualified predicates" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic("seg", "foo", 1);
+    try engine.markDynamic("seg", "foo", 1);
+
+    var count: usize = 0;
+    var it = engine.iterateDeclaredDynamic();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "seg:foo/1")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "iterateDeclaredDynamic yields both bare and qualified keys" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic(null, "foo", 1);
+    try engine.markDynamic("seg", "foo", 1);
+
+    var found_bare = false;
+    var found_qualified = false;
+    var it = engine.iterateDeclaredDynamic();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "foo/1")) found_bare = true;
+        if (std.mem.eql(u8, entry.key_ptr.*, "seg:foo/1")) found_qualified = true;
+    }
+    try testing.expect(found_bare);
+    try testing.expect(found_qualified);
+}
+
+test "resetUserKnowledge handles both bare and module-qualified keys" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.markDynamic(null, "baz", 1);
+    try engine.assertFact("baz(v1).");
+
+    const qkey = try engine.allocator.dupe(u8, "seg:baz/1");
+    errdefer engine.allocator.free(qkey);
+    try engine.declared_dynamic.put(qkey, {});
+
+    try engine.resetUserKnowledge();
+
+    var r = try engine.query("baz(X)");
+    defer r.deinit();
+    try testing.expectEqual(@as(usize, 0), r.solutions.len);
 }
 
 test "parseHeadFunctorArity handles unqualified term unchanged" {
     const result = parseHeadFunctorArity("task_status(login, done)");
     try testing.expect(result != null);
+    try testing.expectEqual(@as(?[]const u8, null), result.?.module);
     try testing.expectEqualStrings("task_status", result.?.functor);
     try testing.expectEqual(@as(usize, 2), result.?.arity);
+}
+
+test "parseHeadFunctorArity returns module null and arity 1 for unary unqualified term" {
+    const result = parseHeadFunctorArity("foo(a)");
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(?[]const u8, null), result.?.module);
+    try testing.expectEqualStrings("foo", result.?.functor);
+    try testing.expectEqual(@as(usize, 1), result.?.arity);
+}
+
+test "parseHeadFunctorArity returns null for empty functor after colon" {
+    const result = parseHeadFunctorArity("seg:");
+    try testing.expectEqual(@as(?HeadFunctorArity, null), result);
+}
+
+test "parseHeadFunctorArity preserves module prefix on multi-arity term" {
+    const result = parseHeadFunctorArity("seg:foo(a, b)");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("seg", result.?.module.?);
+    try testing.expectEqualStrings("foo", result.?.functor);
+    try testing.expectEqual(@as(usize, 2), result.?.arity);
+}
+
+test "parseHeadFunctorArity preserves module prefix on zero-arity term" {
+    const result = parseHeadFunctorArity("my_mod:flag");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("my_mod", result.?.module.?);
+    try testing.expectEqualStrings("flag", result.?.functor);
+    try testing.expectEqual(@as(usize, 0), result.?.arity);
+}
+
+test "parseHeadFunctorArity does not split quoted atom containing colon" {
+    const result = parseHeadFunctorArity("'Mod:Name'(x)");
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(?[]const u8, null), result.?.module);
+    try testing.expectEqualStrings("'Mod:Name'", result.?.functor);
+    try testing.expectEqual(@as(usize, 1), result.?.arity);
+}
+
+test "declareDynamic emits qualified directive for module-prefixed predicate" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    try engine.declareDynamic("seg", "foo", 1);
+    try engine.assertFact("seg:foo(a).");
+}
+
+test "declareDynamic is idempotent across modules" {
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    const initial_count = engine.declared_dynamic.count();
+
+    try engine.declareDynamic(null, "foo", 1);
+    try engine.declareDynamic("seg", "foo", 1);
+
+    try testing.expectEqual(initial_count + 2, engine.declared_dynamic.count());
+    try testing.expect(engine.declared_dynamic.contains("foo/1"));
+    try testing.expect(engine.declared_dynamic.contains("seg:foo/1"));
+
+    try engine.declareDynamic(null, "foo", 1);
+    try engine.declareDynamic("seg", "foo", 1);
+
+    try testing.expectEqual(initial_count + 2, engine.declared_dynamic.count());
 }
 
 test "g_engine_count increments and decrements correctly across Engine lifecycle" {

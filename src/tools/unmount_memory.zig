@@ -86,7 +86,7 @@ test "unmount_memory handler unmounts mounted memory" {
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("mounted_memory", dir_path, .project, .rw, engine, std.testing.io);
+    try registry.mount("mounted_memory", dir_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
@@ -186,7 +186,7 @@ test "unmount_memory handler removes entry from manifest on success" {
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("test_mem", dir_path, .project, .rw, engine, std.testing.io);
+    try registry.mount("test_mem", dir_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 
@@ -228,7 +228,7 @@ test "unmount_memory handler with no manifest in context succeeds without writin
 
     var registry = MemoryRegistry.init(std.testing.allocator);
     defer registry.deinit();
-    try registry.mount("test_mem", dir_path, .project, .rw, engine, std.testing.io);
+    try registry.mount("test_mem", dir_path, .project, .rw, std.testing.io);
     context.setMemoryRegistry(@ptrCast(&registry));
     defer context.clearMemoryRegistry();
 

@@ -38,16 +38,12 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         if (!valid) return mcp.tools.errorResult(allocator, "start_node must be a valid Prolog atom") catch return mcp.tools.ToolError.OutOfMemory;
     }
 
-    const engine = context.getEngine() orelse return mcp.tools.ToolError.ExecutionFailed;
+    const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse return mcp.tools.ToolError.ExecutionFailed;
 
     const goal = std.fmt.allocPrint(allocator, "path(X, {s})", .{start_node}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(goal);
 
-    const memory_name = context.resolveMemoryName(args);
-    const qualified_goal = context.qualifyClause(allocator, memory_name, goal) catch return mcp.tools.ToolError.OutOfMemory;
-    defer allocator.free(qualified_goal);
-
-    var query_result = engine.query(qualified_goal) catch {
+    var query_result = engine.query(goal) catch {
         return mcp.tools.errorResult(allocator, "Query execution failed") catch return mcp.tools.ToolError.OutOfMemory;
     };
     defer query_result.deinit();
