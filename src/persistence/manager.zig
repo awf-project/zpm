@@ -118,10 +118,10 @@ pub const PersistenceManager = struct {
         var it = dir.iterate();
         while (it.next(self.io) catch null) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.startsWith(u8, entry.name, "journal.")) continue;
+            // Reap only rotate() archives ("journal-<ts>.wal"); the hyphen prefix
+            // and .wal suffix exclude the active journal.wal and journal.lock.
+            if (!std.mem.startsWith(u8, entry.name, "journal-")) continue;
             if (!std.mem.endsWith(u8, entry.name, ".wal")) continue;
-            // Keep the active journal.wal, delete archived journal.*.wal
-            if (std.mem.eql(u8, entry.name, "journal.wal")) continue;
             dir.deleteFile(self.io, entry.name) catch {};
         }
     }
@@ -274,6 +274,43 @@ test "saveSnapshot creates snapshot file and rotates WAL" {
     try manager.saveSnapshot(engine, "kb_snap");
 
     _ = try tmp.dir.statFile(std.testing.io, "kb_snap.pl", .{});
+}
+
+test "saveSnapshot reaps rotated WAL archives but keeps active journal and lock" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var manager = try PersistenceManager.init(std.testing.allocator, dir_path, dir_path, std.testing.io);
+    defer manager.deinit();
+
+    try manager.journalMutation(.{ .timestamp = 1713000000, .clause = "fact(a)" });
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    // saveSnapshot rotates journal.wal -> journal-<ts>.wal, then cleanArchivedWals
+    // must delete that archive (the naming patterns must agree).
+    try manager.saveSnapshot(engine, "snap_one");
+
+    var archives: usize = 0;
+    var it_dir = try tmp.dir.openDir(std.testing.io, ".", .{ .iterate = true });
+    defer it_dir.close(std.testing.io);
+    var it = it_dir.iterate();
+    while (try it.next(std.testing.io)) |e| {
+        if (e.kind != .file) continue;
+        if (std.mem.startsWith(u8, e.name, "journal-") and std.mem.endsWith(u8, e.name, ".wal")) {
+            archives += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), archives);
+
+    // The active journal and the persistent lock file must survive the reap.
+    _ = try tmp.dir.statFile(std.testing.io, "journal.wal", .{});
+    _ = try tmp.dir.statFile(std.testing.io, "journal.lock", .{});
 }
 
 test "init with separate data and snapshot directories stores both paths" {

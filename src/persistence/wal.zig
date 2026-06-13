@@ -44,10 +44,63 @@ const JournalEntryJson = struct {
     clause: []const u8,
 };
 
+/// Mode for journal/lock files created via openat (rw-r--r--).
+const journal_file_mode: std.posix.mode_t = 0o644;
+
+/// Open (creating if absent) the active journal in O_APPEND mode: the kernel
+/// positions every write at EOF, so concurrent writers can't clobber records.
+fn openAppendJournal(dir: std.Io.Dir) !std.Io.File {
+    const flags: std.posix.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true };
+    const fd = try std.posix.openat(dir.handle, "journal.wal", flags, journal_file_mode);
+    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
+}
+
+/// Persistent advisory-lock target. Unlike journal.wal (which rotate() renames),
+/// it is never swapped out, so a lock held on it spans a rotation.
+fn openLockFile(dir: std.Io.Dir) !std.Io.File {
+    const flags: std.posix.O = .{ .ACCMODE = .RDWR, .CREAT = true };
+    const fd = try std.posix.openat(dir.handle, "journal.lock", flags, journal_file_mode);
+    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
+}
+
+/// Acquire an exclusive advisory lock (blocking), serializing the multi-syscall
+/// write sequence across processes.
+fn lockEx(fd: std.posix.fd_t) !void {
+    while (true) {
+        if (std.c.flock(fd, std.posix.LOCK.EX) == 0) return;
+        if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue; // spurious; retry
+        return error.FlockFailed;
+    }
+}
+
+/// Release the advisory lock. flock auto-releases on close(), so a missed
+/// unlock is non-fatal.
+fn unlock(fd: std.posix.fd_t) void {
+    _ = std.c.flock(fd, std.posix.LOCK.UN);
+}
+
+/// Truncate the journal file to `n` bytes (torn-tail recovery).
+fn truncateTo(fd: std.posix.fd_t, n: u64) !void {
+    const len: std.c.off_t = @intCast(n);
+    if (std.c.ftruncate(fd, len) != 0) return error.TruncateFailed;
+}
+
+/// Open the live journal by path, truncate to `n` bytes, persist. Re-opened
+/// (not cached) so it targets the current inode, never a rotated-away one.
+fn truncateJournal(io: std.Io, dir: std.Io.Dir, n: u64) !void {
+    var jf = try openAppendJournal(dir);
+    defer jf.close(io);
+    try truncateTo(jf.handle, n);
+    try jf.sync(io);
+}
+
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
     dir_path: []const u8,
-    file: std.Io.File,
+    // The journal fd is deliberately NOT cached: every op re-opens journal.wal
+    // by path (always the live inode) and serializes on this rename-stable
+    // lock_file, so a concurrent rotate() can't strand a write in the archive.
+    lock_file: std.Io.File,
     io: std.Io,
 
     pub fn init(allocator: std.mem.Allocator, dir_path: []const u8, io: std.Io) !WriteAheadLog {
@@ -55,18 +108,21 @@ pub const WriteAheadLog = struct {
         errdefer allocator.free(owned_path);
         var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
         defer dir.close(io);
-        const file = try dir.createFile(io, "journal.wal", .{ .truncate = false });
-        _ = std.c.lseek(file.handle, 0, std.c.SEEK.END);
+        // Ensure journal.wal exists (size 0 on first boot); appends re-open it.
+        const j = try openAppendJournal(dir);
+        j.close(io);
+        const lock_file = try openLockFile(dir);
+        errdefer lock_file.close(io);
         return .{
             .allocator = allocator,
             .dir_path = owned_path,
-            .file = file,
+            .lock_file = lock_file,
             .io = io,
         };
     }
 
     pub fn deinit(self: *WriteAheadLog) void {
-        self.file.close(self.io);
+        self.lock_file.close(self.io);
         self.allocator.free(self.dir_path);
     }
 
@@ -78,6 +134,8 @@ pub const WriteAheadLog = struct {
     /// either all entries land in the journal or none do — no partial prefix
     /// that would leave replay reconstructing a half-applied mutation.
     pub fn appendBatch(self: *WriteAheadLog, entries: []const JournalEntry) !void {
+        if (entries.len == 0) return; // skip the lock + fsync for an empty batch
+
         var aw: std.Io.Writer.Allocating = .init(self.allocator);
         defer aw.deinit();
         for (entries) |entry| {
@@ -94,38 +152,76 @@ pub const WriteAheadLog = struct {
         }
         const buf = try aw.toOwnedSlice();
         defer self.allocator.free(buf);
-        try self.file.writeStreamingAll(self.io, buf);
-        try self.file.sync(self.io);
+
+        var dir = try std.Io.Dir.openDirAbsolute(self.io, self.dir_path, .{});
+        defer dir.close(self.io);
+        // Lock first, THEN open the live journal: a rotate() that completed
+        // before we got the lock must not leave us writing the archived inode.
+        try lockEx(self.lock_file.handle);
+        defer unlock(self.lock_file.handle);
+        var file = try openAppendJournal(dir);
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, buf);
+        try file.sync(self.io);
     }
 
     pub fn replay(self: *WriteAheadLog, engine: *Engine) !void {
         var dir = std.Io.Dir.openDirAbsolute(self.io, self.dir_path, .{}) catch return;
         defer dir.close(self.io);
+        // Hold the lock across the whole read+parse+truncate (replay also runs
+        // at runtime via mount_memory / retract_assumptions). Otherwise a
+        // concurrent append could land between our read and ftruncate, and we'd
+        // truncate away a record another process already acknowledged.
+        try lockEx(self.lock_file.handle);
+        defer unlock(self.lock_file.handle);
         const buf = dir.readFileAlloc(self.io, "journal.wal", self.allocator, .unlimited) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
         defer self.allocator.free(buf);
+        // Torn-tail truncate (WAL crash recovery): replay the valid prefix; on
+        // the first unparseable/unknown-op line, truncate to the last good
+        // record, warn, and return success. Trailing bytes after a crash- or
+        // clobber-induced bad line are intentionally discarded for a usable boot.
+        var good_bytes: usize = 0; // end of the last fully-applied record (incl. its newline)
         var iter = std.mem.splitScalar(u8, buf, '\n');
         while (iter.next()) |line| {
-            if (line.len == 0) continue;
+            // Offset past this line's newline (splitScalar yields buf subslices);
+            // capped at buf.len for a final line with no trailing newline.
+            const line_start = @intFromPtr(line.ptr) - @intFromPtr(buf.ptr);
+            const after_newline = @min(line_start + line.len + 1, buf.len);
 
-            // Corrupt entries fail boot — partial replay would leave the KB
-            // in an observable state that does not match the journal.
-            const parsed = try std.json.parseFromSlice(
+            if (line.len == 0) {
+                // Blank line: valid no-op; carry the watermark past it.
+                good_bytes = after_newline;
+                continue;
+            }
+
+            const parsed = std.json.parseFromSlice(
                 JournalEntryJson,
                 self.allocator,
                 line,
                 .{},
-            );
+            ) catch {
+                // First unparseable line => torn tail.
+                try truncateJournal(self.io, dir, good_bytes);
+                std.log.warn("WAL torn tail at byte {d}; truncated journal (trailing bytes discarded)", .{good_bytes});
+                return;
+            };
             defer parsed.deinit();
 
-            const op = Operation.parse(parsed.value.op) orelse return error.CorruptWalEntry;
+            const op = Operation.parse(parsed.value.op) orelse {
+                // Unknown op is also a corrupt record under torn-tail semantics.
+                try truncateJournal(self.io, dir, good_bytes);
+                std.log.warn("WAL corrupt op at byte {d}; truncated journal (trailing bytes discarded)", .{good_bytes});
+                return;
+            };
             switch (op) {
                 .assert => try engine.assertFact(parsed.value.clause),
                 .retract => try engine.retractFact(parsed.value.clause),
                 .retractall => try engine.retractAll(parsed.value.clause),
             }
+            good_bytes = after_newline;
         }
     }
 
@@ -133,31 +229,22 @@ pub const WriteAheadLog = struct {
         var dir = try std.Io.Dir.openDirAbsolute(self.io, self.dir_path, .{});
         defer dir.close(self.io);
 
+        // Lock across the whole rename+recreate so a concurrent appender blocks
+        // instead of writing into the inode being archived.
+        try lockEx(self.lock_file.handle);
+        defer unlock(self.lock_file.handle);
+
         var name_buf: [64]u8 = undefined;
-        const ts = blk: {
-            var _ts: std.posix.timespec = undefined;
-            _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &_ts);
-            break :blk _ts.sec;
-        };
-        const archive = try std.fmt.bufPrint(&name_buf, "journal-{d}.wal", .{ts});
+        var raw_ts: std.posix.timespec = undefined;
+        _ = std.c.clock_gettime(std.posix.CLOCK.REALTIME, &raw_ts);
+        // Nanoseconds avoid same-second archive name collisions (silent overwrite).
+        const archive = try std.fmt.bufPrint(&name_buf, "journal-{d}-{d}.wal", .{ raw_ts.sec, raw_ts.nsec });
 
-        const old_file = self.file;
-        old_file.close(self.io);
-
-        std.Io.Dir.rename(dir, "journal.wal", dir, archive, self.io) catch |rename_err| {
-            // Reopen the original journal so self.file remains valid.
-            self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = false }) catch
-                return rename_err;
-            _ = std.c.lseek(self.file.handle, 0, std.c.SEEK.END);
-            return rename_err;
-        };
-        self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = true }) catch |err| {
-            std.Io.Dir.rename(dir, archive, dir, "journal.wal", self.io) catch {};
-            self.file = dir.createFile(self.io, "journal.wal", .{ .truncate = false }) catch
-                return err;
-            _ = std.c.lseek(self.file.handle, 0, std.c.SEEK.END);
-            return err;
-        };
+        // Rename failure leaves journal.wal intact; on success recreate it empty
+        // (and the next append's O_CREAT self-heals if this open fails).
+        try std.Io.Dir.rename(dir, "journal.wal", dir, archive, self.io);
+        const fresh = try openAppendJournal(dir);
+        fresh.close(self.io);
     }
 };
 
@@ -273,7 +360,7 @@ test "replay parses JSON Lines and asserts entries" {
     try std.testing.expect(result.solutions.len == 2);
 }
 
-test "init opens journal.wal for append" {
+test "init creates an empty journal.wal" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
@@ -282,8 +369,10 @@ test "init opens journal.wal for append" {
     var wal = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
     defer wal.deinit();
 
-    const stat = try wal.file.stat(std.testing.io);
-    try std.testing.expect(stat.size == 0);
+    // The journal fd is not cached on the struct; verify the file exists on
+    // disk at size 0 (eagerly created by init for replay/stat).
+    const st = try tmp.dir.statFile(std.testing.io, "journal.wal", .{});
+    try std.testing.expect(st.size == 0);
 }
 
 test "append handles clause larger than 4KB (no hardcoded limit)" {
@@ -321,15 +410,20 @@ test "append handles clause containing newline (JSON-escaped)" {
     try std.testing.expectEqual(@as(usize, 1), newline_count);
 }
 
-test "replay propagates error on corrupt (non-JSON) journal entry" {
+test "replay truncates at corrupt (non-JSON) journal entry, replays good prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
+    // WAL semantics changed: a corrupt entry no longer fails boot. Under the
+    // torn-tail-truncate policy, replay applies the valid prefix, truncates the
+    // journal at the first bad record, and returns success. Any data AFTER the
+    // corruption (here there is none) would be intentionally discarded.
+    const good = "{\"ts\":1,\"op\":\"assert\",\"clause\":\"fact(a)\"}\n";
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "journal.wal",
-        .data = "{\"ts\":1,\"op\":\"assert\",\"clause\":\"fact(a)\"}\nnot-valid-json\n",
+        .data = good ++ "not-valid-json\n",
     });
 
     var wal = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
@@ -338,18 +432,32 @@ test "replay propagates error on corrupt (non-JSON) journal entry" {
     var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    try std.testing.expectError(error.SyntaxError, wal.replay(engine));
+    try wal.replay(engine);
+
+    // The one good fact was applied.
+    var result = try engine.query("fact(X)");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.solutions.len);
+
+    // The journal was truncated to just the good prefix.
+    const after = try tmp.dir.readFileAlloc(std.testing.io, "journal.wal", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(good, after);
 }
 
-test "replay propagates error on unknown op in journal entry" {
+test "replay truncates at unknown op in journal entry, replays good prefix" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
 
+    // An unknown op is a well-formed JSON line but a semantically corrupt
+    // record. Under torn-tail semantics it is treated like any first-bad-record:
+    // truncate at it and return success rather than propagating an error.
+    const good = "{\"ts\":1,\"op\":\"assert\",\"clause\":\"fact(a)\"}\n";
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "journal.wal",
-        .data = "{\"ts\":1,\"op\":\"bogus\",\"clause\":\"fact(a)\"}\n",
+        .data = good ++ "{\"ts\":2,\"op\":\"bogus\",\"clause\":\"fact(b)\"}\n",
     });
 
     var wal = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
@@ -358,7 +466,15 @@ test "replay propagates error on unknown op in journal entry" {
     var engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
 
-    try std.testing.expectError(error.CorruptWalEntry, wal.replay(engine));
+    try wal.replay(engine);
+
+    var result = try engine.query("fact(X)");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.solutions.len);
+
+    const after = try tmp.dir.readFileAlloc(std.testing.io, "journal.wal", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(good, after);
 }
 
 test "replay of retract_assumption journal entries removes facts" {
@@ -443,6 +559,88 @@ test "appendBatch writes all entries atomically" {
     try std.testing.expect(std.mem.indexOf(u8, content, "gamma") != null);
 }
 
+test "concurrent writers do not clobber: every line is valid JSON and count matches" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    // Two independent WriteAheadLog handles on the SAME journal.wal, mimicking
+    // two zpm processes (e.g. overlapping MCP sessions) appending concurrently.
+    var wal_a = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
+    defer wal_a.deinit();
+    var wal_b = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
+    defer wal_b.deinit();
+
+    const rounds: usize = 50;
+    // Use a large clause so writeStreamingAll may split into multiple write()
+    // syscalls; only flock(LOCK_EX) around the whole write serializes that.
+    const big = try std.testing.allocator.alloc(u8, 2048);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'x');
+    const big_clause = try std.fmt.allocPrint(std.testing.allocator, "data_b('{s}')", .{big});
+    defer std.testing.allocator.free(big_clause);
+
+    var i: usize = 0;
+    while (i < rounds) : (i += 1) {
+        const clause_a = try std.fmt.allocPrint(std.testing.allocator, "fact_a({d})", .{i});
+        defer std.testing.allocator.free(clause_a);
+        try wal_a.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = clause_a });
+        try wal_b.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = big_clause });
+    }
+
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "journal.wal", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(content);
+
+    var line_count: usize = 0;
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len == 0) continue;
+        line_count += 1;
+        // Each non-empty line must independently parse: no half-overwritten
+        // lines and no two records packed onto one line.
+        const parsed = try std.json.parseFromSlice(JournalEntryJson, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+    }
+    // 2 writers * rounds appends, none lost or clobbered.
+    try std.testing.expectEqual(@as(usize, rounds * 2), line_count);
+}
+
+test "replay torn tail: valid prefix replayed, file truncated, no error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    // Three valid records followed by a torn tail (partial JSON, no newline) —
+    // exactly what a process killed mid-write leaves behind.
+    const good_prefix =
+        "{\"ts\":1,\"op\":\"assert\",\"clause\":\"fruit(apple)\"}\n" ++
+        "{\"ts\":2,\"op\":\"assert\",\"clause\":\"fruit(banana)\"}\n" ++
+        "{\"ts\":3,\"op\":\"assert\",\"clause\":\"fruit(cherry)\"}\n";
+    const torn = good_prefix ++ "{\"ts\":4,\"op\":\"asse";
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "journal.wal", .data = torn });
+
+    var wal = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
+    defer wal.deinit();
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    // Torn-tail recovery: must NOT propagate an error.
+    try wal.replay(engine);
+
+    // The three valid records were applied.
+    var result = try engine.query("fruit(X)");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.solutions.len);
+
+    // The torn tail was truncated away: file is exactly the good prefix.
+    const after = try tmp.dir.readFileAlloc(std.testing.io, "journal.wal", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(good_prefix, after);
+}
+
 test "appendBatch writes nothing when entries is empty" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -457,4 +655,40 @@ test "appendBatch writes nothing when entries is empty" {
     const empty_content = try tmp.dir.readFileAlloc(std.testing.io, "journal.wal", std.testing.allocator, .limited(16));
     defer std.testing.allocator.free(empty_content);
     try std.testing.expectEqual(@as(usize, 0), empty_content.len);
+}
+
+test "rotate does not strand a concurrent writer's append in the archive" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    // Two handles on the same journal, mimicking two processes: one appends,
+    // the other rotates underneath it.
+    var writer = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
+    defer writer.deinit();
+    var rotator = try WriteAheadLog.init(std.testing.allocator, dir_path, std.testing.io);
+    defer rotator.deinit();
+
+    try writer.append(.{ .timestamp = 1, .op = .assert, .clause = "before(rotation)" });
+    // Another process rotates journal.wal out to the archive and recreates it.
+    try rotator.rotate();
+    // The writer must target the LIVE journal.wal, NOT the archived inode. With
+    // a cached fd this record would land in the archive and be lost; with the
+    // per-append re-open it lands in the active journal.
+    try writer.append(.{ .timestamp = 2, .op = .assert, .clause = "after(rotation)" });
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try rotator.replay(engine);
+
+    // Active journal holds only the post-rotation record (pre-rotation one was
+    // archived, so replay does not see it).
+    var after = try engine.query("after(X)");
+    defer after.deinit();
+    try std.testing.expectEqual(@as(usize, 1), after.solutions.len);
+
+    var before = try engine.query("before(X)");
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 0), before.solutions.len);
 }
