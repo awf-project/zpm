@@ -160,7 +160,12 @@ pub fn initBootstrap(allocator: std.mem.Allocator, io: std.Io) anyerror!Context 
 
     var pm = try PersistenceManager.init(allocator, paths.data_dir, paths.kb_dir, io);
     errdefer pm.deinit();
-    try pm.restore(engine);
+    // Restore must never brick the boot to "not initialized": degrade on error
+    // (like the mounts.json handling below), keeping a usable engine. OOM stays fatal.
+    pm.restore(engine) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => std.log.warn("persistence restore degraded: {}", .{err}),
+    };
 
     const file_exists = blk: {
         const f = std.Io.Dir.openFileAbsolute(io, paths.manifest_path, .{}) catch |err| switch (err) {

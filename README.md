@@ -1,6 +1,7 @@
 # zpm
 
-A high-performance MCP (Model Context Protocol) server written in Zig, designed to bridge Large Language Models with a Prolog inference engine for deterministic logical reasoning.
+A high-performance MCP (Model Context Protocol) server written in Zig, designed to bridge 
+Large Language Models with a Prolog inference engine for deterministic logical reasoning.
 
 ## Features
 
@@ -28,7 +29,7 @@ A high-performance MCP (Model Context Protocol) server written in Zig, designed 
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/download/) >= 0.15.2
+- [Zig](https://ziglang.org/download/) >= 0.16.0
 - C compiler (gcc or clang)
 
 ### Install
@@ -99,7 +100,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 {
   "mcpServers": {
     "zpm": {
-      "command": "/path/to/zig-out/bin/zpm",
+      "command": "zpm",
       "args": ["serve"]
     }
   }
@@ -155,7 +156,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 ## Documentation
 
-Browse the documentation online at **https://awf-project.github.io/zpm/** or in the [`docs/`](docs/) directory:
+Browse the documentation online at **https://awf-project.ai/zpm/** or in the [`docs/`](docs/) directory:
 
 - [Project Brief](docs/project-brief.md) -- Vision and objectives
 - [Getting Started](docs/getting-started/) -- Build, install, and first steps

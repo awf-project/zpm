@@ -32,6 +32,12 @@ pub fn serveAction() anyerror!void {
     defer context.clearKbDir();
     defer context.clearEngine();
 
+    // Declared before server so LIFO defer frees the arena AFTER server.deinit()
+    // (which frees only the HashMap backing array, not the stored schema trees).
+    var schema_arena = std.heap.ArenaAllocator.init(alloc);
+    defer schema_arena.deinit();
+    const schema_alloc = schema_arena.allocator();
+
     var server = mcp.Server.init(alloc, .{
         .name = "zpm",
         .version = version,
@@ -41,8 +47,23 @@ pub fn serveAction() anyerror!void {
     defer server.deinit();
 
     for (registry.all()) |def| {
-        try server.addTool(try def.build(alloc));
+        try server.addTool(try def.build(schema_alloc));
     }
 
     try server.run(io, alloc, .stdio);
+}
+
+test "all registry tool schemas build through an arena without GPA leak" {
+    // Allocate schemas from an arena backed by the test allocator. arena.deinit()
+    // frees them in one shot; anything that bypasses the arena (e.g. a build() that
+    // hardcoded another allocator) would leak and be flagged by std.testing.allocator.
+    // Guards the invariant "build() respects its allocator argument"; it cannot
+    // observe serveAction()'s call site directly (blocking I/O, not unit-testable).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const schema_alloc = arena.allocator();
+
+    for (registry.all()) |def| {
+        _ = try def.build(schema_alloc);
+    }
 }

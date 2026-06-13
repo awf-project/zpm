@@ -180,10 +180,12 @@ test "handler returns ExecutionFailed when journal write fails" {
     context.setPersistenceManager(&pm);
     defer context.clearPersistenceManager();
 
-    // Swap the WAL fd for a read-only /dev/null so writeAll fails.
-    if (pm.wal) |*w| {
-        w.file.close(std.testing.io);
-        w.file = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/null", .{ .mode = .read_only });
+    // Force the next journal append to fail: replace journal.wal with a
+    // directory so the per-append O_WRONLY open returns IsDir. Robust even when
+    // tests run as root (a read-only file would still be writable).
+    if (pm.wal) |_| {
+        try tmp.dir.deleteFile(std.testing.io, "journal.wal");
+        try tmp.dir.createDir(std.testing.io, "journal.wal", .default_dir);
     }
 
     var obj: std.json.ObjectMap = .{};
