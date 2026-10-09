@@ -1,0 +1,12 @@
+# Tower local project configuration.
+#
+# [plugins]
+# disabled = ["ast"]   # skip loading a plugin by its *.wasm file stem
+#
+# [plugins.formatter.tools.<id>] — external formatters run by plugin_fmt when a
+# file changes. mode = "filter" (default, stdin->stdout) or "inplace".
+# Uninstalled tools are skipped, so you can safely keep entries you do not use.
+
+[plugins.formatter.tools.zigfmt]
+argv = ["zig", "fmt", "--stdin"]
+extensions = ["zig"]

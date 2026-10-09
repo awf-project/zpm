@@ -52,7 +52,7 @@ Most knowledge and reasoning tools accept an optional `memory` parameter that ta
 
 Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an error if the target memory is mounted read-only. The following tools support the `memory` parameter: `remember_fact`, `upsert_fact`, `assume_fact`, `forget_fact`, `update_fact`, `rename_predicate`, `query_logic`, `define_rule`, `explain_why`, `trace_dependency`, `retract_assumption`, `retract_assumptions`, `list_assumptions`, `get_belief_status`, `get_justification`, `verify_consistency`, `clear_context`, `get_knowledge_schema`, `find_predicate_references`, `save_snapshot`, `restore_snapshot`, `list_snapshots`.
 
-Excluded tools: `echo` (no knowledge base interaction), `get_persistence_status` (reports global persistence layer status), and `get_kb_overview` (snapshots the currently active engine database; namespace-scoped filtering is deferred).
+Excluded tools: `echo` (no knowledge base interaction), `get_persistence_status` (reports global persistence layer status), and `get_kb_overview` (pending memory-aware inventory exception: its output combines selected-memory and global information, so the scope of a `memory` selector needs a separate decision).
 
 ## Overview
 
@@ -354,6 +354,10 @@ If the rule has invalid Prolog syntax (e.g. unbalanced parentheses):
     "goal": {
       "type": "string",
       "description": "A Prolog goal to query (e.g. \"fruit(X)\", \"parent(john, Y)\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["goal"]
@@ -450,6 +454,10 @@ If the `goal` argument is missing, null, or empty:
     "start_node": {
       "type": "string",
       "description": "The starting node to trace dependencies from (e.g. \"a\", \"module_a\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["start_node"]
@@ -546,6 +554,10 @@ If the `start_node` argument is missing, null, or empty:
     "scope": {
       "type": "string",
       "description": "Optional domain scope to filter integrity checks (e.g. \"deployment\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": []
@@ -648,6 +660,10 @@ If the Prolog engine is unavailable:
     "max_depth": {
       "type": "integer",
       "description": "Optional maximum proof tree depth (truncates deeper levels)"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["fact"]
@@ -1384,7 +1400,12 @@ The tool never raises an error for `null`/missing arguments, an empty KB, missin
 ```json
 {
   "type": "object",
-  "properties": {},
+  "properties": {
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
+    }
+  },
   "required": []
 }
 ```
@@ -2031,6 +2052,10 @@ Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (
     "fact": {
       "type": "string",
       "description": "The Prolog fact to check belief status for (e.g. \"available(server_a)\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["fact"]
@@ -2112,6 +2137,10 @@ If the `fact` argument is missing, null, or empty:
     "assumption": {
       "type": "string",
       "description": "The assumption name to query (e.g. \"infra_healthy\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["assumption"]
@@ -2189,7 +2218,12 @@ Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (
 ```json
 {
   "type": "object",
-  "properties": {},
+  "properties": {
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
+    }
+  },
   "required": []
 }
 ```
@@ -2266,6 +2300,10 @@ Returns `InvalidArguments` if the `assumption` name is not a valid Prolog atom (
     "assumption": {
       "type": "string",
       "description": "The assumption name to retract (e.g. \"infra_healthy\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["assumption"]
@@ -2369,6 +2407,10 @@ If the assumption does not exist:
     "pattern": {
       "type": "string",
       "description": "A glob-style pattern to match assumption names (e.g. \"infra_*\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["pattern"]
@@ -2452,6 +2494,10 @@ Returns `InvalidArguments` if the `pattern` contains characters outside the allo
     "name": {
       "type": "string",
       "description": "A name for the snapshot (e.g. \"before_refactor\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["name"]
@@ -2533,6 +2579,10 @@ If the `name` argument is missing, null, or empty:
     "name": {
       "type": "string",
       "description": "The snapshot name to restore from (e.g. \"before_refactor\")"
+    },
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
     }
   },
   "required": ["name"]
@@ -2628,7 +2678,12 @@ If the `name` argument is missing, null, or empty:
 ```json
 {
   "type": "object",
-  "properties": {},
+  "properties": {
+    "memory": {
+      "type": "string",
+      "description": "Target memory segment (optional, defaults to default memory)"
+    }
+  },
   "required": []
 }
 ```

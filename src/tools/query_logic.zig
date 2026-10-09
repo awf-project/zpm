@@ -10,6 +10,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit(allocator);
     _ = try schema.addString(allocator, "goal", "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build(allocator);
 
     return .{
@@ -119,6 +120,34 @@ fn writeTermJson(writer: *std.Io.Writer, term: Term) !void {
 }
 
 const Engine = engine_mod.Engine;
+
+test "tool schema exposes memory as an optional string with the exact description" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const t = try tool(allocator);
+    const schema = t.inputSchema orelse return error.MissingSchema;
+    const properties = schema.properties orelse return error.MissingProperties;
+    const properties_object = switch (properties) {
+        .object => |object| object,
+        else => return error.UnexpectedPropertiesType,
+    };
+    const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
+    const memory_object = switch (memory) {
+        .object => |object| object,
+        else => return error.UnexpectedMemoryPropertyType,
+    };
+
+    try std.testing.expectEqualStrings("string", memory_object.get("type").?.string);
+    try std.testing.expectEqualStrings(
+        "Target memory segment (optional, defaults to default memory)",
+        memory_object.get("description").?.string,
+    );
+    for (schema.required orelse &.{}) |required| {
+        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+    }
+}
 
 test "handler returns JSON array of bindings for matching goal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -257,6 +286,46 @@ test "named memory query routes to qualified goal" {
     try std.testing.expect(std.mem.indexOf(u8, text, "auth_check") != null);
 }
 
+test "recognized query prefix routes to mounted memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var kfile = try tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kfile.close(std.testing.io);
+    try kfile.writeStreamingAll(std.testing.io,
+        \\:- dynamic(task_status/2).
+        \\task_status(auth_check, done).
+        \\
+    );
+
+    var registry = MemoryRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", dir_path, .project, .ro, std.testing.io);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "feature_auth:task_status(X, done)" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(null, std.testing.io, allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "auth_check") != null);
+}
+
 test "default memory uses unqualified goal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -321,5 +390,8 @@ test "handler returns error result when named memory is not mounted" {
 
     const result = try handler(null, std.testing.io, allocator, args);
     try std.testing.expect(result.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "not mounted") != null);
+    try std.testing.expectEqualStrings(
+        "Memory not mounted: nonexistent_module",
+        result.content[0].text.text,
+    );
 }
