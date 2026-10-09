@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Features: F001-F012, F016
+# Feature: B002
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 . "$(dirname "$0")/test_helpers.sh"
@@ -29,6 +30,29 @@ assert_contains "echo tool has description" "$TOOLS_LINE" '"description":"Echo b
 assert_contains "echo tool has inputSchema" "$TOOLS_LINE" '"inputSchema":'
 for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency verify_consistency explain_why get_knowledge_schema forget_fact clear_context update_fact upsert_fact assume_fact retract_assumption get_belief_status get_justification list_assumptions retract_assumptions save_snapshot restore_snapshot list_snapshots get_persistence_status get_kb_overview find_predicate_references rename_predicate; do
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
+done
+
+B002_MEMORY_TOOLS=(
+    query_logic
+    explain_why
+    trace_dependency
+    verify_consistency
+    get_belief_status
+    get_justification
+    save_snapshot
+    restore_snapshot
+    list_assumptions
+    get_knowledge_schema
+    list_snapshots
+)
+B002_MEMORY_DESCRIPTION='Target memory segment (optional, defaults to default memory)'
+for TOOL_NAME in "${B002_MEMORY_TOOLS[@]}"; do
+    MEMORY_SCHEMA=$(jq -c --arg name "$TOOL_NAME" '.result.tools[] | select(.name == $name) | .inputSchema.properties.memory' <<<"$TOOLS_LINE")
+    MEMORY_REQUIRED=$(jq -r --arg name "$TOOL_NAME" 'any(.result.tools[] | select(.name == $name) | (.inputSchema.required // [])[]; . == "memory")' <<<"$TOOLS_LINE")
+    assert_equals "tools/list $TOOL_NAME: memory property exists" "object" "$(jq -r 'type' <<<"$MEMORY_SCHEMA")"
+    assert_equals "tools/list $TOOL_NAME: memory type is string" "string" "$(jq -r '.type' <<<"$MEMORY_SCHEMA")"
+    assert_equals "tools/list $TOOL_NAME: memory description is exact" "$B002_MEMORY_DESCRIPTION" "$(jq -r '.description' <<<"$MEMORY_SCHEMA")"
+    assert_equals "tools/list $TOOL_NAME: memory is not required" "false" "$MEMORY_REQUIRED"
 done
 
 # --- Test 3: tools/call echo returns the message ---
@@ -1629,7 +1653,7 @@ _t70_assert() {
     local output="$1" transport="${2:-transport}"
     # Scope to the list_assumptions response only. The preceding assume-fact and
     # retract-assumption segments echo t70_guess in their confirmations (CLI:
-    # "Assumed: ... [assumption: t70_guess]" / "Retracted assumption: t70_guess";
+    # Assumed and retracted output both contain the t70_guess assumption name;
     # MCP: arguments are reflected in the tool call responses), so a full-transcript
     # absent-check is structurally impossible. We verify the end-state instead.
     local list_line
@@ -2258,5 +2282,28 @@ assert_contains "B001 asymmetry: clear_context foo(_) in pr_test succeeds" "$ASY
 assert_contains "B001 asymmetry: default foo(X) returns b after segment clear" "$ASYM_QUERY_DEFAULT_LINE" 'b'
 assert_contains "B001 asymmetry: pr_test foo(X) returns empty after segment clear" "$ASYM_QUERY_SEG_LINE" '[]'
 rm -rf "$PERSIST_DIR_B001_ASYM"
+
+# --- B002: public memory-selection runtime contract ---
+echo "Test: B002 MCP named/default isolation, prefix routing, and unmounted error"
+B002_MEMORY_INPUT="${INIT_REQ}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":3100,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"b002_contract\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3101,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"b002_contract\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3102,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"b002_contract_only(mcp_cli_agreement)\",\"memory\":\"b002_contract\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3103,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract_only(X)\",\"memory\":\"b002_contract\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3104,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract_only(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3105,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract:b002_contract_only(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3106,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"true\",\"memory\":\"b002_unmounted\"}}}"
+RESPONSE=$(send_mcp "$B002_MEMORY_INPUT")
+B002_NAMED_LINE=$(echo "$RESPONSE" | grep '"id":3103')
+B002_DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":3104')
+B002_PREFIX_LINE=$(echo "$RESPONSE" | grep '"id":3105')
+B002_UNMOUNTED_LINE=$(echo "$RESPONSE" | grep '"id":3106')
+
+assert_contains "query_logic named-memory isolation: explicit b002_contract returns predicate" "$B002_NAMED_LINE" 'mcp_cli_agreement'
+assert_contains "query_logic default-memory isolation: omitted memory does not return predicate" "$B002_DEFAULT_LINE" '[]'
+assert_contains "query_logic recognized-prefix routing: b002_contract prefix returns predicate" "$B002_PREFIX_LINE" 'mcp_cli_agreement'
+assert_contains "query_logic unmounted-memory scenario: response is an error" "$B002_UNMOUNTED_LINE" '"isError":true'
+assert_contains "query_logic unmounted-memory scenario: reports exact memory error" "$B002_UNMOUNTED_LINE" 'Memory not mounted: b002_unmounted'
 
 test_summary

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **B002**: MCP tool schemas and CLI documentation now advertise the optional `memory` selector for the 11 affected read and snapshot tools, including `get-knowledge-schema`
+
 ## [0.4.1] - 2026-06-13
 
 ### Fixed

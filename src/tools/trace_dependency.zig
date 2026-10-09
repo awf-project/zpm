@@ -2,16 +2,18 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
 pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
     var schema = mcp.schema.InputSchemaBuilder.init(allocator);
     defer schema.deinit(allocator);
     _ = try schema.addString(allocator, "start_node", "The reference atom whose dependents are traced. The tool queries path(X, start_node), so the caller's path/2 rules must be written as path(X, Start) :- depends_on(Start, X) (or similar), i.e. second argument is the source and first is the destination.", true);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
     const built = try schema.build(allocator);
 
     return .{
         .name = "trace_dependency",
-        .description = "Trace transitive dependents of an atom via path/2 rules. Returns every X such that path(X, start_node) is provable. Convention: path/2 rules must have the source as the SECOND argument (path(X, Start) :- depends_on(Start, X), ...). If your rules put the source first, swap the argument order before calling.",
+        .description = "Trace transitive dependents of an atom via path/2 rules. Returns every X such that path(X, start_node) is provable. Convention: path/2 rules must have the source as the SECOND argument (for example, path(X, Start) :- depends_on(Start, X)). If your rules put the source first, swap the argument order before calling.",
         .inputSchema = .{
             .properties = built.object.get("properties"),
             .required = &.{"start_node"},
@@ -89,6 +91,34 @@ fn buildDepsJson(allocator: std.mem.Allocator, solutions: []engine_mod.Solution)
 }
 
 const Engine = engine_mod.Engine;
+
+test "tool schema exposes memory as an optional string with the exact description" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const t = try tool(allocator);
+    const schema = t.inputSchema orelse return error.MissingSchema;
+    const properties = schema.properties orelse return error.MissingProperties;
+    const properties_object = switch (properties) {
+        .object => |object| object,
+        else => return error.UnexpectedPropertiesType,
+    };
+    const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
+    const memory_object = switch (memory) {
+        .object => |object| object,
+        else => return error.UnexpectedMemoryPropertyType,
+    };
+
+    try std.testing.expectEqualStrings("string", memory_object.get("type").?.string);
+    try std.testing.expectEqualStrings(
+        "Target memory segment (optional, defaults to default memory)",
+        memory_object.get("description").?.string,
+    );
+    for (schema.required orelse &.{}) |required| {
+        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+    }
+}
 
 test "handler returns reachable nodes for transitive dependency chain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -175,6 +205,71 @@ test "handler returns ExecutionFailed when engine is unavailable" {
 
     var obj: std.json.ObjectMap = .{};
     try obj.put(allocator, "start_node", .{ .string = "a" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = handler(null, std.testing.io, allocator, args);
+    try std.testing.expectError(mcp.tools.ToolError.ExecutionFailed, result);
+}
+
+test "handler traces dependencies from explicitly named memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var kfile = try tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer kfile.close(std.testing.io);
+    try kfile.writeStreamingAll(std.testing.io,
+        \\depends_on(a, b).
+        \\path(X, Start) :- depends_on(Start, X).
+        \\
+    );
+
+    var registry = MemoryRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.mount("feature_auth", dir_path, .project, .ro, std.testing.io);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "a" });
+    try obj.put(allocator, "memory", .{ .string = "feature_auth" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(null, std.testing.io, allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    try std.testing.expectEqualStrings("[\"b\"]", result.content[0].text.text);
+}
+
+test "handler returns ExecutionFailed for unmounted named memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "start_node", .{ .string = "a" });
+    try obj.put(allocator, "memory", .{ .string = "nonexistent_module" });
     const args = std.json.Value{ .object = obj };
 
     const result = handler(null, std.testing.io, allocator, args);
