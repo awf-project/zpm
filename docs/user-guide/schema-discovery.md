@@ -17,7 +17,7 @@ remember_fact fact='likes(alice, bob)'
 remember_fact fact='likes(bob, alice)'
 define_rule head='friend(X, Y)' body='likes(X, Y), likes(Y, X)'
 
-# Step 2: Discover what's in the knowledge base
+# Step 2: Discover what's in the default memory
 get_knowledge_schema
 # Returns:
 # {
@@ -29,7 +29,14 @@ get_knowledge_schema
 # }
 ```
 
-The tool requires no arguments. It returns all user-defined predicates — Prolog built-ins are excluded.
+The `memory` argument is optional. When omitted, the tool returns predicates
+from the `default` memory; pass a mounted segment name to inspect that segment
+instead. Prolog built-ins are excluded.
+
+```bash
+# Discover predicates in a named memory segment
+zpm get-knowledge-schema --memory feature_auth
+```
 
 ## Understand Predicate Types
 
@@ -57,7 +64,7 @@ get_knowledge_schema
 Use schema discovery as the first step when an LLM connects to a knowledge base it hasn't seen before:
 
 ```bash
-# 1. Discover what predicates exist
+# 1. Discover what predicates exist in the default memory
 get_knowledge_schema
 # Returns: depends_on/2 (fact, 5), risky/1 (rule, 1), ...
 
@@ -66,6 +73,14 @@ query_logic goal='depends_on(X, Y)'
 
 # 3. Trace specific dependencies
 trace_dependency start_node='service_a'
+```
+
+For an isolated knowledge base, select the same segment for discovery and
+follow-up queries:
+
+```bash
+zpm get-knowledge-schema --memory feature_auth
+zpm query-logic --goal 'depends_on(X, Y)' --memory feature_auth
 ```
 
 Without schema discovery, the agent would have to guess predicate names and arities.

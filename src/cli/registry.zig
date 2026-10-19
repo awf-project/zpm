@@ -52,18 +52,6 @@ pub const ToolDef = struct {
     params: []const ParamSpec = &.{},
 };
 
-fn buildGetKnowledgeSchema(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
-    return get_knowledge_schema.tool;
-}
-
-fn buildListAssumptions(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
-    return list_assumptions.tool;
-}
-
-fn buildListSnapshots(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
-    return list_snapshots.tool;
-}
-
 fn buildGetPersistenceStatus(_: std.mem.Allocator) anyerror!mcp.tools.Tool {
     return get_persistence_status.tool;
 }
@@ -110,7 +98,7 @@ const tool_defs: [29]ToolDef = .{
         .build = &query_logic.tool,
         .params = &.{
             .{ .mcp_key = "goal", .help = "A Prolog goal to evaluate (e.g. 'parent(X, bob)')", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -120,7 +108,7 @@ const tool_defs: [29]ToolDef = .{
         .build = &trace_dependency.tool,
         .params = &.{
             .{ .mcp_key = "start_node", .help = "The reference atom whose dependents are traced", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -130,7 +118,7 @@ const tool_defs: [29]ToolDef = .{
         .build = &verify_consistency.tool,
         .params = &.{
             .{ .mcp_key = "scope", .help = "Optional scope pattern for filtering violation predicates", .required = false },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -141,15 +129,17 @@ const tool_defs: [29]ToolDef = .{
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to explain (e.g. 'grandparent(tom, jim)')", .required = true },
             .{ .mcp_key = "max_depth", .help = "Maximum proof tree depth (default: unlimited)", .required = false, .kind = .integer },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
         .cli_name = "get-knowledge-schema",
         .mcp_name = "get_knowledge_schema",
         .description = "Introspect all defined predicates and their arities",
-        .build = &buildGetKnowledgeSchema,
-        .params = &.{},
+        .build = &get_knowledge_schema.tool,
+        .params = &.{
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
+        },
     },
     .{
         .cli_name = "forget-fact",
@@ -220,7 +210,7 @@ const tool_defs: [29]ToolDef = .{
         .build = &get_belief_status.tool,
         .params = &.{
             .{ .mcp_key = "fact", .help = "The Prolog fact to check belief status for", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -230,16 +220,16 @@ const tool_defs: [29]ToolDef = .{
         .build = &get_justification.tool,
         .params = &.{
             .{ .mcp_key = "assumption", .help = "The assumption name to get justifications for", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
         .cli_name = "list-assumptions",
         .mcp_name = "list_assumptions",
         .description = "Return all registered named assumptions",
-        .build = &buildListAssumptions,
+        .build = &list_assumptions.tool,
         .params = &.{
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -259,7 +249,7 @@ const tool_defs: [29]ToolDef = .{
         .build = &save_snapshot.tool,
         .params = &.{
             .{ .mcp_key = "name", .help = "The name for the snapshot file", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -269,16 +259,16 @@ const tool_defs: [29]ToolDef = .{
         .build = &restore_snapshot.tool,
         .params = &.{
             .{ .mcp_key = "name", .help = "The name of the snapshot to restore", .required = true },
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
         .cli_name = "list-snapshots",
         .mcp_name = "list_snapshots",
         .description = "List all available knowledge base snapshots",
-        .build = &buildListSnapshots,
+        .build = &list_snapshots.tool,
         .params = &.{
-            .{ .mcp_key = "memory", .help = "Target memory segment (default: 'default')", .required = false },
+            .{ .mcp_key = "memory", .help = "Target memory segment (optional, defaults to default memory)", .required = false },
         },
     },
     .{
@@ -388,6 +378,22 @@ test "echo build returns tool with mcp name echo" {
     return error.ToolNotFound;
 }
 
+test "registry composition directly calls migrated public builders" {
+    const expected = .{
+        .{ "get-knowledge-schema", &get_knowledge_schema.tool },
+        .{ "list-assumptions", &list_assumptions.tool },
+        .{ "list-snapshots", &list_snapshots.tool },
+    };
+
+    inline for (expected) |entry| {
+        for (all()) |def| {
+            if (!std.mem.eql(u8, def.cli_name, entry[0])) continue;
+            try std.testing.expectEqual(@intFromPtr(entry[1]), @intFromPtr(def.build));
+            break;
+        } else return error.ToolNotFound;
+    }
+}
+
 test "remember-fact build returns tool with mcp name remember_fact" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -436,34 +442,124 @@ test "params declared for representative tools" {
     }
 }
 
-test "all 19 knowledge/reasoning tools and list_snapshots have memory param" {
-    const knowledge_tools = &[_][]const u8{
-        "remember-fact",      "upsert-fact",         "assume-fact",
-        "forget-fact",        "update-fact",         "query-logic",
-        "define-rule",        "explain-why",         "trace-dependency",
-        "retract-assumption", "retract-assumptions", "list-assumptions",
-        "get-belief-status",  "get-justification",   "verify-consistency",
-        "clear-context",      "save-snapshot",       "restore-snapshot",
-        "list-snapshots",
-    };
-    const tools = all();
-    for (knowledge_tools) |expected_name| {
-        var found = false;
-        for (tools) |def| {
-            if (std.mem.eql(u8, def.cli_name, expected_name)) {
-                found = true;
-                var has_memory = false;
-                for (def.params) |p| {
-                    if (std.mem.eql(u8, p.mcp_key, "memory")) {
-                        has_memory = true;
-                        try std.testing.expect(!p.required);
-                    }
-                }
-                try std.testing.expect(has_memory);
-                break;
-            }
+test "get-knowledge-schema ToolDef declares optional string memory CLI parameter" {
+    for (all()) |def| {
+        if (!std.mem.eql(u8, def.cli_name, "get-knowledge-schema")) continue;
+        try std.testing.expectEqual(@as(usize, 1), def.params.len);
+        try std.testing.expectEqualStrings("memory", def.params[0].mcp_key);
+        try std.testing.expectEqual(ParamKind.string, def.params[0].kind);
+        try std.testing.expect(!def.params[0].required);
+        return;
+    }
+    return error.ToolNotFound;
+}
+
+const b002_memory_tool_names = &[_][]const u8{
+    "query_logic",          "explain_why",       "trace_dependency",
+    "verify_consistency",   "get_belief_status", "get_justification",
+    "save_snapshot",        "restore_snapshot",  "list_assumptions",
+    "get_knowledge_schema", "list_snapshots",
+};
+
+test "inline registry inventory asserts the exact B002 tool set" {
+    try std.testing.expectEqual(@as(usize, 11), b002_memory_tool_names.len);
+    for (b002_memory_tool_names, 0..) |mcp_name, index| {
+        for (b002_memory_tool_names[index + 1 ..]) |other| {
+            try std.testing.expect(!std.mem.eql(u8, mcp_name, other));
         }
-        try std.testing.expect(found);
+        for (all()) |def| {
+            if (!std.mem.eql(u8, def.mcp_name, mcp_name)) continue;
+            for (def.params) |param| {
+                if (std.mem.eql(u8, param.mcp_key, "memory")) break;
+            } else return error.MissingMemoryParameter;
+            break;
+        } else return error.ToolNotFound;
+    }
+}
+
+test "every registry tool declaring CLI memory has matching optional string MCP schema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    for (all()) |def| {
+        const memory_param = for (def.params) |param| {
+            if (std.mem.eql(u8, param.mcp_key, "memory")) break param;
+        } else continue;
+        try std.testing.expectEqual(ParamKind.string, memory_param.kind);
+        try std.testing.expect(!memory_param.required);
+
+        const built = try def.build(arena.allocator());
+        const schema = built.inputSchema orelse return error.MissingSchema;
+        const properties = schema.properties orelse return error.MissingProperties;
+        const properties_object = switch (properties) {
+            .object => |object| object,
+            else => return error.InvalidProperties,
+        };
+        const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
+        const memory_object = switch (memory) {
+            .object => |object| object,
+            else => return error.InvalidMemoryProperty,
+        };
+        const memory_type = memory_object.get("type") orelse return error.MissingMemoryType;
+        try std.testing.expectEqualStrings("string", memory_type.string);
+        for (schema.required orelse &.{}) |required| {
+            try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+        }
+    }
+}
+
+test "exact B002 set uses the canonical memory description" {
+    const description = "Target memory segment (optional, defaults to default memory)";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    for (b002_memory_tool_names) |mcp_name| {
+        for (all()) |def| {
+            if (!std.mem.eql(u8, def.mcp_name, mcp_name)) continue;
+            const memory_param = for (def.params) |param| {
+                if (std.mem.eql(u8, param.mcp_key, "memory")) break param;
+            } else return error.MissingMemoryParameter;
+            try std.testing.expectEqualStrings(description, memory_param.help);
+
+            const built = try def.build(arena.allocator());
+            const schema = built.inputSchema orelse return error.MissingSchema;
+            const properties = schema.properties orelse return error.MissingProperties;
+            const properties_object = switch (properties) {
+                .object => |object| object,
+                else => return error.InvalidProperties,
+            };
+            const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
+            const memory_object = switch (memory) {
+                .object => |object| object,
+                else => return error.InvalidMemoryProperty,
+            };
+            const actual = memory_object.get("description") orelse return error.MissingMemoryDescription;
+            try std.testing.expectEqualStrings(description, actual.string);
+            break;
+        } else return error.ToolNotFound;
+    }
+}
+
+test "every MCP memory property has matching CLI memory metadata" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    for (all()) |def| {
+        const built = try def.build(arena.allocator());
+        const schema = built.inputSchema orelse continue;
+        const properties = schema.properties orelse continue;
+        const properties_object = switch (properties) {
+            .object => |object| object,
+            else => continue,
+        };
+        if (properties_object.get("memory") == null) continue;
+
+        for (def.params) |param| {
+            if (!std.mem.eql(u8, param.mcp_key, "memory")) continue;
+            try std.testing.expectEqual(ParamKind.string, param.kind);
+            try std.testing.expect(!param.required);
+            break;
+        } else return error.MissingMemoryParameter;
     }
 }
 
@@ -509,15 +605,25 @@ test "get-kb-overview ToolDef has sample_size integer param not required" {
     return error.ToolNotFound;
 }
 
-test "get-kb-overview does not have memory param" {
-    const tools = all();
-    for (tools) |def| {
-        if (std.mem.eql(u8, def.cli_name, "get-kb-overview")) {
-            for (def.params) |p| {
-                try std.testing.expect(!std.mem.eql(u8, p.mcp_key, "memory"));
-            }
-            return;
+test "get-kb-overview pending exception has neither MCP nor CLI memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    for (all()) |def| {
+        if (!std.mem.eql(u8, def.cli_name, "get-kb-overview")) continue;
+        for (def.params) |param| {
+            try std.testing.expect(!std.mem.eql(u8, param.mcp_key, "memory"));
         }
+
+        const built = try def.build(arena.allocator());
+        const schema = built.inputSchema orelse return error.MissingSchema;
+        const properties = schema.properties orelse return error.MissingProperties;
+        const properties_object = switch (properties) {
+            .object => |object| object,
+            else => return error.InvalidProperties,
+        };
+        try std.testing.expect(properties_object.get("memory") == null);
+        return;
     }
     return error.ToolNotFound;
 }

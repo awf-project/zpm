@@ -82,13 +82,16 @@ zpm query-logic --goal "task_status(X, done)" --format json
 zpm save-snapshot --name "before-deploy"
 
 # Manage memory segments
-zpm memory create feature_auth
-zpm memory mount feature_auth --mode ro
-zpm memory create shared_profiles --scope global
+zpm memory create --name feature_auth
+zpm memory create --name shared_profiles --scope global
 zpm memory list
 zpm remember-fact --fact "task_done(login)" --memory feature_auth
 zpm query-logic --goal "task_done(X)" --memory feature_auth
+zpm get-knowledge-schema --memory feature_auth
+zpm memory mount --name feature_auth --mode ro
 ```
+
+The optional `--memory` flag selects a mounted segment. Omitting it keeps unqualified reads in the default memory. The matching MCP tools accept an optional string `memory` argument.
 
 See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Feature: zig-cli reclaim refactor (refactor/reclaim-zig-cli)
+# Feature: B002
 # End-to-end CLI tests covering help, version, error paths, and tool dispatch.
 . "$(dirname "$0")/test_helpers.sh"
 
@@ -15,8 +16,8 @@ cleanup_temp_dirs() {
 trap cleanup_temp_dirs EXIT
 
 # Each tool subcommand needs a .zpm/ in $PWD or it bootstrap-fails. Use a
-# fresh temp dir as PWD per tool invocation. We use pushd/popd (not a `( ... )`
-# subshell) so $CLI_EXIT and $CLI_OUTPUT set by capture_cli propagate back to
+# fresh temp dir as PWD per tool invocation. We use pushd/popd (not a subshell)
+# so $CLI_EXIT and $CLI_OUTPUT set by capture_cli propagate back to
 # the parent shell where assertions run.
 make_zpm_dir() {
     local d
@@ -227,6 +228,60 @@ assert_contains "JSON contains predicates field" "$CLI_OUTPUT" '"predicates"'
 assert_contains "JSON contains assumptions field" "$CLI_OUTPUT" '"assumptions"'
 assert_contains "JSON contains truncated field" "$CLI_OUTPUT" '"truncated"'
 assert_contains "JSON contains mounts field" "$CLI_OUTPUT" '"mounts"'
+
+# Feature: B002
+# --- Public memory-selection contract ---
+echo "Test: B002 CLI help advertises --memory for all 11 public commands"
+B002_MEMORY_COMMANDS=(
+    query-logic
+    explain-why
+    trace-dependency
+    verify-consistency
+    get-belief-status
+    get-justification
+    save-snapshot
+    restore-snapshot
+    list-assumptions
+    get-knowledge-schema
+    list-snapshots
+)
+for COMMAND in "${B002_MEMORY_COMMANDS[@]}"; do
+    capture_cli "$COMMAND" --help
+    assert_true "$COMMAND help: advertises --memory" grep -qF -- "--memory" <<<"$CLI_OUTPUT"
+done
+
+echo "Test: B002 get-knowledge-schema selects persisted named memory"
+B002_CONTRACT_DIR=$(make_zpm_dir)
+TEMP_DIRS+=("$B002_CONTRACT_DIR")
+assert_equals "B002 isolated project cleanup: directory is registered" "$B002_CONTRACT_DIR" "${TEMP_DIRS[-1]:-}"
+pushd "$B002_CONTRACT_DIR" >/dev/null
+capture_cli memory create --name b002_contract
+assert_exit_code "memory create named-schema scenario: exits 0" "$CLI_EXIT" 0
+capture_cli memory mount --name b002_contract
+assert_exit_code "memory mount named-schema scenario: exits 0" "$CLI_EXIT" 0
+capture_cli remember-fact --fact 'b002_contract_only(mcp_cli_agreement)' --memory b002_contract
+assert_exit_code "remember-fact named-schema scenario: persists predicate" "$CLI_EXIT" 0
+capture_cli get-knowledge-schema --memory b002_contract
+B002_NAMED_SCHEMA_OUTPUT="$CLI_OUTPUT"
+B002_NAMED_SCHEMA_EXIT="$CLI_EXIT"
+capture_cli get-knowledge-schema
+B002_DEFAULT_SCHEMA_OUTPUT="$CLI_OUTPUT"
+B002_DEFAULT_SCHEMA_EXIT="$CLI_EXIT"
+popd >/dev/null
+
+assert_exit_code "get-knowledge-schema named-memory scenario: exits 0" "$B002_NAMED_SCHEMA_EXIT" 0
+assert_contains "get-knowledge-schema named-memory scenario: agrees with MCP predicate" "$B002_NAMED_SCHEMA_OUTPUT" "b002_contract_only"
+assert_exit_code "get-knowledge-schema default-memory isolation: exits 0" "$B002_DEFAULT_SCHEMA_EXIT" 0
+assert_not_contains "get-knowledge-schema default-memory isolation: excludes named predicate" "$B002_DEFAULT_SCHEMA_OUTPUT" "b002_contract_only"
+
+echo "Test: B002 query-logic reports explicit unmounted memory"
+pushd "$B002_CONTRACT_DIR" >/dev/null
+capture_cli memory list
+assert_not_contains "query-logic unmounted-memory scenario: b002_unmounted is not mounted" "$CLI_OUTPUT" "b002_unmounted"
+capture_cli query-logic --goal 'true' --memory b002_unmounted
+popd >/dev/null
+assert_exit_code "query-logic unmounted-memory scenario: exits 1" "$CLI_EXIT" 1
+assert_contains "query-logic unmounted-memory scenario: reports exact memory error" "$CLI_OUTPUT" "Memory not mounted: b002_unmounted"
 
 echo "Test: zpm get-kb-overview --sample-size 0 returns predicates with empty samples arrays and truncated: false"
 KBO_SAMPLE_DIR=$(make_zpm_dir)

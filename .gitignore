@@ -11,6 +11,10 @@ zig-cache/
 *.swp
 *.swo
 
+# Tower runtime data (keep the project configuration versionable)
+/.tower/*
+!/.tower/config.toml
+
 # Environment
 .env
 .env.local

@@ -4,18 +4,28 @@ const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
 const validation = @import("tool_validation");
 const clause_utils = @import("tool_clause_utils");
+const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
 
-pub const tool = mcp.tools.Tool{
-    .name = "get_knowledge_schema",
-    .description = "Introspect the knowledge base to discover all defined predicates, their arities, and whether they are facts, rules, or both",
-    .inputSchema = .{},
-    .annotations = .{
-        .readOnlyHint = true,
-        .destructiveHint = false,
-        .idempotentHint = true,
-    },
-    .handler = handler,
-};
+pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
+    var schema = mcp.schema.InputSchemaBuilder.init(allocator);
+    defer schema.deinit(allocator);
+    _ = try schema.addString(allocator, "memory", "Target memory segment (optional, defaults to default memory)", false);
+    const built = try schema.build(allocator);
+
+    return .{
+        .name = "get_knowledge_schema",
+        .description = "Introspect the knowledge base to discover all defined predicates, their arities, and whether they are facts, rules, or both",
+        .inputSchema = .{
+            .properties = built.object.get("properties"),
+        },
+        .annotations = .{
+            .readOnlyHint = true,
+            .destructiveHint = false,
+            .idempotentHint = true,
+        },
+        .handler = handler,
+    };
+}
 
 const PredicateEntry = struct {
     name: []u8,
@@ -109,6 +119,33 @@ fn buildSchemaJson(allocator: std.mem.Allocator, entries: []const PredicateEntry
 
 const Engine = engine_mod.Engine;
 
+test "get_knowledge_schema tool exposes memory as an optional JSON-schema string with exact description" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const built_tool = try tool(arena.allocator());
+    const schema = built_tool.inputSchema orelse return error.MissingSchema;
+    const properties = schema.properties orelse return error.MissingProperties;
+    const properties_object = switch (properties) {
+        .object => |object| object,
+        else => return error.UnexpectedPropertiesType,
+    };
+    const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
+    const memory_object = switch (memory) {
+        .object => |object| object,
+        else => return error.UnexpectedMemoryPropertyType,
+    };
+
+    try std.testing.expectEqualStrings("string", memory_object.get("type").?.string);
+    try std.testing.expectEqualStrings(
+        "Target memory segment (optional, defaults to default memory)",
+        memory_object.get("description").?.string,
+    );
+    for (schema.required orelse &.{}) |required| {
+        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+    }
+}
+
 test "handler returns predicate list when facts are asserted" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -121,7 +158,10 @@ test "handler returns predicate list when facts are asserted" {
     try engine.assertFact("person(alice)");
     try engine.assertFact("person(bob)");
 
-    const result = try handler(null, std.testing.io, allocator, null);
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "memory", .{ .string = "default" });
+    const args = std.json.Value{ .object = obj };
+    const result = try handler(null, std.testing.io, allocator, args);
 
     try std.testing.expect(!result.is_error);
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
@@ -129,6 +169,50 @@ test "handler returns predicate list when facts are asserted" {
     try std.testing.expect(std.mem.indexOf(u8, text, "predicates") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "person") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"arity\":1") != null);
+}
+
+test "handler reads predicates from explicitly named memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.mount("schema_memory", path_buf[0..path_len], .project, .ro, std.testing.io);
+    try registry.getMounted("schema_memory").?.engine.assertFact("named_predicate(value)");
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "memory", .{ .string = "schema_memory" });
+    const args = std.json.Value{ .object = obj };
+    const result = try handler(null, std.testing.io, allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "named_predicate") != null);
+}
+
+test "handler reports unavailable named memory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var registry = MemoryRegistry.init(allocator);
+    defer registry.deinit();
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "memory", .{ .string = "missing_memory" });
+    const args = std.json.Value{ .object = obj };
+    const result = try handler(null, std.testing.io, allocator, args);
+
+    try std.testing.expect(result.is_error);
+    try std.testing.expectEqualStrings("Prolog engine is not initialized", result.content[0].text.text);
 }
 
 test "handler returns empty predicates list for empty knowledge base" {

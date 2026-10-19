@@ -233,7 +233,7 @@ Tool fields are passed as `--kebab-case` flags by default — `remember_fact.fac
 
 Every tool subcommand also accepts `--format json|text`. The default (`text`) prints the tool's native output (queries already emit JSON, writes emit human-readable confirmations). `--format json` produces a JSON array whose elements are the raw `text` field of each result block, e.g. `["Asserted: parent(tom, bob)"]` for a write or `["[{\"X\":\"tom\"}]"]` for a query. Note that query output is doubly encoded — the inner string is itself JSON; pipe through `jq -r '.[]'` and parse the unwrapped string if you need structured access.
 
-All knowledge and reasoning tool subcommands also accept `--memory <name>` to target a specific mounted memory segment instead of the default. When omitted, operations target the `default` memory. Mutation commands (`remember-fact`, `define-rule`, `forget-fact`, etc.) return an error if the target memory is mounted read-only.
+Memory-aware knowledge and reasoning tool subcommands accept `--memory <name>` to target a specific mounted memory segment. When omitted, unqualified reads target the `default` memory. Mutation commands (`remember-fact`, `define-rule`, `forget-fact`, etc.) return an error if the target memory is mounted read-only. `get-kb-overview` remains a pending exception because its output combines selected-memory and global information; it has no `--memory` flag.
 
 **Examples:**
 
@@ -269,7 +269,16 @@ zpm query-logic --goal "auth_done(X)" --memory feature_auth
 ```bash
 zpm --help                  # Lists init, serve, upgrade, memory, version, and every tool subcommand
 zpm query-logic --help      # Shows the tool's flags (and any positional argument)
+zpm get-knowledge-schema --help  # Shows the optional --memory selector
 zpm memory --help           # Lists memory subcommands (create, mount, unmount, list)
+```
+
+`get-knowledge-schema` accepts the same optional memory selector as the other
+memory-aware tools. Use `--memory <name>` to inspect a mounted named segment;
+when omitted, it inspects the `default` memory:
+
+```bash
+zpm get-knowledge-schema --memory feature_auth
 ```
 
 Help is generated from each tool's registry entry; adding a new MCP tool automatically produces a matching CLI entry with no manual documentation regeneration (NFR-004).
