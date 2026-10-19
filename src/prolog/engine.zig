@@ -98,7 +98,7 @@ pub const Engine = struct {
         _ = g_engine_count.fetchAdd(1, .monotonic);
         ffi.set_quiet(self.handle.?);
         // Declare predicates used for runtime assertion as dynamic so Trealla
-        // accepts assertions without raising existence_error(procedure, ...).
+        // accepts assertions without raising an existence_error for the procedure.
         const preload =
             \\:- dynamic(zpm_source/2).
             \\:- dynamic(tms_justification/2).
@@ -302,9 +302,11 @@ pub const Engine = struct {
         // `:- dynamic(F/A)` avoids Trealla's permission_error on library
         // functors that default to static. Parse failures fall through —
         // assertz will surface whatever error Trealla gives us.
-        const has_rule = std.mem.indexOf(u8, stripped, ":-") != null;
+        const scan = scanTopLevelClause(self.allocator, stripped) catch
+            return EngineError.OutOfMemory;
+        const has_rule = if (scan) |value| value.rule_separator != null else false;
 
-        if (parseHeadFunctorArity(stripped)) |fa| {
+        if (if (scan) |value| parseScannedHead(value) else null) |fa| {
             self.declareDynamic(fa.module, fa.functor, fa.arity) catch {};
         }
         const code = if (has_rule)
@@ -339,7 +341,9 @@ pub const Engine = struct {
         // Rules with `:-` need an extra paren around the clause so retract/1
         // parses them with the right operator precedence — same fix as in
         // assert(). Without this, Trealla emits a syntax warning to stderr.
-        const has_rule = std.mem.indexOf(u8, stripped, ":-") != null;
+        const scan = scanTopLevelClause(self.allocator, stripped) catch
+            return EngineError.OutOfMemory;
+        const has_rule = if (scan) |value| value.rule_separator != null else false;
         const code = if (has_rule)
             std.fmt.allocPrintSentinel(
                 self.allocator,
@@ -626,7 +630,7 @@ pub const Engine = struct {
 
     /// pl_eval with stdout capture, returning true iff `marker` appears in
     /// the captured output. Used to disambiguate Prolog-level success from
-    /// failure for goals like once(retract(...)) where pl_eval's boolean
+    /// failure for goals such as once(retract(Clause)) where pl_eval's boolean
     /// return value is not reliable.
     fn evalAndCheckMarker(self: *Engine, code: [*:0]const u8, marker: []const u8) bool {
         const handle = self.handle orelse return false;
@@ -800,7 +804,7 @@ fn parseSolution(allocator: std.mem.Allocator, val: std.json.Value) EngineError!
     return Solution{ .bindings = bindings, .allocator = allocator };
 }
 
-/// Return the leading balanced JSON array ("[...]") in `s`, or null if the
+/// Return the leading balanced JSON array in `s`, or null if the
 /// string does not start with '[' or has no matching close bracket. Tracks
 /// bracket depth and skips over double-quoted strings (with backslash escapes)
 /// so brackets inside string values do not affect nesting.
@@ -924,105 +928,176 @@ pub const HeadFunctorArity = struct {
     arity: usize,
 };
 
+const ClauseScan = struct {
+    source: []const u8,
+    rule_separator: ?usize = null,
+    module_separator: ?usize = null,
+    module_separator_count: usize = 0,
+    argument_open: ?usize = null,
+    argument_close: ?usize = null,
+    arity: usize = 0,
+};
+
+fn scanClauseSlice(allocator: std.mem.Allocator, source: []const u8) error{OutOfMemory}!?ClauseScan {
+    var delimiters: std.ArrayList(u8) = .empty;
+    defer delimiters.deinit(allocator);
+
+    var scan = ClauseScan{ .source = source };
+    var quote: ?u8 = null;
+    var escaped = false;
+    var argument_has_value = false;
+    var i: usize = 0;
+    while (i < source.len) : (i += 1) {
+        const c = source[i];
+        if (quote) |delimiter| {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == delimiter) {
+                quote = null;
+            }
+            if (scan.argument_open != null and delimiters.items.len >= 1) argument_has_value = true;
+            continue;
+        }
+
+        if (c == '\'' or c == '"') {
+            quote = c;
+            if (scan.argument_open != null and delimiters.items.len >= 1) argument_has_value = true;
+            continue;
+        }
+
+        const at_top_level = delimiters.items.len == 0;
+        if (at_top_level and c == ':' and i + 1 < source.len and source[i + 1] == '-') {
+            if (scan.rule_separator != null) return null;
+            scan.rule_separator = i;
+            i += 1;
+            continue;
+        }
+        if (at_top_level and scan.rule_separator == null and scan.argument_open == null and c == ':') {
+            scan.module_separator_count += 1;
+            if (scan.module_separator == null) scan.module_separator = i;
+            continue;
+        }
+
+        switch (c) {
+            '(', '[', '{' => {
+                if (at_top_level and scan.rule_separator == null and scan.argument_open == null and c == '(') {
+                    scan.argument_open = i;
+                    scan.arity = 1;
+                    argument_has_value = false;
+                } else if (scan.argument_open != null and scan.rule_separator == null) {
+                    argument_has_value = true;
+                }
+                try delimiters.append(allocator, c);
+            },
+            ')', ']', '}' => {
+                const expected: u8 = switch (c) {
+                    ')' => '(',
+                    ']' => '[',
+                    '}' => '{',
+                    else => unreachable,
+                };
+                if (delimiters.items.len == 0 or delimiters.items[delimiters.items.len - 1] != expected) return null;
+                if (scan.argument_open != null and delimiters.items.len == 1 and expected == '(' and scan.rule_separator == null) {
+                    if (!argument_has_value) return null;
+                    scan.argument_close = i;
+                }
+                _ = delimiters.pop();
+            },
+            ',' => if (scan.argument_open != null and delimiters.items.len == 1 and scan.rule_separator == null) {
+                if (!argument_has_value) return null;
+                scan.arity += 1;
+                argument_has_value = false;
+            } else if (scan.argument_open != null and delimiters.items.len >= 1 and !std.ascii.isWhitespace(c)) {
+                argument_has_value = true;
+            },
+            else => if (scan.argument_open != null and delimiters.items.len >= 1 and !std.ascii.isWhitespace(c)) {
+                argument_has_value = true;
+            },
+        }
+    }
+
+    if (quote != null or escaped or delimiters.items.len != 0) return null;
+    if (scan.argument_open != null and scan.argument_close == null) return null;
+    return scan;
+}
+
+fn scanTopLevelClause(allocator: std.mem.Allocator, clause: []const u8) error{OutOfMemory}!?ClauseScan {
+    const source = std.mem.trim(u8, clause, " \t\n\r");
+    if (source.len == 0) return null;
+
+    const initial = (try scanClauseSlice(allocator, source)) orelse return null;
+    if (source[0] == '(' and initial.argument_open == 0 and initial.argument_close == source.len - 1) {
+        const inner = std.mem.trim(u8, source[1 .. source.len - 1], " \t\n\r");
+        const wrapped = (try scanClauseSlice(allocator, inner)) orelse return null;
+        if (wrapped.rule_separator != null) return wrapped;
+    }
+    return initial;
+}
+
+fn scanAtom(source: []const u8, start: usize) ?usize {
+    if (start >= source.len) return null;
+    if (source[start] == '\'') {
+        var escaped = false;
+        var i = start + 1;
+        while (i < source.len) : (i += 1) {
+            if (escaped) {
+                escaped = false;
+            } else if (source[i] == '\\') {
+                escaped = true;
+            } else if (source[i] == '\'') {
+                return i + 1;
+            }
+        }
+        return null;
+    }
+    if (!std.ascii.isLower(source[start])) return null;
+    var i = start + 1;
+    while (i < source.len and (std.ascii.isAlphabetic(source[i]) or std.ascii.isDigit(source[i]) or source[i] == '_')) : (i += 1) {}
+    return i;
+}
+
+fn parseScannedHead(scan: ClauseScan) ?HeadFunctorArity {
+    const head_end = scan.rule_separator orelse scan.source.len;
+    const head = std.mem.trim(u8, scan.source[0..head_end], " \t\n\r");
+    if (head.len == 0 or scan.module_separator_count > 1) return null;
+    if (scan.rule_separator) |separator| {
+        if (std.mem.trim(u8, scan.source[separator + 2 ..], " \t\n\r").len == 0) return null;
+    }
+
+    var module: ?[]const u8 = null;
+    var functor_start: usize = 0;
+    if (scan.module_separator) |separator| {
+        const module_text = std.mem.trim(u8, scan.source[0..separator], " \t\n\r");
+        if (scanAtom(module_text, 0) != module_text.len) return null;
+        module = module_text;
+        functor_start = separator + 1;
+        while (functor_start < head_end and std.ascii.isWhitespace(scan.source[functor_start])) : (functor_start += 1) {}
+    }
+
+    const functor_end = scanAtom(scan.source, functor_start) orelse return null;
+    const functor = scan.source[functor_start..functor_end];
+    var cursor = functor_end;
+    while (cursor < head_end and std.ascii.isWhitespace(scan.source[cursor])) : (cursor += 1) {}
+
+    if (scan.argument_open) |open| {
+        const close = scan.argument_close orelse return null;
+        if (cursor != open or close >= head_end) return null;
+        if (std.mem.trim(u8, scan.source[close + 1 .. head_end], " \t\n\r").len != 0) return null;
+        return .{ .module = module, .functor = functor, .arity = scan.arity };
+    }
+    if (cursor != head_end) return null;
+    return .{ .module = module, .functor = functor, .arity = 0 };
+}
+
 /// Extract the head functor and arity from a clause. Returns null for any
 /// surface syntax this mini-parser does not cover (operators, DCG, etc.) —
 /// callers must tolerate null rather than treat it as an error. Functor is
 /// a slice into `clause`.
 pub fn parseHeadFunctorArity(clause: []const u8) ?HeadFunctorArity {
-    // assert() may wrap rules in outer parens: `(head :- body)`.
-    var s = std.mem.trim(u8, clause, " \t\n\r");
-    if (s.len >= 2 and s[0] == '(' and s[s.len - 1] == ')') {
-        s = std.mem.trim(u8, s[1 .. s.len - 1], " \t\n\r");
-    }
-
-    if (std.mem.startsWith(u8, s, ":-")) return null;
-
-    const head_raw = if (std.mem.indexOf(u8, s, ":-")) |idx|
-        std.mem.trim(u8, s[0..idx], " \t\n\r")
-    else
-        s;
-    if (head_raw.len == 0) return null;
-
-    var module: ?[]const u8 = null;
-    const head = head: {
-        if (head_raw[0] != '\'') {
-            if (std.mem.indexOf(u8, head_raw, ":")) |colon| {
-                const bare = head_raw[colon + 1 ..];
-                if (bare.len == 0) return null;
-                module = head_raw[0..colon];
-                break :head bare;
-            }
-        }
-        break :head head_raw;
-    };
-
-    // Skip single-quoted functors so `'Mod:Name'(...)` isn't split wrongly.
-    var i: usize = 0;
-    if (head[0] == '\'') {
-        i = 1;
-        while (i < head.len) : (i += 1) {
-            if (head[i] == '\\' and i + 1 < head.len) {
-                i += 1;
-                continue;
-            }
-            if (head[i] == '\'') {
-                i += 1;
-                break;
-            }
-        }
-    } else {
-        while (i < head.len and head[i] != '(' and head[i] != ' ' and head[i] != '\t') : (i += 1) {}
-    }
-    const functor = head[0..i];
-    if (functor.len == 0) return null;
-
-    while (i < head.len and (head[i] == ' ' or head[i] == '\t')) : (i += 1) {}
-    if (i >= head.len or head[i] != '(') {
-        return .{ .module = module, .functor = functor, .arity = 0 };
-    }
-
-    i += 1;
-    var depth: i32 = 0;
-    var arity: usize = 1;
-    var in_sq = false;
-    var in_dq = false;
-    var escape = false;
-    while (i < head.len) : (i += 1) {
-        const c = head[i];
-        if (escape) {
-            escape = false;
-            continue;
-        }
-        if (c == '\\') {
-            escape = true;
-            continue;
-        }
-        if (in_sq) {
-            if (c == '\'') in_sq = false;
-            continue;
-        }
-        if (in_dq) {
-            if (c == '"') in_dq = false;
-            continue;
-        }
-        switch (c) {
-            '\'' => in_sq = true,
-            '"' => in_dq = true,
-            '(', '[', '{' => depth += 1,
-            ')' => {
-                if (depth == 0) return .{ .module = module, .functor = functor, .arity = arity };
-                depth -= 1;
-            },
-            ']', '}' => {
-                if (depth > 0) depth -= 1;
-            },
-            ',' => if (depth == 0) {
-                arity += 1;
-            },
-            else => {},
-        }
-    }
-    return null;
+    const scan = scanTopLevelClause(std.heap.page_allocator, stripDot(clause)) catch return null;
+    return if (scan) |value| parseScannedHead(value) else null;
 }
 
 const testing = std.testing;
@@ -1570,6 +1645,137 @@ test "parseHeadFunctorArity does not split quoted atom containing colon" {
     try testing.expectEqual(@as(?[]const u8, null), result.?.module);
     try testing.expectEqualStrings("'Mod:Name'", result.?.functor);
     try testing.expectEqual(@as(usize, 1), result.?.arity);
+}
+
+test "parseHeadFunctorArity ignores separators inside argument values" {
+    const cases = [_]struct {
+        clause: []const u8,
+        functor: []const u8,
+        arity: usize,
+    }{
+        .{
+            .clause = "adr(boundary, 'Domain', 'std::fs https://example.test head :- body')",
+            .functor = "adr",
+            .arity = 3,
+        },
+        .{
+            .clause = "impl_note(parser, 'escaped \\' :- text', nested('std::fs', {url:'https://example.test'}))",
+            .functor = "impl_note",
+            .arity = 3,
+        },
+        .{
+            .clause = "resolved(k, [nested(':-', {a:b})])",
+            .functor = "resolved",
+            .arity = 2,
+        },
+    };
+
+    for (cases) |case| {
+        const result = parseHeadFunctorArity(case.clause);
+        try testing.expect(result != null);
+        try testing.expectEqual(@as(?[]const u8, null), result.?.module);
+        try testing.expectEqualStrings(case.functor, result.?.functor);
+        try testing.expectEqual(case.arity, result.?.arity);
+    }
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    const fact = "separator_payload('std::fs https://example.test/a', 'escaped \\' :- text', nested([':-']))";
+    var cap = Capture.init(testing.allocator);
+    try cap.begin(true);
+    defer cap.end();
+
+    try engine.assert(fact);
+    try testing.expect(engine.isDynamic(null, "separator_payload", 3));
+    try engine.retract(fact);
+
+    const stdout = try cap.readAndReset();
+    defer testing.allocator.free(stdout);
+    try testing.expectEqual(@as(usize, 0), stdout.len);
+    const stderr = try cap.readStderr();
+    defer testing.allocator.free(stderr);
+    try testing.expectEqual(@as(usize, 0), stderr.len);
+
+    var result = try engine.query("separator_payload(_, _, _)");
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 0), result.solutions.len);
+
+    engine.simulateHandleFailure();
+    try testing.expectError(EngineError.AssertFailed, engine.assert(fact));
+}
+
+test "parseHeadFunctorArity preserves top-level module and rule syntax" {
+    const valid_cases = [_]struct {
+        clause: []const u8,
+        module: ?[]const u8,
+        functor: []const u8,
+        arity: usize,
+    }{
+        .{ .clause = "flag", .module = null, .functor = "flag", .arity = 0 },
+        .{ .clause = "my_mod:flag", .module = "my_mod", .functor = "flag", .arity = 0 },
+        .{ .clause = "seg:foo(a, b)", .module = "seg", .functor = "foo", .arity = 2 },
+        .{ .clause = "'Mod:Name'(x)", .module = null, .functor = "'Mod:Name'", .arity = 1 },
+        .{ .clause = "'escaped\\'name'(x)", .module = null, .functor = "'escaped\\'name'", .arity = 1 },
+        .{ .clause = "(foo(X) :- bar(X))", .module = null, .functor = "foo", .arity = 1 },
+        .{ .clause = "outer(nested(a, [b, c], {d:e}), value)", .module = null, .functor = "outer", .arity = 2 },
+        .{ .clause = "'+'(a, b)", .module = null, .functor = "'+'", .arity = 2 },
+    };
+
+    for (valid_cases) |case| {
+        const result = parseHeadFunctorArity(case.clause);
+        try testing.expect(result != null);
+        if (case.module) |expected_module| {
+            try testing.expect(result.?.module != null);
+            try testing.expectEqualStrings(expected_module, result.?.module.?);
+        } else {
+            try testing.expectEqual(@as(?[]const u8, null), result.?.module);
+        }
+        try testing.expectEqualStrings(case.functor, result.?.functor);
+        try testing.expectEqual(case.arity, result.?.arity);
+    }
+
+    const invalid_cases = [_][]const u8{
+        "",
+        ":- dynamic(foo/1)",
+        "'unterminated",
+        "foo(a",
+        "foo([a))",
+        "foo(a,)",
+        "foo()",
+        "foo(a) garbage",
+        "foo :-",
+        "foo --> bar",
+        "X",
+        "42",
+        "X = Y",
+        "a + b",
+        "a, b",
+        "a:b:foo(x)",
+        "seg:",
+    };
+
+    for (invalid_cases) |clause| {
+        try testing.expectEqual(@as(?HeadFunctorArity, null), parseHeadFunctorArity(clause));
+    }
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+
+    const rule = "reachable(X, Y) :- edge(X, Y)";
+    try engine.assert("edge(a, b)");
+    try engine.assert(rule);
+    try engine.retract(rule);
+
+    var result = try engine.query("reachable(a, b)");
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 0), result.solutions.len);
+
+    try testing.expectError(EngineError.AssertFailed, engine.assert("phantom.."));
+    try testing.expect(!engine.isDynamic(null, "phantom", 0));
+
+    engine.simulateHandleFailure();
+    try testing.expectError(EngineError.RetractFailed, engine.retract(rule));
 }
 
 test "declareDynamic emits qualified directive for module-prefixed predicate" {

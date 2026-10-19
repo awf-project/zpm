@@ -1629,7 +1629,7 @@ _t70_assert() {
     local output="$1" transport="${2:-transport}"
     # Scope to the list_assumptions response only. The preceding assume-fact and
     # retract-assumption segments echo t70_guess in their confirmations (CLI:
-    # "Assumed: ... [assumption: t70_guess]" / "Retracted assumption: t70_guess";
+    # "Assumed: <fact> [assumption: t70_guess]" / "Retracted assumption: t70_guess";
     # MCP: arguments are reflected in the tool call responses), so a full-transcript
     # absent-check is structurally impossible. We verify the end-state instead.
     local list_line
@@ -2258,5 +2258,139 @@ assert_contains "B001 asymmetry: clear_context foo(_) in pr_test succeeds" "$ASY
 assert_contains "B001 asymmetry: default foo(X) returns b after segment clear" "$ASYM_QUERY_DEFAULT_LINE" 'b'
 assert_contains "B001 asymmetry: pr_test foo(X) returns empty after segment clear" "$ASYM_QUERY_SEG_LINE" '[]'
 rm -rf "$PERSIST_DIR_B001_ASYM"
+
+# Feature: B003
+# --- Test: named-memory separator-bearing facts survive snapshot restart and remain mutable ---
+echo "Test: named-memory separator-bearing facts survive snapshot restart and remain mutable"
+SEPARATOR_RESTART_DIR=$(mktemp -d)
+trap 'rm -rf -- "$SEPARATOR_RESTART_DIR"' EXIT
+SEPARATOR_MEMORY="separator_restart"
+SEPARATOR_SNAPSHOT="separator_checkpoint"
+
+assert_mcp_response_contract() {
+    local transcript="$1" response_id="$2" response_kind="${3:-tool}"
+    local matching
+    matching=$(printf '%s\n' "$transcript" | jq -c "select(.id == $response_id)" 2>/dev/null || true)
+
+    assert_equals "separator restart: request $response_id has exactly one response" \
+        "1" "$(printf '%s\n' "$matching" | sed '/^$/d' | wc -l | tr -d ' ')"
+    assert_true "separator restart: request $response_id has a non-null result and no JSON-RPC error" \
+        bash -c 'printf "%s\n" "$1" | jq -e '\''(.id != null) and (has("error") | not) and has("result") and (.result != null)'\'' >/dev/null' \
+        _ "$matching"
+    if [ "$response_kind" = "tool" ]; then
+        assert_true "separator restart: tool request $response_id reports isError false" \
+            bash -c 'printf "%s\n" "$1" | jq -e '\''.result.isError == false'\'' >/dev/null' \
+            _ "$matching"
+    fi
+}
+
+assert_query_payload() {
+    local transcript="$1" response_id="$2"
+    shift 2
+    local response_line result_text
+    response_line=$(printf '%s\n' "$transcript" | jq -c "select(.id == $response_id)" 2>/dev/null || true)
+    result_text=$(printf '%s\n' "$response_line" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+
+    assert_equals "separator restart: query $response_id returns exactly one fact" \
+        "1" "$(printf '%s' "$result_text" | jq -r 'length' 2>/dev/null || printf 'invalid')"
+    local expected_marker
+    for expected_marker in "$@"; do
+        assert_equals "separator restart: query $response_id preserves '$expected_marker' exactly once" \
+            "1" "$(printf '%s' "$result_text" | grep -oF "$expected_marker" | wc -l | tr -d ' ')"
+    done
+}
+
+run_separator_transport() {
+    local input="$1" dir="$2"
+    mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb" "$dir/.zpm/kb/default"
+    printf ':- module(default, []).\n' > "$dir/.zpm/kb/default/knowledge.pl"
+
+    SEPARATOR_TRANSPORT_EXIT=0
+    SEPARATOR_TRANSPORT_RESPONSE=$(
+        cd "$dir" && printf '%s\n' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null
+    ) || SEPARATOR_TRANSPORT_EXIT=$?
+}
+
+SEPARATOR_WRITE_INIT='{"jsonrpc":"2.0","id":4000,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"separator-restart-test","version":"0.1.0"}}}'
+SEPARATOR_WRITE_INPUT="${SEPARATOR_WRITE_INIT}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":4001,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4002,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4003,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"fact\":\"adr(rust_path('crate::module::Type'), url('https://example.invalid/guide:-section'), note('quoted :- marker'))\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4004,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"fact\":\"impl_note('std::vec::Vec<T>', 'escaped \\\\\\\\:- marker', nested((head :- body)))\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4005,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"fact\":\"resolved(issue_42, rule_like((left :- right)))\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4006,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"${SEPARATOR_SNAPSHOT}\",\"memory\":\"${SEPARATOR_MEMORY}\"}}}"
+
+run_separator_transport "$SEPARATOR_WRITE_INPUT" "$SEPARATOR_RESTART_DIR"
+SEPARATOR_WRITE_RESPONSE="$SEPARATOR_TRANSPORT_RESPONSE"
+assert_exit_code "separator restart: first MCP server stops cleanly after EOF" \
+    "$SEPARATOR_TRANSPORT_EXIT" 0
+for RESPONSE_ID in 4000 4001 4002 4003 4004 4005 4006; do
+    if [ "$RESPONSE_ID" -eq 4000 ]; then
+        assert_mcp_response_contract "$SEPARATOR_WRITE_RESPONSE" "$RESPONSE_ID" initialize
+    else
+        assert_mcp_response_contract "$SEPARATOR_WRITE_RESPONSE" "$RESPONSE_ID"
+    fi
+done
+
+SEPARATOR_SNAPSHOT_PATH="$SEPARATOR_RESTART_DIR/.zpm/kb/$SEPARATOR_MEMORY/$SEPARATOR_SNAPSHOT.pl"
+for DYNAMIC_DIRECTIVE in \
+    ':- dynamic(adr/3).' \
+    ':- dynamic(impl_note/3).' \
+    ':- dynamic(resolved/2).'; do
+    assert_equals "separator restart: snapshot contains $DYNAMIC_DIRECTIVE exactly once" \
+        "1" "$(grep -Fxc -- "$DYNAMIC_DIRECTIVE" "$SEPARATOR_SNAPSHOT_PATH" 2>/dev/null || true)"
+done
+
+MALFORMED_DYNAMIC_COUNT=$(awk '
+    /^:- dynamic\(/ && /crate::module::Type|https:\/\/example\.invalid|quoted :-|escaped \\:-|head :- body|left :- right/ { count++ }
+    END { print count + 0 }
+' "$SEPARATOR_SNAPSHOT_PATH" 2>/dev/null || printf 'invalid')
+assert_equals "separator restart: snapshot has no dynamic indicator derived from argument content" \
+    "0" "$MALFORMED_DYNAMIC_COUNT"
+
+SEPARATOR_READ_INIT='{"jsonrpc":"2.0","id":4010,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"separator-restart-test","version":"0.1.0"}}}'
+SEPARATOR_READ_INPUT="${SEPARATOR_READ_INIT}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":4011,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4012,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"adr(A, B, C)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4013,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"impl_note(A, B, C)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4014,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"resolved(A, B)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4015,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"fact\":\"adr(post_restart, mutable, confirmed)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":4016,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"adr(post_restart, mutable, confirmed)\"}}}"
+
+run_separator_transport "$SEPARATOR_READ_INPUT" "$SEPARATOR_RESTART_DIR"
+SEPARATOR_READ_RESPONSE="$SEPARATOR_TRANSPORT_RESPONSE"
+assert_exit_code "separator restart: second MCP server stops cleanly after EOF" \
+    "$SEPARATOR_TRANSPORT_EXIT" 0
+for RESPONSE_ID in 4010 4011 4012 4013 4014 4015 4016; do
+    if [ "$RESPONSE_ID" -eq 4010 ]; then
+        assert_mcp_response_contract "$SEPARATOR_READ_RESPONSE" "$RESPONSE_ID" initialize
+    else
+        assert_mcp_response_contract "$SEPARATOR_READ_RESPONSE" "$RESPONSE_ID"
+    fi
+done
+
+assert_query_payload "$SEPARATOR_READ_RESPONSE" 4012 \
+    'crate::module::Type' \
+    'https://example.invalid/guide:-section' \
+    'quoted :- marker'
+assert_query_payload "$SEPARATOR_READ_RESPONSE" 4013 \
+    'std::vec::Vec<T>' \
+    'escaped \\:- marker' \
+    '"functor":"nested"' \
+    '"functor":":-"' \
+    '"head"' \
+    '"body"'
+assert_query_payload "$SEPARATOR_READ_RESPONSE" 4014 \
+    'issue_42' \
+    '"functor":"rule_like"' \
+    '"functor":":-"' \
+    '"left"' \
+    '"right"'
+assert_query_payload "$SEPARATOR_READ_RESPONSE" 4016 '{}'
+
+rm -rf "$SEPARATOR_RESTART_DIR"
+trap - EXIT
 
 test_summary

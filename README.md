@@ -19,7 +19,7 @@ Large Language Models with a Prolog inference engine for deterministic logical r
 - Delete tools: retract individual facts or clear entire categories from the knowledge base
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
-- Knowledge base persistence: durable storage via write-ahead journal and snapshots with automatic recovery
+- Knowledge base persistence: durable storage via write-ahead journal and fresh-engine-validated snapshots with automatic recovery
 - Named memory segments for domain-isolated knowledge bases with independent WAL/snapshot persistence, read-only mount mode, project and global scope, and cross-memory queries via Prolog module qualification
 - Persistent mount manifest (`.zpm/mounts.json`) for durable memory configuration across CLI invocations
 - Documentation site with Hugo/Thulite (Doks) and GitHub Pages auto-deployment
@@ -161,6 +161,7 @@ Browse the documentation online at **https://awf-project.ai/zpm/** or in the [`d
 - [Project Brief](docs/project-brief.md) -- Vision and objectives
 - [Getting Started](docs/getting-started/) -- Build, install, and first steps
 - [Reference](docs/reference/) -- MCP tools and protocol details
+- [Snapshot recovery](docs/user-guide/persistence.md#recover-an-invalid-snapshot-safely) -- Repair snapshots created by affected versions
 - [ADR](docs/ADR/) -- Architecture Decision Records
 
 To preview the documentation site locally:

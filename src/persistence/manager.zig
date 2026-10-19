@@ -524,10 +524,119 @@ test "restore propagates loadFile error for corrupt snapshot" {
     defer manager.deinit();
 
     // With the fix, restore must bubble the load error rather than silently
-    // leaving an empty KB. The previous `engine.loadFile(...) catch {}` made
+    // leaving an empty KB. The previous ignored `engine.loadFile` error made
     // boot succeed against a corrupt snapshot.
     try std.testing.expectError(
         @import("../prolog/engine.zig").EngineError.LoadFailed,
         manager.restore(engine),
     );
+}
+
+test "saveSnapshot validation failure preserves prior checkpoint and WAL" {
+    var data_tmp = std.testing.tmpDir(.{});
+    defer data_tmp.cleanup();
+    var snapshot_tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer snapshot_tmp.cleanup();
+
+    const data_dir = try data_tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(data_dir);
+    const snapshot_dir = try snapshot_tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(snapshot_dir);
+
+    var manager = try PersistenceManager.init(std.testing.allocator, data_dir, snapshot_dir, std.testing.io);
+    var manager_active = true;
+    defer if (manager_active) manager.deinit();
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.assertFact("checkpoint_base(preserved)");
+    try manager.saveSnapshot(engine, "recovery-point");
+
+    try engine.assertFact("wal_later(replayed)");
+    try manager.journalMutation(.{ .timestamp = 1713000001, .clause = "wal_later(replayed)" });
+    try data_tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "journal-1713000000.wal",
+        .data = "archive sentinel bytes\n",
+    });
+
+    const checkpoint_before = try snapshot_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "recovery-point.pl",
+        std.testing.allocator,
+        .limited(16 * 1024),
+    );
+    defer std.testing.allocator.free(checkpoint_before);
+    const wal_before = try data_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "journal.wal",
+        std.testing.allocator,
+        .limited(16 * 1024),
+    );
+    defer std.testing.allocator.free(wal_before);
+    const archive_before = try data_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "journal-1713000000.wal",
+        std.testing.allocator,
+        .limited(1024),
+    );
+    defer std.testing.allocator.free(archive_before);
+
+    const malformed_key = try engine.allocator.dupe(u8, "broken(/1");
+    engine.declared_dynamic.put(malformed_key, {}) catch |err| {
+        engine.allocator.free(malformed_key);
+        return err;
+    };
+
+    try std.testing.expectError(
+        @import("../prolog/engine.zig").EngineError.LoadFailed,
+        manager.saveSnapshot(engine, "recovery-point"),
+    );
+
+    const checkpoint_after = try snapshot_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "recovery-point.pl",
+        std.testing.allocator,
+        .limited(16 * 1024),
+    );
+    defer std.testing.allocator.free(checkpoint_after);
+    const wal_after = try data_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "journal.wal",
+        std.testing.allocator,
+        .limited(16 * 1024),
+    );
+    defer std.testing.allocator.free(wal_after);
+    const archive_after = try data_tmp.dir.readFileAlloc(
+        std.testing.io,
+        "journal-1713000000.wal",
+        std.testing.allocator,
+        .limited(1024),
+    );
+    defer std.testing.allocator.free(archive_after);
+
+    try std.testing.expectEqualSlices(u8, checkpoint_before, checkpoint_after);
+    try std.testing.expectEqualSlices(u8, wal_before, wal_after);
+    try std.testing.expectEqualSlices(u8, archive_before, archive_after);
+    _ = try data_tmp.dir.statFile(std.testing.io, "journal.lock", .{});
+    var entries = snapshot_tmp.dir.iterate();
+    while (try entries.next(std.testing.io)) |entry| {
+        try std.testing.expect(!std.mem.startsWith(u8, entry.name, "recovery-point.pl.tmp"));
+    }
+
+    manager.deinit();
+    manager_active = false;
+
+    const restored = try Engine.init(.{}, std.testing.io);
+    defer restored.deinit();
+    var reopened = try PersistenceManager.init(std.testing.allocator, data_dir, snapshot_dir, std.testing.io);
+    defer reopened.deinit();
+    try reopened.restore(restored);
+
+    var base_result = try restored.query("checkpoint_base(preserved)");
+    defer base_result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), base_result.solutions.len);
+
+    var later_result = try restored.query("wal_later(replayed)");
+    defer later_result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), later_result.solutions.len);
 }
