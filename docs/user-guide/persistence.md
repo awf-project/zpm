@@ -18,8 +18,7 @@ The server automatically recovers from the most recent snapshot plus subsequent 
 
 Use `save_snapshot` to create a named checkpoint of your knowledge base:
 
-```bash
-# Call via MCP
+```json
 {
   "jsonrpc": "2.0",
   "id": 1,
@@ -27,22 +26,29 @@ Use `save_snapshot` to create a named checkpoint of your knowledge base:
   "params": {
     "name": "save_snapshot",
     "arguments": {
-      "snapshot_name": "backup_2026_04_13"
+      "name": "backup_2026_04_13"
     }
   }
 }
 ```
 
-After a snapshot:
-- The journal is truncated to prevent unbounded growth
+Before publication, zpm writes the checkpoint to a temporary file and loads that
+closed file in a fresh Prolog engine. The snapshot is renamed into place only
+after it passes this validation. After a successful snapshot:
+
+- The journal is rotated and eligible archived journals are cleaned up
 - You can restore to this exact state later
 - The snapshot uses human-readable Prolog source format
+
+If serialization or fresh-engine validation fails, zpm removes only the
+temporary candidate. The previous checkpoint and active journal remain in
+place, so the failed save does not destroy the last recoverable state.
 
 ## List Available Snapshots
 
 Query all available snapshots to see what restore points exist:
 
-```bash
+```json
 {
   "jsonrpc": "2.0",
   "id": 2,
@@ -60,7 +66,7 @@ Response includes snapshot names, timestamps, and sizes to help you choose which
 
 Use `restore_snapshot` to return to a previous state:
 
-```bash
+```json
 {
   "jsonrpc": "2.0",
   "id": 3,
@@ -68,7 +74,7 @@ Use `restore_snapshot` to return to a previous state:
   "params": {
     "name": "restore_snapshot",
     "arguments": {
-      "snapshot_name": "backup_2026_04_13"
+      "name": "backup_2026_04_13"
     }
   }
 }
@@ -88,7 +94,7 @@ This enables point-in-time recovery without losing recent changes.
 
 Check the status of your persistence layer (journal size, last snapshot, operational mode):
 
-```bash
+```json
 {
   "jsonrpc": "2.0",
   "id": 4,
@@ -132,5 +138,37 @@ rule(X) :- fact(X), other_fact(X).
 
 This human-readable format enables:
 - Easy debugging and auditing
-- Manual fact correction if needed
+- Manual fact correction if needed (after making a byte-for-byte backup)
 - Integration with standard Prolog tools
+
+## Recover an Invalid Snapshot Safely
+
+ZPM v0.4.1 could write an invalid `:- dynamic(...)` declaration when a fact
+argument contained `:` or `:-`. A later process may fail to mount that memory
+with `LoadFailed`. The fix protects newly generated snapshots; it does not
+rewrite snapshots already on disk.
+
+Stop all zpm processes using the project before attempting a repair. Copy the
+complete affected memory directory to a safe location and verify the copy:
+
+```bash
+memory_dir=".zpm/kb/feature_auth"  # Replace with the affected memory path
+backup_dir="/safe/recovery/location/feature_auth-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+cp -a "$memory_dir/." "$backup_dir/"
+diff -qr "$memory_dir" "$backup_dir"
+```
+
+Inspect the affected snapshot for malformed `:- dynamic(...)` declarations
+and compare them with the fact heads. For example, a snapshot containing
+`adr(boundary, 'Domain', 'Keep std::fs outside domain').` needs the declaration
+`:- dynamic(adr/3).`.
+
+Repair only the generated declaration in a separate copy of the project.
+Leave the fact clauses, other snapshots, `knowledge.pl`, and WAL unchanged.
+Start zpm in that copy, query each affected predicate, and check that the
+expected facts appear exactly once. If the copy mounts successfully, apply
+the same declaration-only repair to the original snapshot while zpm remains
+stopped, then restart and verify again. Keep the byte-for-byte backup for
+rollback. Do not delete the knowledge-base directory: the active journal may
+contain mutations made after the snapshot.

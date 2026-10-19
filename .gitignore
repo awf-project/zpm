@@ -50,3 +50,7 @@ ffi/zpm-prolog-ffi/
 
 # Zig package cache
 zig-pkg/
+
+# Tower runtime data; only configuration belongs in Git
+/.tower/*
+!/.tower/*.toml

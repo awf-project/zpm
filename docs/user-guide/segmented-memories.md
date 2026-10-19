@@ -274,13 +274,20 @@ If you see warnings about corrupted entries:
 1. Check the memory's persistence files:
    ```bash
    ls .zpm/kb/memory_name/
-   # Should contain: knowledge.pl journal.wal snapshot.bin
+   # Should contain: knowledge.pl journal.wal and one or more <name>.pl snapshots
    ```
 
-2. Restore from the last good snapshot:
+2. Before editing anything, make a byte-for-byte backup of the complete
+   memory directory and record checksums. See [Recover an Invalid Snapshot
+   Safely](persistence.md#recover-an-invalid-snapshot-safely).
+
+3. Restore from the last good snapshot:
    ```bash
    zpm restore-snapshot --name <snapshot_name> --memory memory_name
    ```
+
+Do not remove the memory directory to work around a mount failure. Its active
+WAL may contain changes needed to recover facts after the last snapshot.
 
 ### Running out of memory
 

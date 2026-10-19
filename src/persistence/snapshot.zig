@@ -3,6 +3,10 @@ const engine_mod = @import("../prolog/engine.zig");
 const term_utils = @import("term_utils");
 const Engine = engine_mod.Engine;
 
+extern "c" fn fflush(stream: ?*anyopaque) c_int;
+
+var staging_counter = std.atomic.Value(u32).init(0);
+
 pub const Snapshot = struct {
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -12,8 +16,18 @@ pub const Snapshot = struct {
         const snapshot_name = try std.fmt.allocPrint(allocator, "{s}.pl", .{name});
         errdefer allocator.free(snapshot_name);
 
-        const tmp_name = try std.fmt.allocPrint(allocator, "{s}.tmp", .{snapshot_name});
+        const tmp_name = try std.fmt.allocPrint(
+            allocator,
+            "{s}.tmp-{d}-{d}",
+            .{ snapshot_name, std.c.getpid(), staging_counter.fetchAdd(1, .monotonic) },
+        );
         defer allocator.free(tmp_name);
+
+        const tmp_path = try std.fs.path.join(allocator, &.{ dir_path, tmp_name });
+        defer allocator.free(tmp_path);
+
+        const full_path = try std.fs.path.join(allocator, &.{ dir_path, snapshot_name });
+        errdefer allocator.free(full_path);
 
         var dir = try std.Io.Dir.openDirAbsolute(io, dir_path, .{});
         defer dir.close(io);
@@ -32,13 +46,15 @@ pub const Snapshot = struct {
             };
         }
 
-        std.Io.Dir.rename(dir, tmp_name, dir, snapshot_name, io) catch |err| {
+        validateCandidate(tmp_path, io) catch |err| {
             dir.deleteFile(io, tmp_name) catch {};
             return err;
         };
 
-        const full_path = try std.fs.path.join(allocator, &.{ dir_path, snapshot_name });
-        errdefer allocator.free(full_path);
+        std.Io.Dir.rename(dir, tmp_name, dir, snapshot_name, io) catch |err| {
+            dir.deleteFile(io, tmp_name) catch {};
+            return err;
+        };
 
         return Snapshot{ .allocator = allocator, .name = snapshot_name, .path = full_path };
     }
@@ -56,6 +72,12 @@ pub const Snapshot = struct {
     }
 };
 
+fn validateCandidate(path: []const u8, io: std.Io) !void {
+    const engine = try Engine.init(.{}, io);
+    defer engine.deinit();
+    try engine.loadFile(path);
+}
+
 fn writeClausesToFile(allocator: std.mem.Allocator, engine: *Engine, file: std.Io.File, io: std.Io) !void {
     const ts = blk: {
         var _ts: std.posix.timespec = undefined;
@@ -66,15 +88,18 @@ fn writeClausesToFile(allocator: std.mem.Allocator, engine: *Engine, file: std.I
     const hdr = try std.fmt.bufPrint(&hdr_buf, "%% zpm snapshot {d}\n", .{ts});
     try file.writeStreamingAll(io, hdr);
 
+    const dump = try engine.dumpDynamicPredicates(allocator);
+    defer allocator.free(dump);
+
     var it = engine.iterateDeclaredDynamic();
     while (it.next()) |entry| {
         var dir_buf: [256]u8 = undefined;
-        const directive = try std.fmt.bufPrint(&dir_buf, ":- dynamic({s}).\n", .{entry.key_ptr.*});
-        try file.writeStreamingAll(io, directive);
+        const directive = try std.fmt.bufPrint(&dir_buf, ":- dynamic({s}).", .{entry.key_ptr.*});
+        if (std.mem.indexOf(u8, dump, directive) == null) {
+            try file.writeStreamingAll(io, directive);
+            try file.writeStreamingAll(io, "\n");
+        }
     }
-
-    const dump = try engine.dumpDynamicPredicates(allocator);
-    defer allocator.free(dump);
     try file.writeStreamingAll(io, dump);
 }
 
@@ -99,6 +124,78 @@ pub fn list(allocator: std.mem.Allocator, dir_path: []const u8, io: std.Io) ![][
 
     return try results.toOwnedSlice(allocator);
 }
+
+/// Test-only fd capture for verifying that failed candidate validation does
+/// not disclose persisted content or its staging location. This lives here
+/// rather than importing prolog/capture.zig because that module is already
+/// owned by the engine module in the production import graph.
+const TestOutputCapture = struct {
+    allocator: std.mem.Allocator,
+    out_path: [:0]u8,
+    err_path: [:0]u8,
+    saved_out: c_int,
+    saved_err: c_int,
+    out_fd: std.posix.fd_t,
+    err_fd: std.posix.fd_t,
+    ended: bool = false,
+
+    fn begin(allocator: std.mem.Allocator, dir_path: []const u8) !TestOutputCapture {
+        const out_path = try std.fmt.allocPrintSentinel(allocator, "{s}/captured.stdout", .{dir_path}, 0);
+        errdefer allocator.free(out_path);
+        const err_path = try std.fmt.allocPrintSentinel(allocator, "{s}/captured.stderr", .{dir_path}, 0);
+        errdefer allocator.free(err_path);
+
+        _ = fflush(null);
+        const saved_out = std.c.dup(std.posix.STDOUT_FILENO);
+        if (saved_out == -1) return error.Unexpected;
+        errdefer _ = std.c.close(saved_out);
+        const saved_err = std.c.dup(std.posix.STDERR_FILENO);
+        if (saved_err == -1) return error.Unexpected;
+        errdefer _ = std.c.close(saved_err);
+
+        const out_raw = std.c.open(out_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o600));
+        if (out_raw == -1) return error.Unexpected;
+        const out_fd: std.posix.fd_t = @intCast(out_raw);
+        errdefer _ = std.c.close(out_fd);
+        const err_raw = std.c.open(err_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o600));
+        if (err_raw == -1) return error.Unexpected;
+        const err_fd: std.posix.fd_t = @intCast(err_raw);
+        errdefer _ = std.c.close(err_fd);
+
+        if (std.c.dup2(out_fd, std.posix.STDOUT_FILENO) == -1) return error.Unexpected;
+        errdefer _ = std.c.dup2(saved_out, std.posix.STDOUT_FILENO);
+        if (std.c.dup2(err_fd, std.posix.STDERR_FILENO) == -1) return error.Unexpected;
+        errdefer _ = std.c.dup2(saved_err, std.posix.STDERR_FILENO);
+
+        return .{ .allocator = allocator, .out_path = out_path, .err_path = err_path, .saved_out = saved_out, .saved_err = saved_err, .out_fd = out_fd, .err_fd = err_fd };
+    }
+
+    fn end(self: *TestOutputCapture) void {
+        if (self.ended) return;
+        self.ended = true;
+        _ = fflush(null);
+        _ = std.c.dup2(self.saved_out, std.posix.STDOUT_FILENO);
+        _ = std.c.dup2(self.saved_err, std.posix.STDERR_FILENO);
+        _ = std.c.close(self.saved_out);
+        _ = std.c.close(self.saved_err);
+        _ = std.c.close(self.out_fd);
+        _ = std.c.close(self.err_fd);
+    }
+
+    fn read(self: *const TestOutputCapture, io: std.Io) !struct { stdout: []u8, stderr: []u8 } {
+        return .{
+            .stdout = try std.Io.Dir.cwd().readFileAlloc(io, self.out_path, self.allocator, .limited(8192)),
+            .stderr = try std.Io.Dir.cwd().readFileAlloc(io, self.err_path, self.allocator, .limited(8192)),
+        };
+    }
+
+    fn deinit(self: *TestOutputCapture) void {
+        _ = std.c.unlink(self.out_path.ptr);
+        _ = std.c.unlink(self.err_path.ptr);
+        self.allocator.free(self.out_path);
+        self.allocator.free(self.err_path);
+    }
+};
 
 test "generate creates snapshot file with correct name in persistence directory" {
     var tmp = std.testing.tmpDir(.{});
@@ -534,7 +631,7 @@ test "restore makes feature/3 schema count=4 via clause introspection (US2 schem
 }
 
 test "generate propagates dump error and leaves no final snapshot file" {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
@@ -548,5 +645,166 @@ test "generate propagates dump error and leaves no final snapshot file" {
     try std.testing.expectError(engine_mod.EngineError.QueryFailed, result);
 
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "should_not_exist.pl", .{}));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "should_not_exist.pl.tmp", .{}));
+    {
+        var entries = tmp.dir.iterate();
+        while (try entries.next(std.testing.io)) |entry| {
+            try std.testing.expect(!std.mem.startsWith(u8, entry.name, "should_not_exist.pl.tmp"));
+        }
+    }
+}
+
+test "generate allocation failure never replaces an existing snapshot" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.assertFact("replacement(value)");
+
+    const original = "original snapshot bytes\n";
+    var observed_failure = false;
+    for (0..16) |fail_index| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "atomic.pl", .data = original });
+
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const result = Snapshot.generate(failing.allocator(), engine, dir_path, "atomic", std.testing.io);
+        if (result) |snapshot_value| {
+            var snapshot = snapshot_value;
+            snapshot.deinit();
+        } else |_| {
+            observed_failure = true;
+            const preserved = try tmp.dir.readFileAlloc(std.testing.io, "atomic.pl", std.testing.allocator, .limited(8192));
+            defer std.testing.allocator.free(preserved);
+            try std.testing.expectEqualStrings(original, preserved);
+        }
+        var entries = tmp.dir.iterate();
+        while (try entries.next(std.testing.io)) |entry| {
+            try std.testing.expect(!std.mem.startsWith(u8, entry.name, "atomic.pl.tmp"));
+        }
+    }
+    try std.testing.expect(observed_failure);
+}
+
+test "snapshot rejects malformed dynamic predicate indicators" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "malformed.pl",
+        .data = ":- dynamic(broken(/1).\n",
+    });
+    const malformed_path = try tmp.dir.realPathFileAlloc(std.testing.io, "malformed.pl", std.testing.allocator);
+    defer std.testing.allocator.free(malformed_path);
+
+    var loader = try Engine.init(.{}, std.testing.io);
+    defer loader.deinit();
+    try std.testing.expectError(engine_mod.EngineError.LoadFailed, loader.loadFile(malformed_path));
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.assertFact("stable(value)");
+
+    var original = try Snapshot.generate(std.testing.allocator, engine, dir_path, "existing", std.testing.io);
+    defer original.deinit();
+    const original_bytes = try tmp.dir.readFileAlloc(std.testing.io, "existing.pl", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(original_bytes);
+
+    const malformed_key = try engine.allocator.dupe(u8, "broken(/1");
+    engine.declared_dynamic.put(malformed_key, {}) catch |err| {
+        engine.allocator.free(malformed_key);
+        return err;
+    };
+
+    var capture = try TestOutputCapture.begin(std.testing.allocator, dir_path);
+    defer capture.deinit();
+    defer capture.end();
+
+    try std.testing.expectError(
+        engine_mod.EngineError.LoadFailed,
+        Snapshot.generate(std.testing.allocator, engine, dir_path, "absent", std.testing.io),
+    );
+
+    capture.end();
+    const output = try capture.read(std.testing.io);
+    defer std.testing.allocator.free(output.stdout);
+    defer std.testing.allocator.free(output.stderr);
+    inline for ([_][]const u8{ "broken(/1", "stable(value)", dir_path, ".tmp" }) |sensitive| {
+        try std.testing.expect(std.mem.indexOf(u8, output.stdout, sensitive) == null);
+        try std.testing.expect(std.mem.indexOf(u8, output.stderr, sensitive) == null);
+    }
+
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "absent.pl", .{}));
+    {
+        var entries = tmp.dir.iterate();
+        while (try entries.next(std.testing.io)) |entry| {
+            try std.testing.expect(!std.mem.startsWith(u8, entry.name, "absent.pl.tmp"));
+        }
+    }
+
+    try std.testing.expectError(
+        engine_mod.EngineError.LoadFailed,
+        Snapshot.generate(std.testing.allocator, engine, dir_path, "existing", std.testing.io),
+    );
+    {
+        var entries = tmp.dir.iterate();
+        while (try entries.next(std.testing.io)) |entry| {
+            try std.testing.expect(!std.mem.startsWith(u8, entry.name, "existing.pl.tmp"));
+        }
+    }
+
+    const preserved_bytes = try tmp.dir.readFileAlloc(std.testing.io, "existing.pl", std.testing.allocator, .limited(8192));
+    defer std.testing.allocator.free(preserved_bytes);
+    try std.testing.expectEqualSlices(u8, original_bytes, preserved_bytes);
+}
+
+test "snapshot round-trip preserves separator-bearing fact arguments in a fresh engine" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dir_path);
+
+    var engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.assertFact("adr(parser, accepted, 'https://example.test/std::fs/head :- body')");
+    try engine.assertFact("impl_note(parser, 'std::fs', 'head :- body')");
+    try engine.assertFact("resolved(parser, 'https://example.test/a:b')");
+    try engine.assertFact("seg:foo('module:value :- body')");
+
+    var snap = try Snapshot.generate(std.testing.allocator, engine, dir_path, "separators", std.testing.io);
+    defer snap.deinit();
+
+    const content = try tmp.dir.readFileAlloc(std.testing.io, "separators.pl", std.testing.allocator, .limited(16 * 1024));
+    defer std.testing.allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, ":- dynamic(adr/3)."));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, ":- dynamic(impl_note/3)."));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, ":- dynamic(resolved/2)."));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, ":- dynamic(seg:foo/1)."));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, content, ":- dynamic(adr(parser"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, content, ":- dynamic(impl_note(parser"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, content, ":- dynamic(resolved(parser"));
+
+    var restored = try Engine.init(.{}, std.testing.io);
+    defer restored.deinit();
+    try snap.restore(restored);
+
+    var adr = try restored.query("adr(parser, accepted, 'https://example.test/std::fs/head :- body')");
+    defer adr.deinit();
+    try std.testing.expectEqual(@as(usize, 1), adr.solutions.len);
+
+    var impl_note = try restored.query("impl_note(parser, 'std::fs', 'head :- body')");
+    defer impl_note.deinit();
+    try std.testing.expectEqual(@as(usize, 1), impl_note.solutions.len);
+
+    var resolved = try restored.query("resolved(parser, 'https://example.test/a:b')");
+    defer resolved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), resolved.solutions.len);
+
+    try restored.assertFact("adr(snapshot, accepted, 'post:restore :- mutable')");
+    var after_assert = try restored.query("adr(_, _, _)");
+    defer after_assert.deinit();
+    try std.testing.expectEqual(@as(usize, 2), after_assert.solutions.len);
 }
