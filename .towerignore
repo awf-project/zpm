@@ -6,6 +6,29 @@ target/
 node_modules/
 dist/
 vendor/
+zig-out/
+zig-cache/
+.zig-cache/
+zig-pkg/
+*.o
+/test_*
+/npm-cache/
+/site/public/
+/site/resources/
+/site/hugo_stats.json
+/site/.hugo_build.lock
+/ffi/zpm-prolog-ffi/
+
+# Local runtime/index state and parallel checkouts
+/.tower/
+/.zpm/
+/.worktrees/
+/.awf/storage/
+/.awf/roles/
+/.awf/skills/
+/.grepai/
+
+# Keep ffi/trealla/ indexed: it is the actual Prolog backend source.
 
 # Secrets (must never be fed to the agent/LLM)
 *.key
