@@ -3,7 +3,7 @@ title: "Schema Discovery: Explore the Knowledge Base"
 ---
 
 
-This guide shows how to discover what predicates exist in the knowledge base using the `get_knowledge_schema` tool.
+This guide shows how to discover what predicates exist in the knowledge base using the `get_knowledge_schema` tool. Discovery includes file-loaded static predicates and predicates asserted after startup; built-ins and ZPM implementation predicates are excluded.
 
 ## Discover All Predicates
 
@@ -31,12 +31,20 @@ get_knowledge_schema
 
 The `memory` argument is optional. When omitted, the tool returns predicates
 from the `default` memory; pass a mounted segment name to inspect that segment
-instead. Prolog built-ins are excluded.
+instead. Discovery includes facts and rules loaded from `knowledge.pl` without
+`dynamic` declarations, as well as predicates asserted after mounting. It also
+works for read-only mounts. Predicates from other memories, Prolog built-ins,
+operators, and ZPM helper predicates are excluded.
 
 ```bash
 # Discover predicates in a named memory segment
 zpm get-knowledge-schema --memory feature_auth
 ```
+
+For example, if a mounted segment's `knowledge.pl` contains `note(c).` and
+`note(cs).`, `zpm get-knowledge-schema --memory music_theory` reports `note/1`
+as `"fact"` with `count: 2`. The file does not need a `dynamic` directive for
+discovery. Query the same memory to use those facts.
 
 ## Understand Predicate Types
 
@@ -44,8 +52,8 @@ Each predicate has a `type` field indicating its clause composition:
 
 | Type | Meaning | Example |
 |------|---------|---------|
-| `"fact"` | Only ground facts asserted via `remember_fact` | `likes/2` |
-| `"rule"` | Only rules defined via `define_rule` | `friend/2` |
+| `"fact"` | Only fact clauses, whether file-loaded or asserted | `likes/2` |
+| `"rule"` | Only rule clauses, whether file-loaded or defined at runtime | `friend/2` |
 | `"both"` | Mix of facts and rules for the same predicate | `path/2` with a base fact and recursive rule |
 
 ### Example: Mixed Predicate
@@ -94,11 +102,13 @@ get_knowledge_schema
 # Returns: {"predicates": [], "total": 0}
 ```
 
-This is a valid response, not an error. Use it to confirm the knowledge base is clean before populating it.
+This is a valid response, not an error. It means no discoverable user clauses
+exist in the selected memory.
 
 ## Error Handling
 
-If the Prolog engine is unavailable:
+If predicate introspection fails, the tool reports `ExecutionFailed` instead
+of an empty schema. An unavailable engine also returns an error result.
 
 ```json
 {
@@ -107,7 +117,8 @@ If the Prolog engine is unavailable:
 }
 ```
 
-This indicates the engine failed to initialize. Check server logs for details.
+Check server logs for the underlying failure. An empty schema is returned only
+when discovery succeeds and finds no user clauses.
 
 ## See Also
 

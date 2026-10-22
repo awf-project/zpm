@@ -1,12 +1,31 @@
-# Tower local project configuration.
-#
-# [plugins]
-# disabled = ["ast"]   # skip loading a plugin by its *.wasm file stem
-#
-# [plugins.formatter.tools.<id>] — external formatters run by plugin_fmt when a
-# file changes. mode = "filter" (default, stdin->stdout) or "inplace".
-# Uninstalled tools are skipped, so you can safely keep entries you do not use.
+# Tower project configuration (native sidecars).
+# AST tools are exposed, but currently support Rust/Go/PHP only (not Zig).
+[extensions]
+disabled = []
 
-[plugins.formatter.tools.zigfmt]
+# Preserve the existing Zig formatter; file changes may trigger formatting.
+[formatter.tools.zigfmt]
 argv = ["zig", "fmt", "--stdin"]
 extensions = ["zig"]
+
+# Syntax and source-only static checks; full type checking remains `make test`.
+# Formatting remains available through the formatter above and `make lint`.
+# Requires a lint sidecar that accepts [formatter]; this machine uses a tested
+# local override in .tower/extensions/lint/ until the global sidecar is updated.
+[lint.zig]
+command = "zig"
+args = ["ast-check", "--color", "off"]
+extensions = ["zig", "zon"]
+format = "generic-regex"
+target = "append"
+regex = '^(?<file>.+):(?<line>\d+):(?<col>\d+): (?<severity>error|warning|note): (?<message>.+)$'
+source = "zig ast-check"
+
+[lsp]
+idle_timeout_secs = 300
+
+[lsp.zig]
+# Project-local ZLS 0.16.0 for Zig 0.16; the binary is ignored by Git.
+# Install from https://zigtools.org/zls/releases/0.16.0/ on a fresh checkout.
+command = ".tower/bin/zls"
+extensions = ["zig", "zon"]
