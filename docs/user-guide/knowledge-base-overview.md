@@ -3,7 +3,7 @@ title: "Knowledge Base Overview"
 ---
 
 
-Get a comprehensive snapshot of your knowledge base with the `get_kb_overview` tool. This guide shows how to inspect predicates, sample facts, assumptions, snapshots, and persistence health in a single query.
+Get a comprehensive snapshot of the default knowledge base with the `get_kb_overview` tool. This guide shows how to inspect predicates, sample facts, assumptions, snapshots, and persistence health in a single query.
 
 ## Quick Overview
 
@@ -66,6 +66,12 @@ Each predicate in the response includes:
 | `kind` | `"fact"` (only asserted), `"rule"` (only defined), or `"both"` (mixed) |
 | `count` | Total number of clauses (facts + rules) |
 | `samples` | Example clauses (up to `sample_size`); rules shown as `Head :- Body` |
+
+Predicate discovery includes static facts and rules loaded from `knowledge.pl`
+as well as predicates asserted at runtime. Static predicates do not need a
+`dynamic` declaration to appear. Samples can include file-loaded clauses.
+`get_kb_overview` has no `memory` argument and inspects the default memory;
+use `get_knowledge_schema` to inspect a named or read-only segment.
 
 ### Assumptions
 
@@ -228,6 +234,13 @@ zpm get-kb-overview --sample-size 0 \
 # Agent can now make informed queries without exploring blindly
 ```
 
+## Discovery and Error Handling
+
+Predicate discovery is read-only and includes static file-loaded clauses as
+well as runtime assertions. A segment with no discoverable predicates returns
+an empty `predicates` array. An introspection failure is returned as an
+execution error instead of being silently presented as an empty knowledge base.
+
 ## Performance Notes
 
 - The tool queries the knowledge base once, making it efficient even for large KBs
@@ -236,7 +249,7 @@ zpm get-kb-overview --sample-size 0 \
   - Query specific predicates with `query_logic` instead
   
 - Sample clauses are formatted as they appear in the KB (atoms for facts, `Head :- Body` for rules)
-- Built-in predicates (starting with `$`, containing `:`, or named `tms_justification`, `zpm_source`, `portray`) are excluded
+- Built-in predicates, operators, and ZPM helper predicates are excluded
 
 ## Comparison with Other Tools
 

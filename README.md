@@ -15,7 +15,7 @@ Large Language Models with a Prolog inference engine for deterministic logical r
 - Knowledge management tools: assert facts and define rules via MCP
 - Exploration tools: query Prolog goals and trace transitive dependencies via MCP
 - Supervision tools: verify knowledge base consistency and explain proof chains via MCP
-- Knowledge schema discovery: introspect predicates and their types via MCP
+- Knowledge schema discovery: inspect file-loaded static facts and rules alongside asserted predicates, with clause counts and types, in each selected memory
 - Delete tools: retract individual facts or clear entire categories from the knowledge base
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
@@ -137,8 +137,8 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 | `forget_fact` | Remove a single fact from the knowledge base | `fact` (string, required), `memory` (string, optional) |
 | `get_belief_status` | Query whether a belief is currently supported and which assumptions justify it | `fact` (string, required), `memory` (string, optional) |
 | `get_justification` | Query all facts supported by a named assumption | `assumption` (string, required), `memory` (string, optional) |
-| `get_kb_overview` | Single-call snapshot of the knowledge base: user predicates with sample clauses, assumptions, snapshots, and persistence health | `sample_size` (integer, optional) |
-| `get_knowledge_schema` | Introspect the knowledge base and list all user-defined predicates with their arity and type (fact/rule/both) | `memory` (string, optional) |
+| `get_kb_overview` | Single-call snapshot of the default knowledge base: static and asserted user predicates with sample clauses, assumptions, snapshots, and persistence health | `sample_size` (integer, optional) |
+| `get_knowledge_schema` | List file-loaded static and asserted user predicates in the selected memory with arity, type (fact/rule/both), and clause count | `memory` (string, optional) |
 | `get_persistence_status` | Query the persistence layer status including journal size, last snapshot, and operational mode | (no required arguments) |
 | `list_assumptions` | List all currently active assumptions and their associated facts | `memory` (string, optional) |
 | `list_memories` | List all discoverable memories with scope, mount status, and mode | (no required arguments) |

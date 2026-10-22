@@ -2,7 +2,6 @@ const std = @import("std");
 const mcp = @import("mcp");
 const context = @import("context.zig");
 const engine_mod = @import("../prolog/engine.zig");
-const validation = @import("tool_validation");
 const clause_utils = @import("tool_clause_utils");
 const manager_mod = @import("../persistence/manager.zig");
 const MemoryRegistry = @import("../memory/registry.zig").MemoryRegistry;
@@ -35,34 +34,38 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
     const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse
         return mcp.tools.errorResult(allocator, "Prolog engine is not initialized") catch return mcp.tools.ToolError.OutOfMemory;
 
+    var predicates = clause_utils.discoverPredicates(engine, allocator) catch
+        return mcp.tools.ToolError.ExecutionFailed;
+    defer predicates.deinit(allocator);
+
     var size = parseSampleSize(args);
 
-    // Budget enforcement: reduce sample_size until the full JSON payload
-    // (predicates + assumptions + snapshots + persistence) fits within
-    // total_budget. When size reaches 0 and the payload is still too large,
-    // fall back to a truncated=true build so the caller is informed.
-    // Conservative choice: we never truncate assumptions/snapshots/persistence
-    // sections — only predicate samples are reduced. If even size=0 exceeds
-    // the budget (very large KB with many predicates), we emit truncated=true
-    // with size=0 and accept the overage rather than omitting sections entirely,
-    // because partial structural information is more useful than a minimal stub.
-    const json = buildBudgeted(io, allocator, engine, &size) catch return mcp.tools.ToolError.OutOfMemory;
+    // Budget enforcement reduces only predicate samples. Predicate discovery
+    // happens once so every retry presents the same owned collection.
+    const json = buildBudgeted(io, allocator, engine, predicates.entries.items, &size) catch
+        return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(json);
     return mcp.tools.textResult(allocator, json) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
 /// Reduce sample_size until the output fits in total_budget, then return
 /// the final JSON. Exactly one allocated slice is live at any point.
-fn buildBudgeted(io: std.Io, allocator: std.mem.Allocator, engine: *Engine, size: *usize) ![]u8 {
+fn buildBudgeted(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    engine: *Engine,
+    predicates: []const clause_utils.PredicateEntry,
+    size: *usize,
+) ![]u8 {
     var truncated = false;
     while (true) {
-        const attempt = try buildJson(io, allocator, engine, size.*, false);
+        const attempt = try buildJson(io, allocator, engine, predicates, size.*, false);
         if (attempt.len <= total_budget or size.* == 0) {
             if (truncated) {
                 // Rebuild with the truncated flag set so the caller knows
                 // the sample count was reduced from the original request.
                 allocator.free(attempt);
-                return buildJson(io, allocator, engine, size.*, true);
+                return buildJson(io, allocator, engine, predicates, size.*, true);
             }
             return attempt;
         }
@@ -92,10 +95,14 @@ const total_budget: usize = 64 * 1024;
 
 const mounts_unavailable_json = "{\"available\":false,\"count\":0,\"items\":[]}";
 
-fn buildJson(io: std.Io, allocator: std.mem.Allocator, engine: *Engine, sample_size: usize, truncated: bool) ![]u8 {
-    // std.ArrayList(u8) = .empty uses the managed ArrayList API (Zig 0.15):
-    // each append/deinit call receives the allocator explicitly. This is
-    // intentional and consistent with the rest of the project's tool handlers.
+fn buildJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    engine: *Engine,
+    predicates: []const clause_utils.PredicateEntry,
+    sample_size: usize,
+    truncated: bool,
+) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
@@ -103,54 +110,29 @@ fn buildJson(io: std.Io, allocator: std.mem.Allocator, engine: *Engine, sample_s
 
     var first_pred = true;
 
-    const schema_query = "current_predicate(F/A),functor(H,F,A),predicate_property(H,dynamic)";
-    // Query errors are intentionally swallowed here: a partial overview with
-    // an empty predicates list is preferable to an outright failure when the
-    // engine is partially degraded (e.g. OOM inside Trealla, corrupted clause
-    // store). Callers detect an unavailable engine via the null-engine early
-    // return above; errors at the query level are non-fatal for this tool.
-    if (engine.query(schema_query)) |*pred_result| {
-        var pr = pred_result.*;
-        defer pr.deinit();
+    for (predicates) |predicate| {
+        const kind = clause_utils.predicateKind(predicate.fact_count, predicate.rule_count);
+        const total_count = predicate.fact_count + predicate.rule_count;
 
-        for (pr.solutions) |sol| {
-            const f_term = sol.bindings.get("F") orelse continue;
-            const a_term = sol.bindings.get("A") orelse continue;
-            const name_raw = switch (f_term) {
-                .atom => |s| s,
-                else => continue,
-            };
-            const arity: i64 = switch (a_term) {
-                .integer => |i| i,
-                .atom => |s| std.fmt.parseInt(i64, s, 10) catch continue,
-                else => continue,
-            };
-            if (clause_utils.isBuiltin(name_raw)) continue;
-            if (!validation.isValidAtomName(name_raw)) continue;
-
-            const fact_count = clause_utils.countClauses(engine, allocator, name_raw, arity, "true") catch continue;
-            const all_count = clause_utils.countClauses(engine, allocator, name_raw, arity, "_") catch continue;
-            const rule_count = if (all_count > fact_count) all_count - fact_count else 0;
-            const kind = clause_utils.predicateKind(fact_count, rule_count);
-            const total_count = fact_count + rule_count;
-
-            var samples: std.ArrayList([]u8) = .empty;
-            defer {
-                for (samples.items) |s| allocator.free(s);
-                samples.deinit(allocator);
-            }
-            if (sample_size > 0) {
-                collectSamples(allocator, engine, name_raw, arity, sample_size, &samples) catch {};
-            }
-
-            const pred_json = try buildPredicateJson(allocator, name_raw, arity, kind, total_count, samples.items);
-            defer allocator.free(pred_json);
-
-            if (!first_pred) try buf.appendSlice(allocator, ",");
-            try buf.appendSlice(allocator, pred_json);
-            first_pred = false;
+        var samples: std.ArrayList([]u8) = .empty;
+        defer {
+            for (samples.items) |sample| allocator.free(sample);
+            samples.deinit(allocator);
         }
-    } else |_| {}
+        if (sample_size > 0) {
+            collectSamples(allocator, engine, predicate.name, predicate.arity, sample_size, &samples) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {},
+            };
+        }
+
+        const pred_json = try buildPredicateJson(allocator, predicate.name, predicate.arity, kind, total_count, samples.items);
+        defer allocator.free(pred_json);
+
+        if (!first_pred) try buf.appendSlice(allocator, ",");
+        try buf.appendSlice(allocator, pred_json);
+        first_pred = false;
+    }
 
     try buf.appendSlice(allocator, "],\"assumptions\":");
 
@@ -189,11 +171,15 @@ fn collectSamples(
     limit: usize,
     out: *std.ArrayList([]u8),
 ) !void {
-    const query_str = try std.fmt.allocPrint(
-        allocator,
-        "functor(H,{s},{d}),clause(H,Body),with_output_to(atom(HS),write(H)),(Body=true->SA=HS;(with_output_to(atom(BS),write(Body)),atom_concat(HS,' :- ',T),atom_concat(T,BS,SA)))",
-        .{ functor, arity },
+    var query: std.Io.Writer.Allocating = .init(allocator);
+    defer query.deinit();
+    try query.writer.writeAll("functor(H,");
+    try clause_utils.writeAtom(&query.writer, functor);
+    try query.writer.print(
+        ",{d}),'$clause'(H,Body),with_output_to(atom(HS),write(H)),(Body=true->SA=HS;(with_output_to(atom(BS),write(Body)),atom_concat(HS,' :- ',T),atom_concat(T,BS,SA)))",
+        .{arity},
     );
+    const query_str = try query.toOwnedSlice();
     defer allocator.free(query_str);
 
     var result = try engine.query(query_str);
@@ -207,8 +193,11 @@ fn collectSamples(
             .atom => |s| s,
             else => continue,
         };
-        const owned = try allocator.dupe(u8, sample_str);
-        try out.append(allocator, owned);
+        {
+            const owned = try allocator.dupe(u8, sample_str);
+            errdefer allocator.free(owned);
+            try out.append(allocator, owned);
+        }
         count += 1;
     }
 }
@@ -512,6 +501,215 @@ fn emptyEngineResponse(allocator: std.mem.Allocator) ![]const u8 {
     const result = try handler(null, std.testing.io, allocator, null);
     try std.testing.expect(!result.is_error);
     return result.content[0].text.text;
+}
+
+fn overviewPredicate(parsed: std.json.Value, functor: []const u8) ?std.json.ObjectMap {
+    const predicates = parsed.object.get("predicates") orelse return null;
+    for (predicates.array.items) |predicate| {
+        const object = predicate.object;
+        const candidate = object.get("functor") orelse continue;
+        if (std.mem.eql(u8, candidate.string, functor)) return object;
+    }
+    return null;
+}
+
+const OneShotFailAllocator = struct {
+    backing: std.mem.Allocator,
+    fail_index: usize,
+    alloc_index: usize = 0,
+    failed: bool = false,
+
+    fn allocator(self: *OneShotFailAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        defer self.alloc_index += 1;
+        if (self.alloc_index == self.fail_index) {
+            self.failed = true;
+            return null;
+        }
+        return self.backing.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *OneShotFailAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ra);
+    }
+};
+
+test "overview reports file-loaded static predicate metadata and samples" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "knowledge.pl",
+        .data = "habitat(otter, river).\nhabitat(heron, marsh).\nwetland(X) :- habitat(X, marsh).\n",
+    });
+    const knowledge_path = try tmp.dir.realPathFileAlloc(std.testing.io, "knowledge.pl", allocator);
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.loadFile(knowledge_path);
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const result = try handler(null, std.testing.io, allocator, null);
+    try std.testing.expect(!result.is_error);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.content[0].text.text, .{});
+    defer parsed.deinit();
+
+    const habitat = overviewPredicate(parsed.value, "habitat") orelse return error.MissingHabitat;
+    try std.testing.expectEqual(@as(i64, 2), habitat.get("arity").?.integer);
+    try std.testing.expectEqualStrings("fact", habitat.get("kind").?.string);
+    try std.testing.expectEqual(@as(i64, 2), habitat.get("count").?.integer);
+    const habitat_samples = habitat.get("samples").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), habitat_samples.len);
+    try std.testing.expect(std.mem.startsWith(u8, habitat_samples[0].string, "habitat("));
+    try std.testing.expect(std.mem.startsWith(u8, habitat_samples[1].string, "habitat("));
+
+    const wetland = overviewPredicate(parsed.value, "wetland") orelse return error.MissingWetland;
+    try std.testing.expectEqual(@as(i64, 1), wetland.get("arity").?.integer);
+    try std.testing.expectEqualStrings("rule", wetland.get("kind").?.string);
+    try std.testing.expectEqual(@as(i64, 1), wetland.get("count").?.integer);
+    const wetland_samples = wetland.get("samples").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), wetland_samples.len);
+    try std.testing.expect(std.mem.startsWith(u8, wetland_samples[0].string, "wetland("));
+    try std.testing.expect(std.mem.indexOf(u8, wetland_samples[0].string, " :- ") != null);
+}
+
+test "overview samples quoted functors without executing embedded goals" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "knowledge.pl",
+        .data = "'release-status'(stable).\n" ++
+            "'reviewer\\'s-note'(accepted).\n" ++
+            "'path\\\\segment'(present).\n" ++
+            "'x,1),assertz(injected),functor(H,y'(safe).\n",
+    });
+    const knowledge_path = try tmp.dir.realPathFileAlloc(std.testing.io, "knowledge.pl", allocator);
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.loadFile(knowledge_path);
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    const unchanged_goal = "\\+ current_predicate(injected/0)";
+    var before = try engine.query(unchanged_goal);
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 1), before.solutions.len);
+
+    const result = try handler(null, std.testing.io, allocator, null);
+    try std.testing.expect(!result.is_error);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.content[0].text.text, .{});
+    defer parsed.deinit();
+
+    // Check engine state even when the sampling assertions would fail.
+    var after = try engine.query(unchanged_goal);
+    defer after.deinit();
+    try std.testing.expectEqual(@as(usize, 1), after.solutions.len);
+
+    const cases = [_]struct { name: []const u8, value: []const u8 }{
+        .{ .name = "release-status", .value = "stable" },
+        .{ .name = "reviewer's-note", .value = "accepted" },
+        .{ .name = "path\\segment", .value = "present" },
+        .{ .name = "x,1),assertz(injected),functor(H,y", .value = "safe" },
+    };
+    try std.testing.expectEqual(cases.len, parsed.value.object.get("predicates").?.array.items.len);
+    for (cases) |case| {
+        const predicate = overviewPredicate(parsed.value, case.name) orelse return error.MissingQuotedPredicate;
+        try std.testing.expectEqual(@as(i64, 1), predicate.get("arity").?.integer);
+        try std.testing.expectEqualStrings("fact", predicate.get("kind").?.string);
+        try std.testing.expectEqual(@as(i64, 1), predicate.get("count").?.integer);
+        const samples = predicate.get("samples").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), samples.len);
+        const expected_suffix = try std.fmt.allocPrint(allocator, "({s})", .{case.value});
+        try std.testing.expect(std.mem.endsWith(u8, samples[0].string, expected_suffix));
+    }
+}
+
+test "overview propagates predicate introspection failure" {
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    {
+        const saved_handle = engine.handle;
+        engine.handle = null;
+        defer engine.handle = saved_handle;
+        try std.testing.expectError(
+            mcp.tools.ToolError.ExecutionFailed,
+            handler(null, std.testing.io, std.testing.allocator, null),
+        );
+    }
+
+    {
+        const saved_max_memory = engine.config.max_memory_bytes;
+        engine.config.max_memory_bytes = 0;
+        defer engine.config.max_memory_bytes = saved_max_memory;
+        try std.testing.expectError(
+            mcp.tools.ToolError.ExecutionFailed,
+            handler(null, std.testing.io, std.testing.allocator, null),
+        );
+    }
+
+    context.clearEngine();
+    var presentation_failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(
+        mcp.tools.ToolError.OutOfMemory,
+        handler(null, std.testing.io, presentation_failing.allocator(), null),
+    );
+}
+
+test "overview propagates sample collection allocation failure" {
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    try engine.assertFact("sample_target(value)");
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    // Count the allocations made by discovery so the failing allocator can
+    // target the subsequent samples ArrayList append: buildJson's buffer and
+    // collectSamples' query/sample copies are allocated immediately before it.
+    var counting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var predicates = try clause_utils.discoverPredicates(engine, counting.allocator());
+    const discovery_allocations = counting.alloc_index;
+    predicates.deinit(counting.allocator());
+
+    var failing = OneShotFailAllocator{
+        .backing = std.testing.allocator,
+        .fail_index = discovery_allocations + 3,
+    };
+    try std.testing.expectError(
+        mcp.tools.ToolError.OutOfMemory,
+        handler(null, std.testing.io, failing.allocator(), null),
+    );
+    try std.testing.expect(failing.failed);
 }
 
 test "handler on empty engine returns JSON with empty predicates array" {

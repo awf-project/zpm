@@ -1247,7 +1247,7 @@ The following ISO Prolog operators cannot be renamed, whether as `old_functor` o
 
 **Name:** `get_kb_overview`
 
-**Description:** Return a single-call JSON snapshot of the knowledge base: every user-defined predicate (with functor, arity, kind, clause count, and sample clauses as Prolog term strings), the active assumptions, persisted snapshots metadata, persistence layer health, and mounted memory segments. Replaces the chained sequence of `get_knowledge_schema` + `list_assumptions` + `list_snapshots` + `get_persistence_status` + `list_memories` with one round-trip. Read-only; namespace-scoped filtering is deferred — the overview always reflects the currently active engine database.
+**Description:** Return a single-call JSON snapshot of the default knowledge base: file-loaded static and asserted user predicates (with functor, arity, kind, clause count, and sample clauses as Prolog term strings), the active assumptions, persisted snapshots metadata, persistence layer health, and mounted memory segments. Replaces the chained sequence of `get_knowledge_schema` + `list_assumptions` + `list_snapshots` + `get_persistence_status` + `list_memories` with one round-trip. Read-only; the tool has no memory selector.
 
 **Annotations:**
 - Read-only: ✓
@@ -1327,7 +1327,7 @@ Top-level fields in the embedded JSON:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `predicates` | array | One entry per user-defined predicate; builtins and system predicates are excluded |
+| `predicates` | array | One entry per user-defined predicate with inspectable clauses in the default memory, including file-loaded static facts and rules; builtins and system predicates are excluded |
 | `predicates[].functor` | string | Predicate functor name |
 | `predicates[].arity` | integer | Number of arguments |
 | `predicates[].kind` | string | `"fact"` — all clauses have a `true` body; `"rule"` — all clauses have a non-trivial body; `"both"` — predicate contains at least one fact and at least one rule |
@@ -1374,7 +1374,7 @@ The tool never raises an error for `null`/missing arguments, an empty KB, missin
 
 **Name:** `get_knowledge_schema`
 
-**Description:** Introspect the knowledge base to discover all user-defined predicates, their arities, and whether they are facts, rules, or both. Returns structural metadata only — no predicate content is exposed.
+**Description:** Introspect the selected memory to discover file-loaded static and asserted user predicates, their arities, clause counts, and whether they are facts, rules, or both. Returns structural metadata only — no predicate content is exposed. Read-only mounts support discovery.
 
 **Annotations:**
 - Read-only: ✓
@@ -1439,6 +1439,9 @@ Each predicate entry includes:
 | `count` | integer | Total number of clauses |
 
 The root-level `total` field indicates the number of user-defined predicates.
+Only predicates with inspectable clauses in the selected memory appear; builtins,
+operators, and ZPM helper predicates are excluded. An introspection failure is
+reported as `ExecutionFailed` rather than as an empty schema.
 
 ### Response (Empty Knowledge Base)
 
@@ -1459,7 +1462,7 @@ The root-level `total` field indicates the number of user-defined predicates.
 
 ### Response (Error)
 
-If the Prolog engine is not initialized:
+If predicate introspection fails:
 
 ```json
 {
@@ -3190,7 +3193,7 @@ If discovery fails:
 
 **Name:** `get_kb_overview`
 
-**Description:** Return a single-call JSON snapshot of the zpm knowledge base, including predicates with sample clauses, active assumptions, available snapshots, and persistence layer health.
+**Description:** Return a single-call JSON snapshot of the default zpm knowledge base, including file-loaded static and asserted predicates with sample clauses, active assumptions, available snapshots, and persistence layer health. No memory selector is available.
 
 **Annotations:**
 - Read-only: ✓
@@ -3249,7 +3252,7 @@ If discovery fails:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `predicates` | array | List of user-defined predicates in the knowledge base |
+| `predicates` | array | User-defined predicates with inspectable clauses in the default memory, including file-loaded static facts and rules |
 | `predicates[].name` | string | Predicate name (functor) |
 | `predicates[].arity` | number | Predicate arity |
 | `predicates[].kind` | string | `"fact"`, `"rule"`, or `"both"` |

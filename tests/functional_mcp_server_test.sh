@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Features: F001-F012, F016
-# Feature: B002
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 . "$(dirname "$0")/test_helpers.sh"
@@ -1992,6 +1990,116 @@ _assert_memory_lifecycle() {
     local output="$1" transport="${2:-transport}"
     assert_contains "[$transport] memory lifecycle: seg item t84 present in output" "$output" 'seg_item_t84'
 }
+
+run_mounted_predicate_discovery_scenario() {
+echo "Test: mounted static and runtime-asserted predicates are discoverable without leaking across memories"
+
+    local discovery_dir
+    discovery_dir=$(mktemp -d)
+    trap 'rm -rf -- "$discovery_dir"' EXIT
+
+    mkdir -p \
+        "$discovery_dir/.zpm/kb/discovery_writable" \
+        "$discovery_dir/.zpm/kb/discovery_readonly"
+    printf '%s\n' \
+        'rw_static_fact(oak).' \
+        'rw_static_rule(X) :- rw_static_fact(X).' \
+        > "$discovery_dir/.zpm/kb/discovery_writable/knowledge.pl"
+    printf '%s\n' \
+        'ro_static_fact(stone).' \
+        > "$discovery_dir/.zpm/kb/discovery_readonly/knowledge.pl"
+    mkdir -p "$discovery_dir/.zpm/kb"
+    printf '%s\n' \
+        'default_static_fact(sky).' \
+        > "$discovery_dir/.zpm/kb/knowledge.pl"
+
+    local discovery_init discovery_input discovery_response
+    discovery_init='{"jsonrpc":"2.0","id":2700,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mounted-predicate-discovery-test","version":"0.1.0"}}}'
+    discovery_input="${discovery_init}
+{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+{\"jsonrpc\":\"2.0\",\"id\":2701,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"discovery_writable\",\"mode\":\"rw\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2702,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"rw_runtime_fact(river)\",\"memory\":\"discovery_writable\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2703,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"rw_static_fact(X)\",\"memory\":\"discovery_writable\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2704,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"rw_static_rule(X)\",\"memory\":\"discovery_writable\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2705,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"rw_runtime_fact(X)\",\"memory\":\"discovery_writable\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2706,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{\"memory\":\"discovery_writable\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2707,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"discovery_readonly\",\"mode\":\"ro\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2708,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"ro_static_fact(X)\",\"memory\":\"discovery_readonly\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2709,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{\"memory\":\"discovery_readonly\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":2710,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}
+{\"jsonrpc\":\"2.0\",\"id\":2711,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
+    discovery_response=$(send_mcp_persist "$discovery_input" "$discovery_dir")
+
+    local response_id response_line
+    for response_id in 2700 2701 2702 2703 2704 2705 2706 2707 2708 2709 2710 2711; do
+        response_line=$(printf '%s\n' "$discovery_response" | jq -c "select(.id == $response_id)" 2>/dev/null || true)
+        assert_equals "mounted predicate discovery: request $response_id has exactly one response" \
+            "1" "$(printf '%s\n' "$response_line" | sed '/^$/d' | wc -l | tr -d ' ')"
+        assert_true "mounted predicate discovery: request $response_id has a non-null result and no JSON-RPC error" \
+            bash -c 'printf "%s\n" "$1" | jq -e '\''(has("error") | not) and has("result") and (.result != null)'\'' >/dev/null' \
+            _ "$response_line"
+        if [ "$response_id" -ne 2700 ]; then
+            assert_true "mounted predicate discovery: tool request $response_id reports isError false" \
+                bash -c 'printf "%s\n" "$1" | jq -e '\''.result.isError == false'\'' >/dev/null' \
+                _ "$response_line"
+        fi
+    done
+
+    local query_id query_marker
+    for query_id in 2703 2704 2705 2708; do
+        case "$query_id" in
+            2703|2704) query_marker="oak" ;;
+            2705) query_marker="river" ;;
+            2708) query_marker="stone" ;;
+        esac
+        response_line=$(printf '%s\n' "$discovery_response" | jq -c "select(.id == $query_id)")
+        assert_true "mounted predicate discovery: query $query_id proves its expected clause" \
+            bash -c 'printf "%s\n" "$1" | jq -e --arg marker "$2" '\''.result.content[0].text | fromjson | any(tostring | contains($marker))'\'' >/dev/null' \
+            _ "$response_line" "$query_marker"
+    done
+
+    local writable_schema readonly_schema default_schema overview
+    writable_schema=$(printf '%s\n' "$discovery_response" | jq -r 'select(.id == 2706) | .result.content[0].text')
+    readonly_schema=$(printf '%s\n' "$discovery_response" | jq -r 'select(.id == 2709) | .result.content[0].text')
+    default_schema=$(printf '%s\n' "$discovery_response" | jq -r 'select(.id == 2710) | .result.content[0].text')
+    overview=$(printf '%s\n' "$discovery_response" | jq -r 'select(.id == 2711) | .result.content[0].text')
+
+    assert_true "mounted predicate discovery: writable schema has exact static fact metadata" \
+        bash -c 'jq -e '\''any(.predicates[]; . == {name:"rw_static_fact", arity:1, type:"fact", count:1})'\'' >/dev/null <<<"$1"' \
+        _ "$writable_schema"
+    assert_true "mounted predicate discovery: writable schema has exact static rule metadata" \
+        bash -c 'jq -e '\''any(.predicates[]; . == {name:"rw_static_rule", arity:1, type:"rule", count:1})'\'' >/dev/null <<<"$1"' \
+        _ "$writable_schema"
+    assert_true "mounted predicate discovery: writable schema has exact runtime fact metadata and total" \
+        bash -c 'jq -e '\''.total == 3 and any(.predicates[]; . == {name:"rw_runtime_fact", arity:1, type:"fact", count:1})'\'' >/dev/null <<<"$1"' \
+        _ "$writable_schema"
+    assert_true "mounted predicate discovery: public schema omits internal count fields" \
+        bash -c 'jq -e '\''all(.predicates[]; (has("fact_count") or has("rule_count")) | not)'\'' >/dev/null <<<"$1"' \
+        _ "$writable_schema"
+    assert_true "mounted predicate discovery: read-only schema contains only its static predicate" \
+        bash -c 'jq -e '\''.total == 1 and .predicates == [{name:"ro_static_fact", arity:1, type:"fact", count:1}]'\'' >/dev/null <<<"$1"' \
+        _ "$readonly_schema"
+    assert_true "mounted predicate discovery: named schemas do not leak across segments" \
+        bash -c 'jq -e '\''all(.predicates[].name; . != "ro_static_fact")'\'' >/dev/null <<<"$1" && jq -e '\''all(.predicates[].name; . != "rw_static_fact" and . != "rw_static_rule" and . != "rw_runtime_fact")'\'' >/dev/null <<<"$2"' \
+        _ "$writable_schema" "$readonly_schema"
+    assert_true "mounted predicate discovery: default schema omits named-memory predicates" \
+        bash -c 'jq -e '\''all(.predicates[].name; . != "rw_static_fact" and . != "rw_static_rule" and . != "rw_runtime_fact" and . != "ro_static_fact")'\'' >/dev/null <<<"$1"' \
+        _ "$default_schema"
+    assert_true "mounted predicate discovery: schemas exclude representative internals" \
+        bash -c 'jq -e '\''all(.predicates[].name; . != "true" and . != "=" and . != ":-" and . != "zpm_source")'\'' >/dev/null <<<"$1" && jq -e '\''all(.predicates[].name; . != "true" and . != "=" and . != ":-" and . != "zpm_source")'\'' >/dev/null <<<"$2" && jq -e '\''all(.predicates[].name; . != "true" and . != "=" and . != ":-" and . != "zpm_source")'\'' >/dev/null <<<"$3"' \
+        _ "$writable_schema" "$readonly_schema" "$default_schema"
+    assert_true "mounted predicate discovery: default overview reports exact static predicate metadata with samples" \
+        bash -c 'jq -e '\''any(.predicates[]; .functor == "default_static_fact" and .arity == 1 and .kind == "fact" and .count == 1 and (.samples | length) > 0)'\'' >/dev/null <<<"$1"' \
+        _ "$overview"
+    assert_true "mounted predicate discovery: default overview omits named-memory predicates" \
+        bash -c 'jq -e '\''all(.predicates[].functor; . != "rw_static_fact" and . != "rw_static_rule" and . != "rw_runtime_fact" and . != "ro_static_fact")'\'' >/dev/null <<<"$1"' \
+        _ "$overview"
+
+    rm -rf -- "$discovery_dir"
+    trap - EXIT
+}
+
+run_mounted_predicate_discovery_scenario
 
 DUAL_MEM_WRITE="${INIT_REQ}
 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
