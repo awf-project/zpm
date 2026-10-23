@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Feature: B005
+# Features: F001-F012, F016
 # Functional tests for MCP server end-to-end protocol communication.
 # Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 . "$(dirname "$0")/test_helpers.sh"
@@ -30,7 +32,8 @@ for TOOL_NAME in echo remember_fact define_rule query_logic trace_dependency ver
     assert_contains "tools/list includes $TOOL_NAME" "$TOOLS_LINE" "\"name\":\"$TOOL_NAME\""
 done
 
-B002_MEMORY_TOOLS=(
+echo "Test: Tool discovery exposes the optional memory contract for every affected memory-aware tool"
+MEMORY_AWARE_TOOLS=(
     query_logic
     explain_why
     trace_dependency
@@ -43,13 +46,13 @@ B002_MEMORY_TOOLS=(
     get_knowledge_schema
     list_snapshots
 )
-B002_MEMORY_DESCRIPTION='Target memory segment (optional, defaults to default memory)'
-for TOOL_NAME in "${B002_MEMORY_TOOLS[@]}"; do
+MEMORY_DESCRIPTION='Target memory segment (optional, defaults to default memory)'
+for TOOL_NAME in "${MEMORY_AWARE_TOOLS[@]}"; do
     MEMORY_SCHEMA=$(jq -c --arg name "$TOOL_NAME" '.result.tools[] | select(.name == $name) | .inputSchema.properties.memory' <<<"$TOOLS_LINE")
     MEMORY_REQUIRED=$(jq -r --arg name "$TOOL_NAME" 'any(.result.tools[] | select(.name == $name) | (.inputSchema.required // [])[]; . == "memory")' <<<"$TOOLS_LINE")
     assert_equals "tools/list $TOOL_NAME: memory property exists" "object" "$(jq -r 'type' <<<"$MEMORY_SCHEMA")"
     assert_equals "tools/list $TOOL_NAME: memory type is string" "string" "$(jq -r '.type' <<<"$MEMORY_SCHEMA")"
-    assert_equals "tools/list $TOOL_NAME: memory description is exact" "$B002_MEMORY_DESCRIPTION" "$(jq -r '.description' <<<"$MEMORY_SCHEMA")"
+    assert_equals "tools/list $TOOL_NAME: memory description is exact" "$MEMORY_DESCRIPTION" "$(jq -r '.description' <<<"$MEMORY_SCHEMA")"
     assert_equals "tools/list $TOOL_NAME: memory is not required" "false" "$MEMORY_REQUIRED"
 done
 
@@ -2525,27 +2528,33 @@ assert_query_payload "$SEPARATOR_READ_RESPONSE" 4016 '{}'
 rm -rf "$SEPARATOR_RESTART_DIR"
 trap - EXIT
 
-# --- B002: public memory-selection runtime contract ---
-echo "Test: B002 MCP named/default isolation, prefix routing, and unmounted error"
-B002_MEMORY_INPUT="${INIT_REQ}
+# --- Public memory-selection runtime contract ---
+echo "Test: MCP named-memory selection preserves default isolation and prefix routing"
+MEMORY_SELECTION_INPUT="${INIT_REQ}
 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":3100,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"b002_contract\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3101,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"b002_contract\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3102,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"b002_contract_only(mcp_cli_agreement)\",\"memory\":\"b002_contract\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3103,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract_only(X)\",\"memory\":\"b002_contract\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3104,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract_only(X)\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3105,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"b002_contract:b002_contract_only(X)\"}}}
-{\"jsonrpc\":\"2.0\",\"id\":3106,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"true\",\"memory\":\"b002_unmounted\"}}}"
-RESPONSE=$(send_mcp "$B002_MEMORY_INPUT")
-B002_NAMED_LINE=$(echo "$RESPONSE" | grep '"id":3103')
-B002_DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":3104')
-B002_PREFIX_LINE=$(echo "$RESPONSE" | grep '"id":3105')
-B002_UNMOUNTED_LINE=$(echo "$RESPONSE" | grep '"id":3106')
+{\"jsonrpc\":\"2.0\",\"id\":3100,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"contract_memory\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3101,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"contract_memory\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3102,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"contract_only(mcp_cli_agreement)\",\"memory\":\"contract_memory\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3103,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contract_only(X)\",\"memory\":\"contract_memory\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3104,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contract_only(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3105,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contract_memory:contract_only(X)\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3106,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{\"memory\":\"contract_memory\"}}}
+{\"jsonrpc\":\"2.0\",\"id\":3107,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"true\",\"memory\":\"unmounted_contract\"}}}"
+RESPONSE=$(send_mcp "$MEMORY_SELECTION_INPUT")
+NAMED_LINE=$(echo "$RESPONSE" | grep '"id":3103')
+DEFAULT_LINE=$(echo "$RESPONSE" | grep '"id":3104')
+PREFIX_LINE=$(echo "$RESPONSE" | grep '"id":3105')
+SCHEMA_LINE=$(echo "$RESPONSE" | grep '"id":3106')
+UNMOUNTED_LINE=$(echo "$RESPONSE" | grep '"id":3107')
 
-assert_contains "query_logic named-memory isolation: explicit b002_contract returns predicate" "$B002_NAMED_LINE" 'mcp_cli_agreement'
-assert_contains "query_logic default-memory isolation: omitted memory does not return predicate" "$B002_DEFAULT_LINE" '[]'
-assert_contains "query_logic recognized-prefix routing: b002_contract prefix returns predicate" "$B002_PREFIX_LINE" 'mcp_cli_agreement'
-assert_contains "query_logic unmounted-memory scenario: response is an error" "$B002_UNMOUNTED_LINE" '"isError":true'
-assert_contains "query_logic unmounted-memory scenario: reports exact memory error" "$B002_UNMOUNTED_LINE" 'Memory not mounted: b002_unmounted'
+assert_contains "query_logic named-memory isolation: explicit contract_memory returns predicate" "$NAMED_LINE" 'mcp_cli_agreement'
+assert_contains "query_logic default-memory isolation: omitted memory does not return predicate" "$DEFAULT_LINE" '[]'
+assert_contains "query_logic recognized-prefix routing: contract_memory prefix returns predicate" "$PREFIX_LINE" 'mcp_cli_agreement'
+assert_contains "get_knowledge_schema named-memory selection: exposes segment-only predicate" "$SCHEMA_LINE" 'contract_only'
 
+echo "Test: MCP explicit unmounted memory reports a tool error"
+assert_equals "query_logic unmounted-memory scenario: response is an error" "true" "$(jq -r '.result.isError' <<<"$UNMOUNTED_LINE")"
+assert_equals "query_logic unmounted-memory scenario: reports exact memory error" "Memory not mounted: unmounted_contract" "$(jq -r '.result.content[0].text' <<<"$UNMOUNTED_LINE")"
+
+assert_true "functional MCP suite executes at least one assertion" test "$PASS" -gt 0
 test_summary

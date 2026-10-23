@@ -54,6 +54,14 @@ Mutation tools (`remember_fact`, `define_rule`, `forget_fact`, etc.) return an e
 
 Excluded tools: `echo` (no knowledge base interaction), `get_persistence_status` (reports global persistence layer status), and `get_kb_overview` (pending memory-aware inventory exception: its output combines selected-memory and global information, so the scope of a `memory` selector needs a separate decision).
 
+Each tool in the supported list advertises `memory` as an optional JSON Schema
+string in `tools/list`. The `query_logic`, `explain_why`, `trace_dependency`,
+`verify_consistency`, `get_belief_status`, `get_justification`, `save_snapshot`,
+`restore_snapshot`, `list_assumptions`, `get_knowledge_schema`, and
+`list_snapshots` schemas use the description `Target memory segment (optional,
+defaults to default memory)`. Other tools retain their tool-specific descriptions;
+see each Input Schema below. Omitting `memory` preserves default-memory behavior.
+
 ## Overview
 
 This document describes the tools available through the zpm MCP server. Each tool is exposed as a JSON-RPC method that can be called via the `tools/call` request.

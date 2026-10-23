@@ -104,6 +104,15 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    try std.testing.expectEqual(@as(usize, 2), properties_object.count());
+
+    const start_node = properties_object.get("start_node") orelse return error.MissingStartNodeProperty;
+    const start_node_object = switch (start_node) {
+        .object => |object| object,
+        else => return error.UnexpectedStartNodePropertyType,
+    };
+    try std.testing.expectEqualStrings("string", start_node_object.get("type").?.string);
+
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
@@ -115,9 +124,9 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
-    }
+    const required = schema.required orelse return error.MissingRequiredProperties;
+    try std.testing.expectEqual(@as(usize, 1), required.len);
+    try std.testing.expectEqualStrings("start_node", required[0]);
 }
 
 test "handler returns reachable nodes for transitive dependency chain" {

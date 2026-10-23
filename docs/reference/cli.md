@@ -287,6 +287,18 @@ Help is generated from each tool's registry entry; adding a new MCP tool automat
 
 ## Flags
 
+### `--memory <name>`
+
+Select a mounted memory for a memory-aware tool subcommand. The flag is optional;
+without it, unqualified operations use the `default` memory. For example:
+
+```bash
+zpm get-knowledge-schema --memory feature_auth
+```
+
+Use `zpm <tool-name> --help` to check whether a command accepts the flag.
+`get-kb-overview` has no `--memory` flag; its scope is pending a separate decision.
+
 ### `-h, --help`
 
 Displays help text listing available commands, subcommands, and options.

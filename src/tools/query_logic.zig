@@ -133,19 +133,28 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    const goal = properties_object.get("goal") orelse return error.MissingGoalProperty;
+    const goal_object = switch (goal) {
+        .object => |object| object,
+        else => return error.UnexpectedGoalPropertyType,
+    };
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
         else => return error.UnexpectedMemoryPropertyType,
     };
 
+    try std.testing.expectEqualStrings("string", goal_object.get("type").?.string);
+    const required = schema.required orelse return error.MissingRequiredProperties;
+    try std.testing.expectEqual(@as(usize, 1), required.len);
+    try std.testing.expectEqualStrings("goal", required[0]);
     try std.testing.expectEqualStrings("string", memory_object.get("type").?.string);
     try std.testing.expectEqualStrings(
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+    for (required) |required_property| {
+        try std.testing.expect(!std.mem.eql(u8, required_property, "memory"));
     }
 }
 
@@ -324,6 +333,63 @@ test "recognized query prefix routes to mounted memory" {
 
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "auth_check") != null);
+}
+
+test "explicit named memory overrides recognized query prefix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explicit_tmp = std.testing.tmpDir(.{});
+    defer explicit_tmp.cleanup();
+    var explicit_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const explicit_path_len = try explicit_tmp.dir.realPathFile(std.testing.io, ".", &explicit_path_buf);
+    const explicit_path = explicit_path_buf[0..explicit_path_len];
+
+    var prefixed_tmp = std.testing.tmpDir(.{});
+    defer prefixed_tmp.cleanup();
+    var prefixed_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const prefixed_path_len = try prefixed_tmp.dir.realPathFile(std.testing.io, ".", &prefixed_path_buf);
+    const prefixed_path = prefixed_path_buf[0..prefixed_path_len];
+
+    const engine = try Engine.init(.{}, std.testing.io);
+    defer engine.deinit();
+    context.setEngine(engine);
+    defer context.clearEngine();
+
+    var explicit_file = try explicit_tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer explicit_file.close(std.testing.io);
+    try explicit_file.writeStreamingAll(std.testing.io,
+        \\:- dynamic(task_status/2).
+        \\task_status(explicit_segment, done).
+        \\
+    );
+
+    var prefixed_file = try prefixed_tmp.dir.createFile(std.testing.io, "knowledge.pl", .{});
+    defer prefixed_file.close(std.testing.io);
+    try prefixed_file.writeStreamingAll(std.testing.io,
+        \\:- dynamic(task_status/2).
+        \\task_status(prefixed_segment, done).
+        \\
+    );
+
+    var registry = MemoryRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.mount("explicit_memory", explicit_path, .project, .ro, std.testing.io);
+    try registry.mount("prefixed_memory", prefixed_path, .project, .ro, std.testing.io);
+    context.setMemoryRegistry(@ptrCast(&registry));
+    defer context.clearMemoryRegistry();
+
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "goal", .{ .string = "prefixed_memory:task_status(X, done)" });
+    try obj.put(allocator, "memory", .{ .string = "explicit_memory" });
+    const args = std.json.Value{ .object = obj };
+
+    const result = try handler(null, std.testing.io, allocator, args);
+
+    try std.testing.expect(!result.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "explicit_segment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content[0].text.text, "prefixed_segment") == null);
 }
 
 test "default memory uses unqualified goal" {

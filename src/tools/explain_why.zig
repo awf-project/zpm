@@ -158,19 +158,34 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    const fact = properties_object.get("fact") orelse return error.MissingFactProperty;
+    const fact_object = switch (fact) {
+        .object => |object| object,
+        else => return error.UnexpectedFactPropertyType,
+    };
+    const max_depth = properties_object.get("max_depth") orelse return error.MissingMaxDepthProperty;
+    const max_depth_object = switch (max_depth) {
+        .object => |object| object,
+        else => return error.UnexpectedMaxDepthPropertyType,
+    };
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
         else => return error.UnexpectedMemoryPropertyType,
     };
 
+    try std.testing.expectEqualStrings("string", fact_object.get("type").?.string);
+    try std.testing.expectEqualStrings("integer", max_depth_object.get("type").?.string);
+    const required = schema.required orelse return error.MissingRequiredProperties;
+    try std.testing.expectEqual(@as(usize, 1), required.len);
+    try std.testing.expectEqualStrings("fact", required[0]);
     try std.testing.expectEqualStrings("string", memory_object.get("type").?.string);
     try std.testing.expectEqualStrings(
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
+    for (required) |required_property| {
+        try std.testing.expect(!std.mem.eql(u8, required_property, "memory"));
     }
 }
 

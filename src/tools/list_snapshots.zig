@@ -81,9 +81,8 @@ test "list_snapshots tool is an allocator-backed builder with optional string me
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
-    }
+    const required = schema.required orelse return error.MissingRequiredProperties;
+    try std.testing.expectEqual(@as(usize, 0), required.len);
 }
 
 test "handler returns empty snapshot list when no snapshots exist" {
