@@ -20,7 +20,7 @@ Large Language Models with a Prolog inference engine for deterministic logical r
 - Update tools: atomically replace individual facts or upsert facts with pattern matching
 - Truth Maintenance System: manage assumptions and automatically propagate belief changes via MCP
 - Knowledge base persistence: durable storage via write-ahead journal and fresh-engine-validated snapshots with automatic recovery
-- Named memory segments for domain-isolated knowledge bases with independent WAL/snapshot persistence, read-only mount mode, project and global scope, and cross-memory queries via Prolog module qualification
+- Named memory segments for domain-isolated knowledge bases with independent WAL/snapshot persistence, read-only mount mode, project and global scope, cross-memory queries via Prolog module qualification, and discoverable `memory` selectors in MCP schemas and CLI help
 - Persistent mount manifest (`.zpm/mounts.json`) for durable memory configuration across CLI invocations
 - Documentation site with Hugo/Thulite (Doks) and GitHub Pages auto-deployment
 - Zero external runtime dependencies (statically linked, including Prolog library)
@@ -91,7 +91,7 @@ zpm get-knowledge-schema --memory feature_auth
 zpm memory mount --name feature_auth --mode ro
 ```
 
-The optional `--memory` flag selects a mounted segment. Omitting it keeps unqualified reads in the default memory. The matching MCP tools accept an optional string `memory` argument.
+The optional `--memory` flag selects a mounted segment. Omitting it keeps unqualified reads in the default memory. Memory-aware MCP tools advertise the optional string `memory` argument in `tools/list`, so clients can discover it before calling a tool. Use `zpm get-knowledge-schema --memory <name>` to inspect predicates in a named segment; see [Schema Discovery](docs/user-guide/schema-discovery.md) for an example.
 
 See the [CLI Reference](docs/reference/cli.md) for the full list of tool subcommands and flags.
 

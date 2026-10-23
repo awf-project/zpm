@@ -133,6 +133,19 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    try std.testing.expectEqual(@as(usize, 2), properties_object.count());
+
+    const scope = properties_object.get("scope") orelse return error.MissingScopeProperty;
+    const scope_object = switch (scope) {
+        .object => |object| object,
+        else => return error.UnexpectedScopePropertyType,
+    };
+    try std.testing.expectEqualStrings("string", scope_object.get("type").?.string);
+    try std.testing.expectEqualStrings(
+        "Optional scope pattern for filtering violation predicates",
+        scope_object.get("description").?.string,
+    );
+
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
@@ -144,9 +157,7 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
-    }
+    try std.testing.expect(schema.required == null);
 }
 
 test "handler returns violations when integrity rule fires" {

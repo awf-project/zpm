@@ -83,6 +83,8 @@ test "list_assumptions tool exposes memory as an optional JSON-schema string wit
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    try std.testing.expectEqualStrings("list_assumptions", built_tool.name);
+    try std.testing.expectEqual(@as(usize, 1), properties_object.count());
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
@@ -94,9 +96,7 @@ test "list_assumptions tool exposes memory as an optional JSON-schema string wit
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
-    }
+    try std.testing.expect(schema.required == null);
 }
 
 test "handler returns assumption names when assumptions exist" {

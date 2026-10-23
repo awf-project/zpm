@@ -454,17 +454,17 @@ test "get-knowledge-schema ToolDef declares optional string memory CLI parameter
     return error.ToolNotFound;
 }
 
-const b002_memory_tool_names = &[_][]const u8{
+const affected_memory_tool_names = &[_][]const u8{
     "query_logic",          "explain_why",       "trace_dependency",
     "verify_consistency",   "get_belief_status", "get_justification",
     "save_snapshot",        "restore_snapshot",  "list_assumptions",
     "get_knowledge_schema", "list_snapshots",
 };
 
-test "inline registry inventory asserts the exact B002 tool set" {
-    try std.testing.expectEqual(@as(usize, 11), b002_memory_tool_names.len);
-    for (b002_memory_tool_names, 0..) |mcp_name, index| {
-        for (b002_memory_tool_names[index + 1 ..]) |other| {
+test "affected memory-aware tool inventory is complete and unique" {
+    try std.testing.expectEqual(@as(usize, 11), affected_memory_tool_names.len);
+    for (affected_memory_tool_names, 0..) |mcp_name, index| {
+        for (affected_memory_tool_names[index + 1 ..]) |other| {
             try std.testing.expect(!std.mem.eql(u8, mcp_name, other));
         }
         for (all()) |def| {
@@ -508,12 +508,12 @@ test "every registry tool declaring CLI memory has matching optional string MCP 
     }
 }
 
-test "exact B002 set uses the canonical memory description" {
+test "affected memory-aware tools use the canonical memory description" {
     const description = "Target memory segment (optional, defaults to default memory)";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    for (b002_memory_tool_names) |mcp_name| {
+    for (affected_memory_tool_names) |mcp_name| {
         for (all()) |def| {
             if (!std.mem.eql(u8, def.mcp_name, mcp_name)) continue;
             const memory_param = for (def.params) |param| {

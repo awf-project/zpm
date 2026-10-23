@@ -5,6 +5,8 @@ title: "Schema Discovery: Explore the Knowledge Base"
 
 This guide shows how to discover what predicates exist in the knowledge base using the `get_knowledge_schema` tool. Discovery includes file-loaded static predicates and predicates asserted after startup; built-ins and ZPM implementation predicates are excluded.
 
+Run these CLI examples from a project initialized with `zpm init`.
+
 ## Discover All Predicates
 
 Use `get_knowledge_schema` to list every user-defined predicate, its arity, and whether it is a fact, rule, or both.
@@ -13,12 +15,12 @@ Use `get_knowledge_schema` to list every user-defined predicate, its arity, and 
 
 ```bash
 # Step 1: Populate the knowledge base
-remember_fact fact='likes(alice, bob)'
-remember_fact fact='likes(bob, alice)'
-define_rule head='friend(X, Y)' body='likes(X, Y), likes(Y, X)'
+zpm remember-fact --fact 'likes(alice, bob)'
+zpm remember-fact --fact 'likes(bob, alice)'
+zpm define-rule 'friend(X, Y)' --body 'likes(X, Y), likes(Y, X)'
 
 # Step 2: Discover what's in the default memory
-get_knowledge_schema
+zpm get-knowledge-schema
 # Returns:
 # {
 #   "predicates": [
@@ -41,6 +43,24 @@ operators, and ZPM helper predicates are excluded.
 zpm get-knowledge-schema --memory feature_auth
 ```
 
+The same selector is advertised by MCP discovery. Clients can inspect the
+`get_knowledge_schema` entry returned by `tools/list` and pass the discovered
+optional string property when calling the tool:
+
+```json
+{
+  "name": "get_knowledge_schema",
+  "arguments": {"memory": "feature_auth"}
+}
+```
+
+The `memory` selector is optional for the memory-aware knowledge and reasoning
+tools. It is not required, so existing clients that omit it continue to query
+the `default` memory. The CLI exposes the equivalent selector as
+`--memory <name>`; for example, `zpm get-knowledge-schema --help` documents
+the flag and `zpm get-knowledge-schema --memory feature_auth` inspects the
+named segment.
+
 For example, if a mounted segment's `knowledge.pl` contains `note(c).` and
 `note(cs).`, `zpm get-knowledge-schema --memory music_theory` reports `note/1`
 as `"fact"` with `count: 2`. The file does not need a `dynamic` directive for
@@ -60,10 +80,10 @@ Each predicate has a `type` field indicating its clause composition:
 
 ```bash
 # Assert a base fact and a recursive rule for the same predicate
-remember_fact fact='path(a, b)'
-define_rule head='path(X, Y)' body='path(X, Z), path(Z, Y)'
+zpm remember-fact --fact 'path(a, b)'
+zpm define-rule 'path(X, Y)' --body 'path(X, Z), path(Z, Y)'
 
-get_knowledge_schema
+zpm get-knowledge-schema
 # path/2 shows type: "both", count: 2
 ```
 
@@ -73,14 +93,14 @@ Use schema discovery as the first step when an LLM connects to a knowledge base 
 
 ```bash
 # 1. Discover what predicates exist in the default memory
-get_knowledge_schema
+zpm get-knowledge-schema
 # Returns: depends_on/2 (fact, 5), risky/1 (rule, 1), ...
 
 # 2. Use the schema to formulate valid queries
-query_logic goal='depends_on(X, Y)'
+zpm query-logic --goal 'depends_on(X, Y)'
 
 # 3. Trace specific dependencies
-trace_dependency start_node='service_a'
+zpm trace-dependency --start-node service_a
 ```
 
 For an isolated knowledge base, select the same segment for discovery and
@@ -98,7 +118,7 @@ Without schema discovery, the agent would have to guess predicate names and arit
 When no user-defined predicates exist:
 
 ```bash
-get_knowledge_schema
+zpm get-knowledge-schema
 # Returns: {"predicates": [], "total": 0}
 ```
 

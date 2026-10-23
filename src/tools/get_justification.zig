@@ -92,6 +92,13 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         .object => |object| object,
         else => return error.UnexpectedPropertiesType,
     };
+    try std.testing.expectEqual(@as(usize, 2), properties_object.count());
+    const assumption = properties_object.get("assumption") orelse return error.MissingAssumptionProperty;
+    const assumption_object = switch (assumption) {
+        .object => |object| object,
+        else => return error.UnexpectedAssumptionPropertyType,
+    };
+    try std.testing.expectEqualStrings("string", assumption_object.get("type").?.string);
     const memory = properties_object.get("memory") orelse return error.MissingMemoryProperty;
     const memory_object = switch (memory) {
         .object => |object| object,
@@ -103,9 +110,9 @@ test "tool schema exposes memory as an optional string with the exact descriptio
         "Target memory segment (optional, defaults to default memory)",
         memory_object.get("description").?.string,
     );
-    for (schema.required orelse &.{}) |required| {
-        try std.testing.expect(!std.mem.eql(u8, required, "memory"));
-    }
+    const required = schema.required orelse return error.MissingRequired;
+    try std.testing.expectEqual(@as(usize, 1), required.len);
+    try std.testing.expectEqualStrings("assumption", required[0]);
 }
 
 test "handler returns list of facts supported by assumption" {
