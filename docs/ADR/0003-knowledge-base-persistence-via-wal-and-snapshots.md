@@ -1,5 +1,6 @@
 ---
 title: "0003: Knowledge Base Persistence via Write-Ahead Journal and Snapshots"
+description: "Understand how ZPM combines a write-ahead journal with snapshots to preserve knowledge base changes and recover across restarts."
 ---
 
 

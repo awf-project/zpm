@@ -1,5 +1,6 @@
 ---
 title: "Schema Discovery: Explore the Knowledge Base"
+description: "Discover user-defined Prolog predicates in ZPM, inspect their arities, and distinguish facts from rules through schema introspection."
 ---
 
 

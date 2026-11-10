@@ -94,7 +94,7 @@
 [[mounts]]
   source = "../docs/getting-started"
   target = "content/docs/getting-started"
-  excludeFiles = ["site-development.md"]
+  files = ['! site-development.md']
 
 [[mounts]]
   source = "../docs/reference"

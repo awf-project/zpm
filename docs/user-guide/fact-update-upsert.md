@@ -1,5 +1,6 @@
 ---
 title: "Fact Update and Upsert: Modify Knowledge"
+description: "Replace existing Prolog facts atomically or upsert mutable knowledge in ZPM, with practical MCP examples and matching behavior."
 ---
 
 

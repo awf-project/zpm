@@ -1,5 +1,6 @@
 ---
 title: "Knowledge Base Persistence"
+description: "Save and restore ZPM knowledge with snapshots and automatic journal recovery, preserving facts and rules across server restarts."
 ---
 
 

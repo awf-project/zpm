@@ -16,12 +16,12 @@
     "preview": "vite preview --outDir public"
   },
   "dependencies": {
-    "@thulite/doks-core": "^1.9.3",
     "@tabler/icons": "^3.36.1",
+    "@thulite/doks-core": "^1.9.4",
     "@thulite/images": "^3.3.4",
     "@thulite/inline-svg": "^1.2.2",
-    "@thulite/seo": "^2.4.3",
-    "thulite": "^2.6.5"
+    "@thulite/seo": "^2.4.4",
+    "thulite": "^3.0.0"
   },
   "overrides": {
     "minimatch": "^10.2.2",

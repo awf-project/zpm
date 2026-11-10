@@ -1,5 +1,6 @@
 ---
 title: "Truth Maintenance System: Manage Assumptions and Beliefs"
+description: "Manage named assumptions and dependent beliefs in ZPM, retracting unsupported knowledge automatically as your assumptions change."
 ---
 
 

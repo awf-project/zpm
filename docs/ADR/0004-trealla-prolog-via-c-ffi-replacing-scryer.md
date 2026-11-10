@@ -1,5 +1,6 @@
 ---
 title: "0004: Trealla Prolog via C FFI Replacing Scryer-Prolog"
+description: "Learn why ZPM replaced Scryer-Prolog with Trealla through a C interface, simplifying the build and Prolog engine integration."
 ---
 
 

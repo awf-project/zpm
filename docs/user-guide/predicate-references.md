@@ -1,5 +1,6 @@
 ---
 title: "Find Predicate References: Safe Refactoring"
+description: "Find facts, rules, assumptions, and cross-memory references to a Prolog predicate before safely refactoring your ZPM knowledge base."
 ---
 
 This guide shows how to locate all usage sites of a Prolog predicate before refactoring using the `find_predicate_references` tool.

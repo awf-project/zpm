@@ -1,5 +1,6 @@
 ---
 title: "0002: Scryer-Prolog Integration via Rust FFI Static Library"
+description: "Read the superseded decision to integrate Scryer-Prolog through a Rust static library, before the migration to Trealla Prolog."
 ---
 
 

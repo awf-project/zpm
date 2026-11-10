@@ -1,3 +1,8 @@
+---
+title: "0006: Per-segment Prolog engines for memory isolation"
+description: "Learn why ZPM assigns a separate Prolog engine to each memory segment to prevent knowledge from leaking across memory boundaries."
+---
+
 # 0006: Per-segment Prolog engines for memory isolation
 
 **Status**: Accepted

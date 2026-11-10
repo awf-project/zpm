@@ -184,9 +184,14 @@ Browse the documentation online at **https://awf-project.ai/zpm/** or in the [`d
 
 To preview the documentation site locally:
 
+Install Hugo 0.169.0, Node.js 26, and the native [Dart Sass CLI](https://gohugo.io/installation/dart-sass/) 1.108.1 first.
+Ensure `hugo` and `sass` are on `PATH`; Thulite 3 requires Dart Sass with the embedded protocol.
+
 ```bash
 cd site && npm ci && npm run dev
 ```
+
+Run `npm run build` from `site/` for the production build used by CI.
 
 ## License
 

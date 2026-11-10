@@ -1,5 +1,6 @@
 ---
 title: "Project Initialization"
+description: "Initialize the ZPM project directory and its knowledge base structure before starting the MCP server or managing project memories."
 ---
 
 

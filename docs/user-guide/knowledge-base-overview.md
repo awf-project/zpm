@@ -1,5 +1,6 @@
 ---
 title: "Knowledge Base Overview"
+description: "Inspect ZPM predicates, sample facts, assumptions, snapshots, and persistence health together with the knowledge base overview tool."
 ---
 
 

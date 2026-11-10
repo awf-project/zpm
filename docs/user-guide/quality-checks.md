@@ -1,5 +1,6 @@
 ---
 title: "Quality Checks: Verify Consistency and Explain Reasoning"
+description: "Verify ZPM knowledge base consistency, detect contradictions with integrity rules, and explain conclusions using supervision tools."
 ---
 
 

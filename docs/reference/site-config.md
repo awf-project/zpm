@@ -1,5 +1,6 @@
 ---
 title: "Site Configuration Reference"
+description: "Configure the ZPM Hugo documentation site, including theme settings, content mounts, local development, and GitHub Pages deployment."
 ---
 
 
@@ -7,7 +8,19 @@ This reference documents the zpm documentation site configuration, deployment, a
 
 ## Overview
 
-The zpm documentation site is built with [Hugo](https://gohugo.io/) v0.147.8 using the [Thulite/Doks](https://getdoks.org/) theme. Configuration is defined in `site/config/_default/` with production overrides in `site/config/production/`.
+The zpm documentation site is built with [Hugo](https://gohugo.io/) v0.169.0 with native Dart Sass v1.108.1 using the [Thulite/Doks](https://getdoks.org/) theme. Configuration is defined in `site/config/_default/` with production overrides in `site/config/production/`.
+
+Local overrides in `site/layouts/_partials/head/` replace the theme's deprecated
+`resources.PostProcess` pipeline with `templates.Defer`. The head partial calls
+the stylesheet without `partialCached`, as required for deferred rendering.
+Keep the parenthesized `with (templates.Defer (dict ...))` syntax: Hugo recognizes
+this form during template transformation. A bare `with templates.Defer` executes
+the block immediately and makes a first production build fail when PurgeCSS reads
+the still-empty `hugo_stats.json`. The shared `global-css` key runs the block once
+for all pages. PostCSS uses `site/config/postcss.config.mjs` to declare its ES module format.
+Recheck these overrides when upgrading the theme. Doks and Bootstrap still emit
+upstream Sass deprecation warnings; these remain visible until their styles migrate
+to modern Sass syntax.
 
 ## Configuration Files
 
@@ -204,10 +217,9 @@ Production configuration ensures:
 
 Deployment is automated via `.github/workflows/hugo.yml`:
 
-- **Trigger:** Pushes to `main` branch only
-- **Build:** Hugo v0.147.8 with Node.js v24
-- **Deploy:** Publishes to GitHub Pages
-- **Branch:** Deploys from `gh-pages` branch
+- **Trigger:** Pull requests targeting `main` and pushes to `main`
+- **Build:** Hugo v0.169.0, native Dart Sass v1.108.1, and Node.js v26; runs `npm ci` then `npm run build`
+- **Deploy:** Publishes the Pages artifact only after a push to `main`
 
 ### Environment Variables
 
@@ -299,7 +311,7 @@ rm -rf resources/ && npm run build
 **Solution:** Build with production config:
 ```bash
 cd site
-HUGO_ENV=production npm run build
+HUGO_ENVIRONMENT=production npm run build
 npm run preview
 ```
 
