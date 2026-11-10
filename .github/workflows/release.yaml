@@ -75,7 +75,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: mv zig-out/bin/zpm "zig-out/bin/zpm-$TARGET"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zpm-${{ matrix.target }}
           path: zig-out/bin/zpm-${{ matrix.target }}
@@ -98,7 +98,7 @@ jobs:
       - name: Stage artifact
         run: mv zig-out/bin/zpm zig-out/bin/zpm-darwin-arm64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zpm-darwin-arm64
           path: zig-out/bin/zpm-darwin-arm64
@@ -112,7 +112,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: zpm-*
           merge-multiple: true
@@ -141,7 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: zpm-*
           merge-multiple: true
