@@ -1,5 +1,6 @@
 ---
 title: "Architecture Decision Records"
+description: "Browse the ZPM architecture decision index, with each decision, its acceptance status, and links to the supporting rationale."
 ---
 
 

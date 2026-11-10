@@ -1,7 +1,7 @@
 ---
 title: "Architecture Decision Records"
-description: "Documented architecture decisions for the ZPM project."
 weight: 4
 cascade:
   - type: "docs"
+description: "Review the architecture decisions behind ZPM, including MCP transport, Prolog integration, persistence, and memory isolation."
 ---

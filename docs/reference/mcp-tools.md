@@ -1,5 +1,6 @@
 ---
 title: "MCP Tools Reference"
+description: "Explore the ZPM MCP protocol and tool contracts for Prolog queries, knowledge management, supervision, memories, and persistence."
 ---
 
 

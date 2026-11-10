@@ -1,5 +1,6 @@
 ---
 title: "Rename Predicates Safely"
+description: "Rename a Prolog predicate atomically across ZPM facts, rules, and assumptions while preserving truth maintenance and consistency."
 ---
 
 This guide shows how to atomically rename a Prolog functor across your knowledge base using the `rename_predicate` tool. Unlike manual find-and-replace, this operation preserves the Truth Maintenance System (TMS) and ensures consistency across all facts, rules, and assumptions.

@@ -1,0 +1,17 @@
+{{/* Hugo recognizes defer only with a parenthesized call and an options map.
+     Resolve resources inside it so PostCSS reads the completed build statistics. */}}
+{{ if hugo.IsDevelopment }}
+  {{ with resources.Get . }}
+    {{ $opts := dict "enableSourceMap" true "outputStyle" "expanded" "transpiler" "dartsass" "includePaths" (slice "node_modules") }}
+    {{ with . | css.Sass $opts }}
+      <link rel="stylesheet" href="{{ .RelPermalink }}">
+    {{ end }}
+  {{ end }}
+{{ else }}
+  {{ with (templates.Defer (dict "key" "global-css")) }}
+    {{ $opts := dict "transpiler" "dartsass" "outputStyle" "compressed" "includePaths" (slice "node_modules") }}
+    {{ with resources.Get "scss/app.scss" | css.Sass $opts | css.PostCSS (dict "config" "config/postcss.config.mjs") | fingerprint }}
+      <link rel="stylesheet" href="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous">
+    {{ end }}
+  {{ end }}
+{{ end }}

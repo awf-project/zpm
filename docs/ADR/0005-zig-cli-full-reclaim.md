@@ -1,5 +1,6 @@
 ---
 title: "0005: Reclaim zig-cli for All Argv Parsing"
+description: "Understand the decision to use zig-cli for all ZPM argument parsing, keeping command definitions and validation consistent."
 ---
 
 

@@ -1,5 +1,6 @@
 ---
 title: "Segmented Memories"
+description: "Organize ZPM knowledge into isolated memory segments with separate facts, rules, persistence, access modes, and project or global scopes."
 ---
 
 # Segmented Memories

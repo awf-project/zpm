@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HUGO_VERSION: "0.169.0"
+      DART_SASS_VERSION: "1.108.1"
     steps:
       - name: Install Hugo CLI
         run: |
@@ -50,6 +51,12 @@ jobs:
         working-directory: site
         run: npm ci
 
+      - name: Install Dart Sass
+        run: |
+          curl --fail --location --retry 3 "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-linux-x64.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/dart-sass" >> "${GITHUB_PATH}"
+
       - name: Setup Pages
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: pages
@@ -61,7 +68,7 @@ jobs:
           HUGO_CACHEDIR: ${{ runner.temp }}/hugo_cache
           HUGO_ENVIRONMENT: production
           TZ: UTC
-        run: hugo --minify
+        run: npm run build
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

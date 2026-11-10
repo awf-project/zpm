@@ -1,5 +1,6 @@
 ---
 title: "0001: MCP Server with STDIO Transport via mcp.zig"
+description: "Understand why ZPM uses mcp.zig with STDIO transport to expose Prolog reasoning tools to compatible AI agents and MCP clients."
 ---
 
 
