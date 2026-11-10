@@ -44,6 +44,21 @@ Supported platforms: Linux (x86_64, arm64), macOS (x86_64, arm64).
 
 ### Build from Source
 
+Clone the repository with its Trealla Prolog submodule, which provides ZPM's inference engine:
+
+```bash
+git clone --recurse-submodules https://github.com/awf-project/zpm.git
+cd zpm
+```
+
+For an existing clone, initialize the submodule before building:
+
+```bash
+git submodule update --init --recursive
+```
+
+Then build and test:
+
 ```bash
 # Build the server binary
 make build
