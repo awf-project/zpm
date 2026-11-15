@@ -97,11 +97,13 @@ fn discoverWithDispatch(allocator: std.mem.Allocator, dispatch: QueryDispatch) e
     // Finish current_predicate/1 before inspecting properties: Trealla lazily
     // loads property predicates, mutating the index being enumerated. Keep
     // both lists in one binding to avoid Engine's per-query solution cap.
+    // Skip empty declarations before allocating queries to count clauses.
     var enumeration = try dispatch.query(
         "findall(F/A,current_predicate(F/A),Candidates)," ++
             "findall(F/A,(member(F/A,Candidates),functor(H,F,A)," ++
             "\\+ predicate_property(H,built_in)," ++
             "\\+ predicate_property(H,imported_from(_))," ++
+            "once('$clause'(H,_))," ++
             "(predicate_property(H,dynamic); \\+ atom_concat(zpm_,_,F))),Predicates)",
     );
     defer enumeration.deinit();

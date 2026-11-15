@@ -58,8 +58,6 @@ pub const QueryResult = struct {
 
 /// Process-wide counter for temp file names in loadString.
 var g_src_counter = std.atomic.Value(u32).init(0);
-/// Process-wide ref count for live Engine instances sharing g_tpl_lib.
-var g_engine_count = std.atomic.Value(u32).init(0);
 
 pub const Engine = struct {
     gpa: std.heap.DebugAllocator(.{}),
@@ -89,13 +87,11 @@ pub const Engine = struct {
         self.declared_dynamic = std.StringHashMap(void).init(self.allocator);
         self.handle = ffi.pl_create();
         if (self.handle == null) {
-            ffi.g_tpl_lib = null;
             self.declared_dynamic.deinit();
             _ = self.gpa.deinit();
             std.heap.page_allocator.destroy(self);
             return EngineError.InitFailed;
         }
-        _ = g_engine_count.fetchAdd(1, .monotonic);
         ffi.set_quiet(self.handle.?);
         // Declare predicates used for runtime assertion as dynamic so Trealla
         // accepts assertions without raising an existence_error for the procedure.
@@ -136,9 +132,6 @@ pub const Engine = struct {
         ;
         self.loadString(preload) catch {
             ffi.pl_destroy(self.handle.?);
-            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
-                ffi.g_tpl_lib = null;
-            }
             self.declared_dynamic.deinit();
             _ = self.gpa.deinit();
             std.heap.page_allocator.destroy(self);
@@ -152,12 +145,7 @@ pub const Engine = struct {
     }
 
     pub fn deinit(self: *Engine) void {
-        if (self.handle) |h| {
-            ffi.pl_destroy(h);
-            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
-                ffi.g_tpl_lib = null;
-            }
-        }
+        if (self.handle) |h| ffi.pl_destroy(h);
         var it = self.declared_dynamic.iterator();
         while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.declared_dynamic.deinit();
@@ -171,9 +159,6 @@ pub const Engine = struct {
         if (self.handle) |h| {
             ffi.pl_destroy(h);
             self.handle = null;
-            if (g_engine_count.fetchSub(1, .monotonic) == 1) {
-                ffi.g_tpl_lib = null;
-            }
         }
     }
 
@@ -1805,26 +1790,13 @@ test "declareDynamic is idempotent across modules" {
     try testing.expectEqual(initial_count + 2, engine.declared_dynamic.count());
 }
 
-test "g_engine_count increments and decrements correctly across Engine lifecycle" {
-    // Verify that the ref count tracks Engine init/deinit correctly.
-    // Trealla is process-global and does not support simultaneous instances,
-    // so we test sequential create/destroy pairs.
-    const before = g_engine_count.load(.monotonic);
-
-    const e1 = try Engine.init(.{}, std.testing.io);
-    const after_init = g_engine_count.load(.monotonic);
-    try testing.expectEqual(before + 1, after_init);
-
-    e1.deinit();
-    const after_deinit = g_engine_count.load(.monotonic);
-    try testing.expectEqual(before, after_deinit);
-
-    // A second engine can be created after the first is destroyed.
-    const e2 = try Engine.init(.{}, std.testing.io);
-    defer e2.deinit();
-    try testing.expect(ffi.g_tpl_lib != null);
-    try e2.assertFact("multi_engine_test(ok).");
-    var qr = try e2.query("multi_engine_test(X)");
-    defer qr.deinit();
-    try testing.expectEqual(@as(usize, 1), qr.solutions.len);
+test "Engine can be recreated and queried after deinit" {
+    for (0..2) |_| {
+        const engine = try Engine.init(.{}, std.testing.io);
+        defer engine.deinit();
+        try engine.assertFact("lifecycle_test(ok).");
+        var result = try engine.query("lifecycle_test(X)");
+        defer result.deinit();
+        try testing.expectEqual(@as(usize, 1), result.solutions.len);
+    }
 }
