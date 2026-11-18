@@ -745,25 +745,89 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     });
     bin2c_mod.link_libc = true;
 
-    // Embed each .pl library file as a C source with byte arrays
+    // Match the embedded registry in Trealla's src/library.c. Janus and
+    // the standalone main module are opt-in upstream and disabled here.
     const pl_libs = [_][]const u8{
-        "abnf",     "aggregate", "arithmetic", "assoc",   "atts",
-        "builtins", "charsio",   "concurrent", "clpz",    "curl",
-        "dcgs",     "debug",     "dif",        "error",   "format",
-        "freeze",   "gensym",    "gsl",        "http",    "iso_ext",
-        "json",     "lambda",    "lists",      "ordsets", "pairs",
-        "pio",      "random",    "raylib",     "rbtrees", "reif",
-        "si",       "sockets",   "sqlite3",    "time",    "ugraphs",
-        "uuid",     "when",
+        "abnf",
+        "actors/tasks",
+        "actors/threads",
+        "aggregate",
+        "arithmetic",
+        "assoc",
+        "atts",
+        "builtins",
+        "cairo",
+        "charsio",
+        "clpb",
+        "clpz",
+        "concurrent",
+        "curl",
+        "debug",
+        "dif",
+        "duckdb",
+        "error",
+        "filesex",
+        "format",
+        "freeze",
+        "gensym",
+        "glpk",
+        "graphviz",
+        "gsl",
+        "http",
+        "http/http_client",
+        "http/http_dispatch",
+        "http/http_open",
+        "http/http_server",
+        "http/thread_httpd",
+        "igraph",
+        "iso_ext",
+        "json",
+        "lambda",
+        "lists",
+        "llm",
+        "nlopt",
+        "ordsets",
+        "pairs",
+        "pcre",
+        "pio",
+        "plplot",
+        "postgres",
+        "prolog_format",
+        "quads",
+        "random",
+        "raylib",
+        "rbtrees",
+        "reif",
+        "sandbox",
+        "sgml",
+        "si",
+        "socket",
+        "sockets",
+        "sqlite3",
+        "syslog",
+        "tables",
+        "tabling",
+        "tftp",
+        "time",
+        "tty",
+        "ugraphs",
+        "unicode",
+        "uri",
+        "url",
+        "uuid",
+        "when",
+        "yall",
+        "zmq",
     };
 
     const wf = b.addWriteFiles();
     for (pl_libs) |name| {
+        const library_file = b.fmt("library/{s}.pl", .{name});
         const gen = b.addRunArtifact(bin2c);
-        gen.setCwd(b.path("ffi/trealla"));
-        gen.addArg(b.fmt("library/{s}.pl", .{name}));
-        const out_name = b.fmt("library_{s}_pl.c", .{name});
-        const generated_c = wf.addCopyFile(gen.captureStdOut(.{}), out_name);
+        gen.addFileArg(b.path(b.fmt("ffi/trealla/{s}", .{library_file})));
+        // bin2c sanitizes the relative name to match the registry's symbols.
+        gen.addArg(library_file);
+        const generated_c = wf.addCopyFile(gen.captureStdOut(.{}), b.fmt("{s}.c", .{library_file}));
         mod.addCSourceFile(.{
             .file = generated_c,
             .flags = &.{},
@@ -777,25 +841,31 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
             "imath/imrat.c",
             "isocline/src/isocline.c",
             "sre/re.c",
+            "allocator.c",
             "base64.c",
             "bif_atts.c",
             "bif_bboard.c",
             "bif_control.c",
             "bif_csv.c",
             "bif_database.c",
-            "bif_ffi.c",
+            "bif_dcgs.c",
+            "bif_ffi_none.c",
             "bif_format.c",
             "bif_functions.c",
-            "bif_maps.c",
+            "bif_misc.c",
+            "bif_net.c",
             "bif_os.c",
             "bif_posix.c",
             "bif_predicates.c",
             "bif_sort.c",
             "bif_sregex.c",
             "bif_streams.c",
+            "bif_tabling.c",
             "bif_tasks.c",
             "bif_threads.c",
+            "bif_uri.c",
             "compile.c",
+            "files.c",
             "heap.c",
             "history.c",
             "library.c",
@@ -803,6 +873,7 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
             "module.c",
             "network.c",
             "parser.c",
+            "port_bifs_none.c",
             "print.c",
             "prolog.c",
             "query.c",
@@ -811,9 +882,13 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
             "toplevel.c",
             "unify.c",
             "utf8.c",
-            "version.c",
         },
         .flags = flags,
+    });
+    // Trealla's compiled_at flag uses the C compiler's build timestamp.
+    mod.addCSourceFile(.{
+        .file = b.path("ffi/trealla/src/version.c"),
+        .flags = &.{"-Wno-date-time"},
     });
 
     mod.linkSystemLibrary("m", .{});

@@ -257,6 +257,7 @@ test "schema distinguishes empty knowledge from introspection failure" {
     const engine = try Engine.init(.{}, std.testing.io);
     defer engine.deinit();
     context.setEngine(engine);
+    try engine.loadString(":- dynamic(empty_test_predicate/1).");
 
     const result = try handler(null, std.testing.io, allocator, null);
 
@@ -283,9 +284,8 @@ test "schema distinguishes empty knowledge from introspection failure" {
         );
     }
 
-    // An empty real engine has no discovered entries, so discovery performs no
-    // response allocations. These failures therefore cover schema JSON and
-    // text-result presentation independently of discovery.
+    // Empty dynamic predicates require no response allocations during
+    // discovery. These failures cover schema JSON and text-result rendering.
     var json_failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     try std.testing.expectError(
         mcp.tools.ToolError.OutOfMemory,
