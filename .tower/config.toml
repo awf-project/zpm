@@ -25,7 +25,7 @@ source = "zig ast-check"
 idle_timeout_secs = 300
 
 [lsp.zig]
-# Project-local ZLS 0.16.0 for Zig 0.16; the binary is ignored by Git.
-# Install from https://zigtools.org/zls/releases/0.16.0/ on a fresh checkout.
+# Project-local ZLS 0.17.0 for Zig 0.17; the binary is ignored by Git.
+# Install from https://zigtools.org/zls/releases/0.17.0/ on a fresh checkout.
 command = ".tower/bin/zls"
 extensions = ["zig", "zon"]

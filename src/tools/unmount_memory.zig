@@ -33,7 +33,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     reg.unmount(name) catch |err| switch (err) {
         error.NotMounted => {
-            const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+            const msg = allocator.print("Memory not mounted: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         },
         error.DefaultProtected => {
@@ -54,7 +54,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         manifest.write() catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Memory unmounted: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Memory unmounted: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

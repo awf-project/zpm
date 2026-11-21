@@ -47,7 +47,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     if (target_pm) |pm| {
         pm.journalMutation(JournalEntry{ .timestamp = wal.nowSeconds(), .op = .retractall, .clause = category }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
-    const msg = std.fmt.allocPrint(allocator, "Cleared: {s}", .{category}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Cleared: {s}", .{category}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -197,7 +197,7 @@ test "clear_context --memory clears only segment, leaves default intact" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    const feature_path = try allocator.print("{s}/feature_auth", .{dir_path});
     try std.Io.Dir.cwd().createDir(std.testing.io, feature_path, .default_dir);
 
     var registry = MemoryRegistry.init(allocator);
@@ -245,7 +245,7 @@ test "clear_context --memory does not touch default-module facts of same name" {
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    const feature_path = try allocator.print("{s}/feature_auth", .{dir_path});
     try std.Io.Dir.cwd().createDir(std.testing.io, feature_path, .default_dir);
 
     var registry = MemoryRegistry.init(allocator);

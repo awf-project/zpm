@@ -15,7 +15,7 @@ fn SlotsType(comptime params: []const registry.ParamSpec) type {
 
     var field_names: [params.len][]const u8 = undefined;
     var field_types: [params.len]type = undefined;
-    var field_attrs: [params.len]std.builtin.Type.StructField.Attributes = undefined;
+    var field_attrs: [params.len]std.lang.Type.Struct.FieldAttributes = undefined;
     inline for (params, 0..) |p, i| {
         field_names[i] = p.mcp_key;
         switch (p.kind) {
@@ -39,7 +39,7 @@ test "SlotsType empty params yields zero-field struct" {
     const T = SlotsType(&.{});
     const instance: T = .{};
     _ = instance;
-    try std.testing.expectEqual(@as(usize, 0), @typeInfo(T).@"struct".fields.len);
+    try std.testing.expectEqual(@as(usize, 0), @typeInfo(T).@"struct".field_names.len);
 }
 
 test "SlotsType one string param yields one ?[]const u8 field" {
@@ -47,10 +47,10 @@ test "SlotsType one string param yields one ?[]const u8 field" {
         .{ .mcp_key = "fact", .help = "h", .required = true },
     };
     const T = SlotsType(&params);
-    const fields = @typeInfo(T).@"struct".fields;
-    try std.testing.expectEqual(@as(usize, 1), fields.len);
-    try std.testing.expectEqualStrings("fact", fields[0].name);
-    try std.testing.expectEqual(?[]const u8, fields[0].type);
+    const info = @typeInfo(T).@"struct";
+    try std.testing.expectEqual(@as(usize, 1), info.field_names.len);
+    try std.testing.expectEqualStrings("fact", info.field_names[0]);
+    try std.testing.expectEqual(?[]const u8, info.field_types[0]);
 }
 
 test "SlotsType integer param yields ?i64 field" {
@@ -58,8 +58,8 @@ test "SlotsType integer param yields ?i64 field" {
         .{ .mcp_key = "max_depth", .help = "h", .required = false, .kind = .integer },
     };
     const T = SlotsType(&params);
-    const fields = @typeInfo(T).@"struct".fields;
-    try std.testing.expectEqual(?i64, fields[0].type);
+    const info = @typeInfo(T).@"struct";
+    try std.testing.expectEqual(?i64, info.field_types[0]);
 }
 
 test "SlotsType field defaults to null" {

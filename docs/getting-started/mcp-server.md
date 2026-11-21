@@ -29,7 +29,7 @@ If you prefer to build from source, or your platform is not supported by the pre
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/download/) 0.15.2 or later
+- [Zig](https://ziglang.org/download/) 0.17.1 or later
 - C compiler (gcc or clang)
 - A terminal or command prompt
 
@@ -57,7 +57,7 @@ This creates the `.zpm/` directory with `kb/` (for Prolog source files) and `dat
 
 ## 3. Configure in Your MCP Client
 
-zpm is an MCP server over stdio. Add it to your agentic tool's configuration — the tool will spawn `zpm serve` on demand and discover the tools automatically.
+Use an MCP client that supports revision `2026-07-28` and `server/discover` over stdio. Add it to your agentic tool's configuration — the tool will spawn `zpm serve` on demand and discover the tools automatically.
 
 The examples below assume `zpm` is on your `PATH` (via [Quick Install](#quick-install)). If you built from source, replace `zpm` with the absolute path to `zig-out/bin/zpm`.
 
@@ -155,61 +155,40 @@ Edit `.gemini/settings.json` at your project root (or `~/.gemini/settings.json` 
 
 ### Codex CLI
 
-Edit `~/.codex/config.toml`:
+With Codex CLI 0.171.0, enable MCP discovery and start a new session:
+
+```bash
+codex features enable mcp_2026_07_28
+```
+
+For a manual STDIO registration, select the protocol revision for ZPM in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.zpm]
 command = "zpm"
 args = ["serve"]
+env = { CODEX_MCP_PROTOCOL_VERSION = "2026-07-28" }
 ```
+
+For a plugin installation, the same environment setting belongs in the plugin's ZPM server entry.
 
 ## 4. Manual Testing (Optional)
 
 If you want to exercise the protocol directly without a client — for debugging or CI — you can pipe JSON-RPC 2.0 requests to `zpm serve` over stdio.
 
-### Initialize (Handshake)
+### Discover the Server and Call a Tool
+
+Run this from an initialized ZPM project. Each line is an independent JSON-RPC request. The client identifies its protocol revision and capabilities on every request.
 
 ```bash
-echo '{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2025-11-25",
-    "capabilities": {},
-    "clientInfo": {"name": "test-client"}
-  }
-}' | zpm serve
+zpm serve <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"example","version":"1.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"example","version":"1.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"example","version":"1.0"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"echo","arguments":{"message":"Hello, zpm!"}}}
+EOF
 ```
 
-Expected response includes server name, version, and capabilities.
-
-### List Available Tools
-
-```bash
-echo '{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/list",
-  "params": {}
-}' | zpm serve
-```
-
-### Call a Tool
-
-```bash
-echo '{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "method": "tools/call",
-  "params": {
-    "name": "echo",
-    "arguments": {"message": "Hello, zpm!"}
-  }
-}' | zpm serve
-```
-
-The server echoes back your message.
+The first response lists `supportedVersions`, `capabilities`, and the server name and version in `result._meta["io.modelcontextprotocol/serverInfo"]`. The second lists the tools. The server echoes back your message.
 
 ## Troubleshooting
 

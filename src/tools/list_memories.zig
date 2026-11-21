@@ -34,7 +34,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         const scope_str = @tagName(entry.scope);
         const mode_str = @tagName(entry.mode);
         if (i > 0) buf.appendSlice(allocator, ", ") catch return mcp.tools.ToolError.OutOfMemory;
-        const line = std.fmt.allocPrint(allocator, "{s} (scope={s}, mode={s}, mounted=true)", .{ name, scope_str, mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
+        const line = allocator.print("{s} (scope={s}, mode={s}, mounted=true)", .{ name, scope_str, mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(line);
         buf.appendSlice(allocator, line) catch return mcp.tools.ToolError.OutOfMemory;
     }

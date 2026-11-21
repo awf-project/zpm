@@ -83,11 +83,20 @@ test_summary() {
 
 # Transport helpers — require $BINARY and $TIMEOUT to be set by the sourcing script.
 
+# Encode each request as one STDIO frame with the client's per-request metadata.
+mcp_frames() {
+    jq -c '.params._meta = ({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name":"zpm-tests","version":"1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    } + (.params._meta // {}))' <<< "$1"
+}
+
 send_mcp_persist() {
     local input="$1" dir="$2"
     mkdir -p "$dir/.zpm/data" "$dir/.zpm/kb" "$dir/.zpm/kb/default"
     printf ':- module(default, []).\n' > "$dir/.zpm/kb/default/knowledge.pl"
-    (cd "$dir" && printf '%s\n' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+    (cd "$dir" && mcp_frames "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 }
 
 send_mcp() {

@@ -40,8 +40,7 @@ pub const Capture = struct {
         const pid = std.c.getpid();
 
         const out_counter = g_counter.fetchAdd(1, .monotonic);
-        const path_out = try std.fmt.allocPrintSentinel(
-            self.allocator,
+        const path_out = try self.allocator.printSentinel(
             "/tmp/zpm_capo_{d}_{d}.tmp",
             .{ pid, out_counter },
             0,
@@ -72,8 +71,7 @@ pub const Capture = struct {
             flushStderr();
 
             const err_counter = g_counter.fetchAdd(1, .monotonic);
-            const path_err = std.fmt.allocPrintSentinel(
-                self.allocator,
+            const path_err = self.allocator.printSentinel(
                 "/tmp/zpm_cape_{d}_{d}.tmp",
                 .{ pid, err_counter },
                 0,

@@ -8,7 +8,7 @@ Large Language Models with a Prolog inference engine for deterministic logical r
 - CLI entrypoint with `init`, `serve`, `upgrade`, and all 29 MCP tools exposed as subcommands (e.g. `zpm remember-fact`, `zpm query-logic`)
 - Self-upgrade via `zpm upgrade` with SHA256 verification, atomic install, and `--channel stable|dev` selection
 - Per-project `.zpm/` directory for isolated configuration and persistence
-- MCP protocol version `2025-11-25` over STDIO transport
+- MCP protocol version `2026-07-28` over STDIO transport with `server/discover`
 - Tool registration and discovery via `tools/list`
 - Echo tool for health-check and smoke testing
 - Prolog inference engine with Trealla C API integration
@@ -29,7 +29,7 @@ Large Language Models with a Prolog inference engine for deterministic logical r
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/download/) >= 0.16.0
+- [Zig](https://ziglang.org/download/) >= 0.17.1
 - C compiler (gcc or clang)
 
 ### Install

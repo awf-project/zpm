@@ -34,10 +34,10 @@ fn needsQuoting(s: []const u8) bool {
 
 pub fn termToString(allocator: std.mem.Allocator, term: engine_mod.Term) ![]u8 {
     return switch (term) {
-        .atom => |s| if (needsQuoting(s)) std.fmt.allocPrint(allocator, "'{s}'", .{s}) else allocator.dupe(u8, s),
+        .atom => |s| if (needsQuoting(s)) allocator.print("'{s}'", .{s}) else allocator.dupe(u8, s),
         .variable => |s| allocator.dupe(u8, s),
-        .integer => |n| std.fmt.allocPrint(allocator, "{d}", .{n}),
-        .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
+        .integer => |n| allocator.print("{d}", .{n}),
+        .float => |f| allocator.print("{d}", .{f}),
         .compound => |c| {
             var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(allocator);

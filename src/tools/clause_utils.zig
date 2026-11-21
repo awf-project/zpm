@@ -260,11 +260,10 @@ fn countClausesWithDispatch(dispatch: QueryDispatch, allocator: std.mem.Allocato
     // Trealla's public clause/2 rejects static predicates loaded by consult/1.
     // Its private equivalent has the same result contract and permits the
     // read-only inspection required here.
-    const inspect_query = std.fmt.allocPrint(allocator, "'$clause'{s}", .{query_str["clause".len..]}) catch
+    const inspect_query = allocator.print("'$clause'{s}", .{query_str["clause".len..]}) catch
         return engine_mod.EngineError.OutOfMemory;
     defer allocator.free(inspect_query);
-    const count_query = std.fmt.allocPrint(
-        allocator,
+    const count_query = allocator.print(
         "findall(1,({s}),ZpmMatches),length(ZpmMatches,Count)",
         .{inspect_query},
     ) catch return engine_mod.EngineError.OutOfMemory;
@@ -588,7 +587,7 @@ test "first discovery preserves every runtime predicate before property metadata
 
     // Do not query predicate properties before the first discovery.
     for (0..32) |i| {
-        const fact = try std.fmt.allocPrint(allocator, "discovery_probe_{d}(value)", .{i});
+        const fact = try allocator.print("discovery_probe_{d}(value)", .{i});
         defer allocator.free(fact);
         try engine.assertFact(fact);
     }
@@ -598,7 +597,7 @@ test "first discovery preserves every runtime predicate before property metadata
         defer predicates.deinit(allocator);
         try std.testing.expectEqual(@as(usize, 32), predicates.entries.items.len);
         for (0..32) |i| {
-            const name = try std.fmt.allocPrint(allocator, "discovery_probe_{d}", .{i});
+            const name = try allocator.print("discovery_probe_{d}", .{i});
             defer allocator.free(name);
             const entry = findPredicate(predicates.entries.items, name, 1) orelse
                 return error.MissingRuntimePredicate;
@@ -846,7 +845,7 @@ const GrowthFailureDispatch = struct {
                     .bindings = std.StringHashMap(engine_mod.Term).init(self.allocator),
                     .allocator = self.allocator,
                 };
-                const name = std.fmt.allocPrint(self.allocator, "growth_candidate_{d}", .{made}) catch
+                const name = self.allocator.print("growth_candidate_{d}", .{made}) catch
                     return engine_mod.EngineError.OutOfMemory;
                 defer self.allocator.free(name);
                 try putOwnedBinding(self.allocator, &solutions[made].bindings, "F", .{ .atom = name });

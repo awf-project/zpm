@@ -4,7 +4,7 @@ zpm is a Prolog inference engine for the Model Context Protocol (MCP), written i
 
 ## Build & Run
 
-- **Zig >= 0.15.2** and a C compiler (gcc or clang) required
+- **Zig >= 0.17.1** and a C compiler (gcc or clang) required
 - **mcp.zig** library dependency (fetched via `build.zig.zon`); **Trealla Prolog** vendored as a git submodule at `ffi/trealla/` and compiled via Zig's C toolchain
 - Binary output: `zig-out/bin/zpm`
 
@@ -43,7 +43,7 @@ docs/
 - Executable-only project (no library module); `src/main.zig` is the single root
 - Flat module structure; hexagonal architecture deferred until domain complexity justifies it (see [ADR-0004](docs/ADR/0004-trealla-prolog-via-c-ffi-replacing-scryer.md) for the current Prolog backend rationale)
 - Engine module (`src/prolog/engine.zig`) calls Trealla's `pl_*` C API directly via extern declarations in `ffi.zig`; glue logic (stdout capture, output parsing, assertz wrapping) lives in `capture.zig` + `engine.zig`
-- MCP protocol version `2025-11-25`, server capabilities: tools only (`listChanged: true`)
+- MCP protocol version `2026-07-28`, server capabilities: tools only (`listChanged: true`)
 
 ## Architecture Rules
 

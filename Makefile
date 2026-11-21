@@ -9,8 +9,8 @@ help: ## Show available targets
 build: ## Build the server binary (Debug)
 	zig build --summary all
 
-release: ## Build optimized binary (ReleaseSafe)
-	zig build -Doptimize=ReleaseSafe --summary all
+release: ## Build optimized binary (safe)
+	zig build -Doptimize=safe --summary all
 
 install: release ## Install optimized binary to $(INSTALL_DIR) (default: ~/.local/bin)
 	@mkdir -p $(INSTALL_DIR)
@@ -34,10 +34,10 @@ upgrade-test: build ## Run upgrade end-to-end tests
 	bash tests/functional_upgrade_test.sh
 
 fmt: ## Format source code
-	zig fmt .
+	zig fmt build.zig build.zig.zon src
 
 lint: ## Check formatting
-	zig fmt --check .
+	zig fmt --check build.zig build.zig.zon src
 
 check: lint test functional-test ## Run all checks
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- MCP clients now use `server/discover` and per-request metadata for protocol `2026-07-28`. This replaces the `initialize` handshake from `2025-11-25`.
+- Building from source now requires Zig 0.17.1 or later.
+
 ## [0.4.5] - 2026-11-18
 
 ## [0.4.4] - 2026-10-23

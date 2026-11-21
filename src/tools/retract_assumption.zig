@@ -34,7 +34,7 @@ pub fn tool(allocator: std.mem.Allocator) !mcp.tools.Tool {
 }
 
 fn unknownAssumption(allocator: std.mem.Allocator, assumption: []const u8) mcp.tools.ToolError!mcp.tools.ToolResult {
-    const msg = std.fmt.allocPrint(allocator, "Unknown assumption '{s}'", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Unknown assumption '{s}'", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
 
@@ -49,7 +49,7 @@ pub fn retractOneAssumption(
     memory_name: []const u8,
 ) mcp.tools.ToolError!usize {
     _ = memory_name; // per-segment engine: clauses are unqualified
-    const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    const raw_query = allocator.print("tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(raw_query);
 
     var qr = engine.query(raw_query) catch return mcp.tools.ToolError.ExecutionFailed;
@@ -70,14 +70,14 @@ pub fn retractOneAssumption(
         };
     }
 
-    const retract_pattern = std.fmt.allocPrint(allocator, "tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    const retract_pattern = allocator.print("tms_justification(_,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(retract_pattern);
 
     var orphan_facts: std.ArrayList([]const u8) = .empty;
     defer orphan_facts.deinit(allocator);
 
     for (fact_strings.items) |fact_str| {
-        const check_query = std.fmt.allocPrint(allocator, "tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
+        const check_query = allocator.print("tms_justification({s},X),X\\={s}", .{ fact_str, assumption }) catch continue;
         defer allocator.free(check_query);
 
         const has_other = blk: {
@@ -127,7 +127,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     // Check if assumption exists before attempting retraction
-    const raw_query = std.fmt.allocPrint(allocator, "tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
+    const raw_query = allocator.print("tms_justification(F,{s})", .{assumption}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(raw_query);
 
     var qr = engine.query(raw_query) catch return mcp.tools.ToolError.ExecutionFailed;
@@ -136,7 +136,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     const orphan_count = try retractOneAssumption(allocator, engine, target_pm, assumption, memory_name);
 
-    const msg = std.fmt.allocPrint(allocator, "Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, orphan_count }) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Retracted assumption '{s}': {d} fact(s) removed", .{ assumption, orphan_count }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

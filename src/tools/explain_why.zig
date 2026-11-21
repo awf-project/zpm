@@ -91,7 +91,7 @@ fn buildProofTree(
         return;
     }
 
-    const clause_query = try std.fmt.allocPrint(allocator, "clause({s},Body),call(Body)", .{goal});
+    const clause_query = try allocator.print("clause({s},Body),call(Body)", .{goal});
     defer allocator.free(clause_query);
 
     var clause_result = engine.query(clause_query) catch {

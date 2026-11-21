@@ -49,11 +49,11 @@ pub fn discover(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8) (Proj
         cur_dir.close(io);
 
         if (has_zpm) {
-            const data_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/data", .{current});
+            const data_dir = try allocator.print("{s}/.zpm/data", .{current});
             errdefer allocator.free(data_dir);
-            const kb_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/kb", .{current});
+            const kb_dir = try allocator.print("{s}/.zpm/kb", .{current});
             errdefer allocator.free(kb_dir);
-            const manifest_path = try std.fmt.allocPrint(allocator, "{s}/.zpm/mounts.json", .{current});
+            const manifest_path = try allocator.print("{s}/.zpm/mounts.json", .{current});
             errdefer allocator.free(manifest_path);
             return ProjectPaths{
                 .allocator = allocator,

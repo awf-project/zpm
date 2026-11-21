@@ -43,18 +43,18 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const target_pm = mem.pm;
 
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
-    const rule = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
+    const rule = allocator.print("{s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(rule);
 
     engine.assert(rule) catch {
-        const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Failed to assert: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
         pm.journalMutation(JournalEntry{ .timestamp = nowSeconds(), .clause = rule }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
-    const msg = std.fmt.allocPrint(allocator, "Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Asserted: {s} :- {s}", .{ head, body }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

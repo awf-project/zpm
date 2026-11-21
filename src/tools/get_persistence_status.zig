@@ -38,7 +38,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
     };
     const last_snap: []const u8 = if (snaps) |s| (if (s.len > 0) s[s.len - 1] else "none") else "none";
 
-    const msg = std.fmt.allocPrint(allocator, "status: {s}\ndir: {s}\nlast_snapshot: {s}\njournal_size: {d} bytes", .{
+    const msg = allocator.print("status: {s}\ndir: {s}\nlast_snapshot: {s}\njournal_size: {d} bytes", .{
         status_str, pm.dir_path, last_snap, journal_size,
     }) catch return mcp.tools.ToolError.ExecutionFailed;
     defer allocator.free(msg);

@@ -121,7 +121,7 @@ pub const MemoryRegistry = struct {
         errdefer pm.deinit();
 
         {
-            const kp = try std.fmt.allocPrint(self.allocator, "{s}/knowledge.pl", .{disk_path});
+            const kp = try self.allocator.print("{s}/knowledge.pl", .{disk_path});
             defer self.allocator.free(kp);
             engine.loadFile(kp) catch |err| switch (err) {
                 error.LoadFailed => {}, // OK: knowledge.pl is optional when mounting a pre-existing dir
@@ -253,7 +253,7 @@ test "MemoryRegistry.create with valid name creates directory and knowledge.pl" 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
     const base = path_buf[0..base_len];
-    const mem_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/mymem", .{base});
+    const mem_path = try std.testing.allocator.print("{s}/mymem", .{base});
     defer std.testing.allocator.free(mem_path);
 
     var reg = MemoryRegistry.init(std.testing.allocator);
@@ -274,7 +274,7 @@ test "MemoryRegistry.create rejects duplicate" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
     const base = path_buf[0..base_len];
-    const mem_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/dup", .{base});
+    const mem_path = try std.testing.allocator.print("{s}/dup", .{base});
     defer std.testing.allocator.free(mem_path);
 
     var reg = MemoryRegistry.init(std.testing.allocator);
@@ -418,7 +418,7 @@ test "MemoryRegistry.create then mount: API-asserted and file-loaded facts are i
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const base_len = try tmp.dir.realPathFile(std.testing.io, ".", &path_buf);
     const base = path_buf[0..base_len];
-    const mem_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/nstest", .{base});
+    const mem_path = try std.testing.allocator.print("{s}/nstest", .{base});
     defer std.testing.allocator.free(mem_path);
 
     var reg = MemoryRegistry.init(std.testing.allocator);
