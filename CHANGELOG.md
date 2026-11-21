@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
 ### Changed
 
 - MCP clients now use `server/discover` and per-request metadata for protocol `2026-07-28`. This replaces the `initialize` handshake from `2025-11-25`.
