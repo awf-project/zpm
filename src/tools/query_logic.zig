@@ -50,7 +50,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     // segment; the default memory maps to the global engine instead.
     const engine = context.getEngineForMemory(memory_name) orelse {
         if (!context.isDefaultMemory(memory_name)) {
-            const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
+            const msg = allocator.print("Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         }
         return mcp.tools.ToolError.ExecutionFailed;

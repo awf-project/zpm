@@ -233,11 +233,11 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
             // by reference, not by copy. Freeing here would leave a dangling pointer
             // in the returned ToolResult. The caller's allocator (typically an arena
             // or the request-scope allocator) is responsible for lifetime.
-            const msg = try std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name});
+            const msg = try allocator.print("Memory not mounted: {s}", .{memory_name});
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         };
         if (reg.getMounted(memory_name) == null) {
-            const msg = try std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name});
+            const msg = try allocator.print("Memory not mounted: {s}", .{memory_name});
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         }
     }
@@ -398,8 +398,7 @@ fn countDirectFacts(
     }
 
     // Prolog allows same-named predicates at different arities; aggregate all of them.
-    const raw_arities_query = try std.fmt.allocPrint(
-        allocator,
+    const raw_arities_query = try allocator.print(
         "current_predicate({s}/A)",
         .{functor},
     );
@@ -553,7 +552,7 @@ fn sortAssumptionRefs(refs: []AssumptionRef) void {
 
 fn formatTarget(allocator: std.mem.Allocator, functor: []const u8, arity: ?i64) ![]u8 {
     if (arity) |a| {
-        return try std.fmt.allocPrint(allocator, "{s}/{d}", .{ functor, a });
+        return try allocator.print("{s}/{d}", .{ functor, a });
     }
     return try allocator.dupe(u8, functor);
 }

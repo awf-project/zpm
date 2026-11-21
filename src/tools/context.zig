@@ -210,7 +210,7 @@ pub fn resolveWritableMemory(
                 return .{ .resolved = .{ .memory_name = memory_name, .pm = &entry.pm, .engine = entry.engine } };
             }
         }
-        const msg = std.fmt.allocPrint(allocator, "Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Memory not mounted: {s}", .{memory_name}) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(msg);
         return .{ .tool_result = mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory };
     }

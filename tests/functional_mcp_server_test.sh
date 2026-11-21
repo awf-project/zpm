@@ -2,27 +2,34 @@
 # Feature: B005
 # Features: F001-F012, F016
 # Functional tests for MCP server end-to-end protocol communication.
-# Validates: initialize handshake, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
+# Validates: server discovery, tools/list discovery, tools/call dispatch, error handling, graceful shutdown.
 . "$(dirname "$0")/test_helpers.sh"
 
 BINARY="$(cd "$(dirname "${1:-zig-out/bin/zpm}")" && pwd)/$(basename "${1:-zig-out/bin/zpm}")"
 TIMEOUT=5
 
-# --- Test 1: Initialize handshake returns correct server info ---
-echo "Test: Initialize handshake"
-INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}'
-RESPONSE=$(send_mcp "$INIT_REQ")
+# --- Test 1: Server discovery returns correct server info ---
+echo "Test: Server discovery"
+DISCOVER_REQ='{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}'
+RESPONSE=$(send_mcp "$DISCOVER_REQ")
 
-assert_contains "serverInfo.name is zpm" "$RESPONSE" '"name":"zpm"'
-assert_contains "serverInfo.version is $ZPM_VERSION" "$RESPONSE" "\"version\":\"$ZPM_VERSION\""
-assert_contains "protocolVersion is 2025-11-25" "$RESPONSE" '"protocolVersion":"2025-11-25"'
-assert_contains "tools capability advertised" "$RESPONSE" '"tools":'
+assert_equals "discovery returns this server's name" "zpm" \
+    "$(jq -r '.result._meta["io.modelcontextprotocol/serverInfo"].name' <<< "$RESPONSE")"
+assert_equals "discovery returns the build version" "$ZPM_VERSION" \
+    "$(jq -r '.result._meta["io.modelcontextprotocol/serverInfo"].version' <<< "$RESPONSE")"
+assert_equals "discovery advertises the supported revisions" '["2026-07-28"]' \
+    "$(jq -c '.result.supportedVersions' <<< "$RESPONSE")"
+assert_equals "discovery advertises tools" 'true' \
+    "$(jq -r '.result.capabilities.tools.listChanged' <<< "$RESPONSE")"
+assert_equals "discovery result is complete" 'complete' "$(jq -r '.result.resultType' <<< "$RESPONSE")"
+
+LEGACY_RESPONSE=$(send_mcp '{"jsonrpc":"2.0","id":9,"method":"initialize","params":{}}')
+assert_equals "retired initialize method returns Method not found" '-32601' \
+    "$(jq -r 'select(.id == 9) | .error.code' <<< "$LEGACY_RESPONSE")"
 
 # --- Test 2: tools/list returns echo tool with schema ---
 echo "Test: Tool discovery via tools/list"
-TOOLSLIST_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+TOOLSLIST_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
 RESPONSE=$(send_mcp "$TOOLSLIST_INPUT")
 TOOLS_LINE=$(echo "$RESPONSE" | grep '"id":2')
 
@@ -58,9 +65,7 @@ done
 
 # --- Test 3: tools/call echo returns the message ---
 echo "Test: Echo tool invocation"
-ECHO_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"functional test\"}}}"
+ECHO_INPUT="{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"functional test\"}}}"
 RESPONSE=$(send_mcp "$ECHO_INPUT")
 ECHO_LINE=$(echo "$RESPONSE" | grep '"id":3')
 
@@ -69,9 +74,7 @@ assert_contains "echo result is not an error" "$ECHO_LINE" '"isError":false'
 
 # --- Test 4: tools/call echo with missing argument returns error ---
 echo "Test: Echo tool missing argument error"
-MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{}}}"
+MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$MISSING_INPUT")
 ERROR_LINE=$(echo "$RESPONSE" | grep '"id":4')
 
@@ -81,16 +84,14 @@ assert_contains "missing arg returns isError true" "$ERROR_LINE" '"isError":true
 echo "Test: Graceful shutdown on STDIO close"
 SHUTDOWN_TMPDIR=$(mktemp -d)
 mkdir -p "$SHUTDOWN_TMPDIR/.zpm/data" "$SHUTDOWN_TMPDIR/.zpm/kb"
-(cd "$SHUTDOWN_TMPDIR" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve >/dev/null 2>&1)
+(cd "$SHUTDOWN_TMPDIR" && mcp_frames "$DISCOVER_REQ" | timeout "$TIMEOUT" "$BINARY" serve >/dev/null 2>&1)
 EXIT_CODE=$?
 rm -rf "$SHUTDOWN_TMPDIR"
 assert_exit_code "exits with code 0 on EOF" "$EXIT_CODE" 0
 
 # --- Test 6: remember_fact asserts a fact and returns success ---
 echo "Test: remember_fact tool invocation"
-REMEMBER_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}"
+REMEMBER_INPUT="{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}"
 RESPONSE=$(send_mcp "$REMEMBER_INPUT")
 REMEMBER_LINE=$(echo "$RESPONSE" | grep '"id":6')
 
@@ -99,9 +100,7 @@ assert_contains "remember_fact confirms asserted fact" "$REMEMBER_LINE" 'user_pr
 
 # --- Test 7: remember_fact with missing fact key returns error ---
 echo "Test: remember_fact missing argument error"
-MISSING_FACT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{}}}"
+MISSING_FACT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$MISSING_FACT_INPUT")
 MISSING_FACT_LINE=$(echo "$RESPONSE" | grep '"id":7')
 
@@ -109,9 +108,7 @@ assert_contains "missing fact key returns isError true" "$MISSING_FACT_LINE" '"i
 
 # --- Test 8: define_rule asserts a rule and returns success ---
 echo "Test: define_rule tool invocation"
-DEFINE_RULE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"mortal(X)\",\"body\":\"human(X)\"}}}"
+DEFINE_RULE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"mortal(X)\",\"body\":\"human(X)\"}}}"
 RESPONSE=$(send_mcp "$DEFINE_RULE_INPUT")
 DEFINE_RULE_LINE=$(echo "$RESPONSE" | grep '"id":8')
 
@@ -120,9 +117,7 @@ assert_contains "define_rule confirms asserted rule head" "$DEFINE_RULE_LINE" 'm
 
 # --- Test 9: define_rule with missing arguments returns error ---
 echo "Test: define_rule missing argument error"
-MISSING_RULE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{}}}"
+MISSING_RULE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$MISSING_RULE_INPUT")
 MISSING_RULE_LINE=$(echo "$RESPONSE" | grep '"id":9')
 
@@ -130,9 +125,7 @@ assert_contains "missing rule arguments returns isError true" "$MISSING_RULE_LIN
 
 # --- Test 10: query_logic returns solutions for matching facts ---
 echo "Test: query_logic tool invocation with matching facts"
-QUERY_FACTS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"fruit(apple)\"}}}
+QUERY_FACTS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"fruit(apple)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"fruit(banana)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"fruit(X)\"}}}"
 RESPONSE=$(send_mcp "$QUERY_FACTS_INPUT")
@@ -144,9 +137,7 @@ assert_contains "query_logic returns banana binding" "$QUERY_LINE" 'banana'
 
 # --- Test 11: query_logic returns empty array when no facts match ---
 echo "Test: query_logic with no matching facts returns empty array"
-QUERY_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"nonexistent_pred(X)\"}}}"
+QUERY_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"nonexistent_pred(X)\"}}}"
 RESPONSE=$(send_mcp "$QUERY_EMPTY_INPUT")
 QUERY_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":13')
 
@@ -155,9 +146,7 @@ assert_contains "query_logic empty result returns empty array" "$QUERY_EMPTY_LIN
 
 # --- Test 12: query_logic with missing goal argument returns error ---
 echo "Test: query_logic missing goal argument error"
-QUERY_MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{}}}"
+QUERY_MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$QUERY_MISSING_INPUT")
 QUERY_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":14')
 
@@ -165,9 +154,7 @@ assert_contains "missing goal returns isError true" "$QUERY_MISSING_LINE" '"isEr
 
 # --- Test 12b: query_logic with syntactically invalid goal returns empty result ---
 echo "Test: query_logic with invalid syntax returns empty result"
-QUERY_INVALID_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contributor(X,\"}}}"
+QUERY_INVALID_INPUT="{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contributor(X,\"}}}"
 RESPONSE=$(send_mcp "$QUERY_INVALID_INPUT")
 QUERY_INVALID_LINE=$(echo "$RESPONSE" | grep '"id":22')
 
@@ -175,9 +162,7 @@ assert_contains "invalid syntax returns error" "$QUERY_INVALID_LINE" '"isError":
 
 # --- Test 13: trace_dependency returns reachable nodes for transitive dependency chain ---
 echo "Test: trace_dependency tool invocation with transitive dependencies"
-TRACE_CHAIN_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(a, b)\"}}}
+TRACE_CHAIN_INPUT="{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(a, b)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(b, c)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Start)\",\"body\":\"depends_on(Start, X)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Start)\",\"body\":\"depends_on(Start, Mid), path(X, Mid)\"}}}
@@ -191,9 +176,7 @@ assert_contains "trace_dependency returns transitive dependency c" "$TRACE_LINE"
 
 # --- Test 14: trace_dependency returns empty array for isolated node ---
 echo "Test: trace_dependency with isolated node returns empty array"
-TRACE_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"isolated\"}}}"
+TRACE_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"isolated\"}}}"
 RESPONSE=$(send_mcp "$TRACE_EMPTY_INPUT")
 TRACE_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":20')
 
@@ -202,9 +185,7 @@ assert_contains "trace_dependency isolated node returns empty array" "$TRACE_EMP
 
 # --- Test 15: trace_dependency with missing start_node argument returns error ---
 echo "Test: trace_dependency missing start_node argument error"
-TRACE_MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{}}}"
+TRACE_MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$TRACE_MISSING_INPUT")
 TRACE_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":21')
 
@@ -212,9 +193,7 @@ assert_contains "missing start_node returns isError true" "$TRACE_MISSING_LINE" 
 
 # --- Test 16: trace_dependency with injection attempt returns error ---
 echo "Test: trace_dependency rejects Prolog injection attempt"
-TRACE_INJECT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"a), halt(0\"}}}"
+TRACE_INJECT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"a), halt(0\"}}}"
 RESPONSE=$(send_mcp "$TRACE_INJECT_INPUT")
 TRACE_INJECT_LINE=$(echo "$RESPONSE" | grep '"id":23')
 
@@ -222,9 +201,7 @@ assert_contains "injection attempt returns isError true" "$TRACE_INJECT_LINE" '"
 
 # --- Test 17: verify_consistency returns no violations for empty knowledge base ---
 echo "Test: verify_consistency with empty knowledge base"
-VERIFY_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
+VERIFY_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$VERIFY_EMPTY_INPUT")
 VERIFY_LINE=$(echo "$RESPONSE" | grep '"id":24')
 
@@ -233,9 +210,7 @@ assert_contains "verify_consistency returns empty violations array" "$VERIFY_LIN
 
 # --- Test 18: verify_consistency detects integrity violation ---
 echo "Test: verify_consistency with integrity_violation rule fires"
-VERIFY_VIOLATION_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
+VERIFY_VIOLATION_INPUT="{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"integrity_violation(X)\",\"body\":\"risky(X)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$VERIFY_VIOLATION_INPUT")
@@ -246,9 +221,7 @@ assert_contains "verify_consistency returns deploy_v3 as violation" "$VERIFY_VIO
 
 # --- Test 19: explain_why returns proof tree for asserted fact ---
 echo "Test: explain_why with provable fact"
-EXPLAIN_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
+EXPLAIN_INPUT="{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"risky(deploy_v3)\"}}}"
 RESPONSE=$(send_mcp "$EXPLAIN_INPUT")
 EXPLAIN_LINE=$(echo "$RESPONSE" | grep '"id":29')
@@ -259,9 +232,7 @@ assert_contains "explain_why includes fact in proof" "$EXPLAIN_LINE" 'risky(depl
 
 # --- Test 20: explain_why returns proven false for unprovable fact ---
 echo "Test: explain_why with unprovable fact"
-EXPLAIN_UNPROVABLE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"unknown_fact(x)\"}}}"
+EXPLAIN_UNPROVABLE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"unknown_fact(x)\"}}}"
 RESPONSE=$(send_mcp "$EXPLAIN_UNPROVABLE_INPUT")
 EXPLAIN_UNPROVABLE_LINE=$(echo "$RESPONSE" | grep '"id":30')
 
@@ -270,9 +241,7 @@ assert_contains "explain_why returns proven false" "$EXPLAIN_UNPROVABLE_LINE" '\
 
 # --- Test 21: explain_why with missing fact argument returns error ---
 echo "Test: explain_why missing fact argument error"
-EXPLAIN_MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{}}}"
+EXPLAIN_MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$EXPLAIN_MISSING_INPUT")
 EXPLAIN_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":31')
 
@@ -280,9 +249,7 @@ assert_contains "missing fact argument returns isError true" "$EXPLAIN_MISSING_L
 
 # --- Test 22: explain_why returns proof tree for rule-derived fact ---
 echo "Test: explain_why with rule-derived fact returns proof tree"
-EXPLAIN_RULE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alice, bob)\"}}}
+EXPLAIN_RULE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alice, bob)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"ancestor(X, Y)\",\"body\":\"parent(X, Y)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":34,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"ancestor(alice, bob)\"}}}"
 RESPONSE=$(send_mcp "$EXPLAIN_RULE_INPUT")
@@ -294,9 +261,7 @@ assert_contains "explain_why rule-derived has non-empty children" "$EXPLAIN_RULE
 
 # --- Test 23: get_knowledge_schema returns empty list for empty knowledge base ---
 echo "Test: get_knowledge_schema with empty knowledge base"
-SCHEMA_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":35,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
+SCHEMA_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":35,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$SCHEMA_EMPTY_INPUT")
 SCHEMA_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":35')
 
@@ -306,9 +271,7 @@ assert_contains "get_knowledge_schema empty KB returns total 0" "$SCHEMA_EMPTY_L
 
 # --- Test 24: get_knowledge_schema returns predicates after asserting facts ---
 echo "Test: get_knowledge_schema returns asserted predicates with name and arity"
-SCHEMA_FACTS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":36,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}
+SCHEMA_FACTS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":36,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"user_prefers(dark_mode)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":37,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"depends_on(a, b)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":38,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}
 "
@@ -324,9 +287,7 @@ assert_contains "get_knowledge_schema returns total 2" "$SCHEMA_FACTS_LINE" '\"t
 
 # --- Test 25: get_knowledge_schema shows type:both for mixed fact+rule predicate ---
 echo "Test: get_knowledge_schema classifies mixed fact+rule predicate as type both"
-SCHEMA_BOTH_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(a, b)\"}}}
+SCHEMA_BOTH_INPUT="{\"jsonrpc\":\"2.0\",\"id\":39,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(a, b)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"path(X, Z)\",\"body\":\"path(X, Y), path(Y, Z)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$SCHEMA_BOTH_INPUT")
@@ -338,9 +299,7 @@ assert_contains "get_knowledge_schema classifies path/2 as both" "$SCHEMA_BOTH_L
 # Feature: F007
 # --- Test 26: forget_fact retracts existing fact, query confirms absence ---
 echo "Test: forget_fact retracts asserted fact"
-FORGET_EXISTING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(jean, manager)\"}}}
+FORGET_EXISTING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(jean, manager)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(jean, manager)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"role(jean, manager)\"}}}
 "
@@ -354,9 +313,7 @@ assert_contains "query after forget_fact returns empty" "$QUERY_AFTER_LINE" '[]'
 
 # --- Test 27: forget_fact returns error for non-existent fact ---
 echo "Test: forget_fact with non-existent fact returns error"
-FORGET_MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(nobody, ghost)\"}}}
+FORGET_MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(nobody, ghost)\"}}}
 "
 RESPONSE=$(send_mcp "$FORGET_MISSING_INPUT")
 FORGET_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":45')
@@ -365,9 +322,7 @@ assert_contains "forget_fact non-existent returns isError true" "$FORGET_MISSING
 
 # --- Test 28: forget_fact returns error for empty fact ---
 echo "Test: forget_fact with empty fact returns error"
-FORGET_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"\"}}}
+FORGET_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"\"}}}
 "
 RESPONSE=$(send_mcp "$FORGET_EMPTY_INPUT")
 FORGET_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":46')
@@ -376,9 +331,7 @@ assert_contains "forget_fact empty fact returns isError true" "$FORGET_EMPTY_LIN
 
 # --- Test 29: forget_fact with missing arguments returns error ---
 echo "Test: forget_fact missing argument error"
-FORGET_NULL_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":47,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{}}}
+FORGET_NULL_INPUT="{\"jsonrpc\":\"2.0\",\"id\":47,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp "$FORGET_NULL_INPUT")
 FORGET_NULL_LINE=$(echo "$RESPONSE" | grep '"id":47')
@@ -387,9 +340,7 @@ assert_contains "forget_fact missing args returns isError true" "$FORGET_NULL_LI
 
 # --- Test 30: clear_context removes all matching facts, query confirms ---
 echo "Test: clear_context removes all matching facts"
-CLEAR_MULTI_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":48,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(beta, active)\"}}}
+CLEAR_MULTI_INPUT="{\"jsonrpc\":\"2.0\",\"id\":48,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(beta, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":49,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(beta, owner(alice))\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(alpha, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":51,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"project(beta, _)\"}}}
@@ -408,9 +359,7 @@ assert_contains "clear_context preserves non-matching facts" "$QUERY_ALPHA_LINE"
 
 # --- Test 31: clear_context is idempotent when no facts match ---
 echo "Test: clear_context with no matching facts returns success"
-CLEAR_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":54,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"nonexistent_category(_)\"}}}
+CLEAR_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":54,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"nonexistent_category(_)\"}}}
 "
 RESPONSE=$(send_mcp "$CLEAR_EMPTY_INPUT")
 CLEAR_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":54')
@@ -419,9 +368,7 @@ assert_contains "clear_context no-match returns success" "$CLEAR_EMPTY_LINE" '"i
 
 # --- Test 32: clear_context returns error for empty category ---
 echo "Test: clear_context with empty category returns error"
-CLEAR_EMPTY_CAT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":55,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"\"}}}
+CLEAR_EMPTY_CAT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":55,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"\"}}}
 "
 RESPONSE=$(send_mcp "$CLEAR_EMPTY_CAT_INPUT")
 CLEAR_EMPTY_CAT_LINE=$(echo "$RESPONSE" | grep '"id":55')
@@ -430,9 +377,7 @@ assert_contains "clear_context empty category returns isError true" "$CLEAR_EMPT
 
 # --- Test 33: clear_context with missing arguments returns error ---
 echo "Test: clear_context missing argument error"
-CLEAR_NULL_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":56,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{}}}
+CLEAR_NULL_INPUT="{\"jsonrpc\":\"2.0\",\"id\":56,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp "$CLEAR_NULL_INPUT")
 CLEAR_NULL_LINE=$(echo "$RESPONSE" | grep '"id":56')
@@ -441,9 +386,7 @@ assert_contains "clear_context missing args returns isError true" "$CLEAR_NULL_L
 
 # --- Test 34: forget_fact retracts only first duplicate (US3) ---
 echo "Test: forget_fact retracts only first duplicate"
-FORGET_DUPE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":57,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
+FORGET_DUPE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":57,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":58,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":59,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"likes(alice, bob)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"likes(alice, bob)\"}}}
@@ -463,9 +406,7 @@ assert_contains "zero duplicates remain after second retraction" "$QUERY_ZERO_LE
 
 # --- Test 35: update_fact replaces existing fact atomically ---
 echo "Test: update_fact replaces existing fact"
-UPDATE_SUCCESS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":63,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(timeout, 30)\"}}}
+UPDATE_SUCCESS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":63,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(timeout, 30)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":64,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"config(timeout, 30)\",\"new_fact\":\"config(timeout, 60)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":65,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(timeout, 60)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":66,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(timeout, 30)\"}}}
@@ -481,9 +422,7 @@ assert_contains "old fact is gone after update" "$QUERY_OLD_LINE" '[]'
 
 # --- Test 36: update_fact returns error when old fact does not exist ---
 echo "Test: update_fact not-found returns error"
-UPDATE_NOTFOUND_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":67,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"nonexistent(ghost, fact)\",\"new_fact\":\"nonexistent(ghost, replaced)\"}}}
+UPDATE_NOTFOUND_INPUT="{\"jsonrpc\":\"2.0\",\"id\":67,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"nonexistent(ghost, fact)\",\"new_fact\":\"nonexistent(ghost, replaced)\"}}}
 "
 RESPONSE=$(send_mcp "$UPDATE_NOTFOUND_INPUT")
 UPDATE_NOTFOUND_LINE=$(echo "$RESPONSE" | grep '"id":67')
@@ -492,9 +431,7 @@ assert_contains "update_fact not-found returns isError true" "$UPDATE_NOTFOUND_L
 
 # --- Test 37: upsert_fact inserts when no prior fact exists ---
 echo "Test: upsert_fact inserts new fact"
-UPSERT_INSERT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":68,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"service(api, healthy)\"}}}
+UPSERT_INSERT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":68,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"service(api, healthy)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":69,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"service(api, healthy)\"}}}
 "
 RESPONSE=$(send_mcp "$UPSERT_INSERT_INPUT")
@@ -506,9 +443,7 @@ assert_contains "upserted fact is queryable" "$QUERY_INSERT_LINE" '[{}]'
 
 # --- Test 38: upsert_fact replaces existing fact with same functor and first arg ---
 echo "Test: upsert_fact replaces existing fact"
-UPSERT_REPLACE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":70,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"deploy(prod, v1)\"}}}
+UPSERT_REPLACE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":70,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"deploy(prod, v1)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":71,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"deploy(prod, v2)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":72,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"deploy(prod, X)\"}}}
 "
@@ -522,9 +457,7 @@ assert_not_contains "old version is gone after upsert" "$QUERY_REPLACE_LINE" 'v1
 
 # --- Test 39: upsert_fact does not affect facts with different first argument ---
 echo "Test: upsert_fact preserves unrelated facts"
-UPSERT_PRESERVE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":73,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"env(prod, active)\"}}}
+UPSERT_PRESERVE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":73,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"env(prod, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":74,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"env(dev, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":75,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"env(prod, frozen)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":76,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"env(dev, active)\"}}}
@@ -538,9 +471,7 @@ assert_contains "unrelated fact survives upsert" "$QUERY_PRESERVE_LINE" '[{}]'
 
 # --- Test 40: assume_fact asserts a fact under a named assumption ---
 echo "Test: assume_fact basic assertion"
-ASSUME_BASIC_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":77,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app, prod)\",\"assumption\":\"baseline\"}}}
+ASSUME_BASIC_INPUT="{\"jsonrpc\":\"2.0\",\"id\":77,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app, prod)\",\"assumption\":\"baseline\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":78,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"deployed(app, prod)\"}}}
 "
 RESPONSE=$(send_mcp "$ASSUME_BASIC_INPUT")
@@ -553,9 +484,7 @@ assert_contains "assumed fact is queryable" "$QUERY_LINE" '[{}]'
 
 # --- Test 41: assume_fact is idempotent for same fact and assumption ---
 echo "Test: assume_fact idempotency"
-ASSUME_IDEM_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":79,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc)\",\"assumption\":\"idem_test\"}}}
+ASSUME_IDEM_INPUT="{\"jsonrpc\":\"2.0\",\"id\":79,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc)\",\"assumption\":\"idem_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":80,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc)\",\"assumption\":\"idem_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":81,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"active(svc)\"}}}
 "
@@ -570,9 +499,7 @@ assert_contains "belief status is in after idempotent assume" "$BELIEF_LINE" '\"
 
 # --- Test 42: retract_assumption removes solely-supported fact ---
 echo "Test: retract_assumption removes fact with single support"
-RETRACT_SOLE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":82,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(worker)\",\"assumption\":\"deploy_a1\"}}}
+RETRACT_SOLE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":82,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(worker)\",\"assumption\":\"deploy_a1\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":83,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"deploy_a1\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":84,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"running(worker)\"}}}
 "
@@ -586,9 +513,7 @@ assert_contains "fact is gone after retraction" "$QUERY_AFTER_LINE" '[]'
 
 # --- Test 43: multi-support survival — fact with two assumptions, retract one, fact persists ---
 echo "Test: multi-support fact survives single assumption retraction"
-MULTI_SUPPORT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":85,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"online(db)\",\"assumption\":\"sup_a\"}}}
+MULTI_SUPPORT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":85,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"online(db)\",\"assumption\":\"sup_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":86,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"online(db)\",\"assumption\":\"sup_b\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":87,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"sup_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":88,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"online(db)\"}}}
@@ -602,9 +527,7 @@ assert_not_contains "multi-support fact was fully removed after partial retracti
 
 # --- Test 44: non-TMS isolation — remember_fact survives retract_assumption ---
 echo "Test: remember_fact fact survives assumption retraction"
-NON_TMS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":89,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"safe(constant)\"}}}
+NON_TMS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":89,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"safe(constant)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":90,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"volatile(temp)\",\"assumption\":\"session_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":91,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"session_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":92,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"safe(constant)\"}}}
@@ -618,9 +541,7 @@ assert_contains "non-TMS fact survives assumption retraction" "$QUERY_SAFE_LINE"
 
 # --- Test 45: get_belief_status returns "in" with justification ---
 echo "Test: get_belief_status returns in with justifications"
-BELIEF_IN_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(system)\",\"assumption\":\"init_check\"}}}
+BELIEF_IN_INPUT="{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(system)\",\"assumption\":\"init_check\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":94,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"ready(system)\"}}}
 "
 RESPONSE=$(send_mcp "$BELIEF_IN_INPUT")
@@ -631,9 +552,7 @@ assert_contains "get_belief_status lists justification" "$BELIEF_IN_LINE" 'init_
 
 # --- Test 46: get_belief_status returns "out" for unsupported fact ---
 echo "Test: get_belief_status returns out for unsupported fact"
-BELIEF_OUT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":95,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"absent(ghost)\"}}}
+BELIEF_OUT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":95,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"absent(ghost)\"}}}
 "
 RESPONSE=$(send_mcp "$BELIEF_OUT_INPUT")
 BELIEF_OUT_LINE=$(echo "$RESPONSE" | grep '"id":95')
@@ -643,9 +562,7 @@ assert_contains "get_belief_status returns empty justifications" "$BELIEF_OUT_LI
 
 # --- Test 47: get_justification returns facts for a named assumption ---
 echo "Test: get_justification returns facts supported by assumption"
-GET_JUST_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":96,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"healthy(api)\",\"assumption\":\"probe_a\"}}}
+GET_JUST_INPUT="{\"jsonrpc\":\"2.0\",\"id\":96,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"healthy(api)\",\"assumption\":\"probe_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":97,\"method\":\"tools/call\",\"params\":{\"name\":\"get_justification\",\"arguments\":{\"assumption\":\"probe_a\"}}}
 "
 RESPONSE=$(send_mcp "$GET_JUST_INPUT")
@@ -656,9 +573,7 @@ assert_contains "get_justification lists supported fact" "$GET_JUST_LINE" 'healt
 
 # --- Test 48: list_assumptions returns all active assumption names ---
 echo "Test: list_assumptions returns active assumptions"
-LIST_ASSUME_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":98,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"up(node1)\",\"assumption\":\"alpha\"}}}
+LIST_ASSUME_INPUT="{\"jsonrpc\":\"2.0\",\"id\":98,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"up(node1)\",\"assumption\":\"alpha\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"up(node2)\",\"assumption\":\"beta\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
 "
@@ -696,9 +611,7 @@ _assert_retract_parity() {
     assert_contains "[$transport] running(service) resolves empty after retract" "$query2_line" '[]'
 }
 
-RETRACT_PARITY_MCP="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
+RETRACT_PARITY_MCP="{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(service)\",\"assumption\":\"sess1_a2\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
@@ -727,15 +640,11 @@ _assert_replay_empty() {
     assert_not_contains "[$transport] list_assumptions empty after WAL replay: no sess1_a2" "$list_line" 'sess1_a2'
 }
 
-RETRACT_REPLAY_WRITE_MCP="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
+RETRACT_REPLAY_WRITE_MCP="{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"deployed(app,prod)\",\"assumption\":\"sess1_a1\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":211,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"running(service)\",\"assumption\":\"sess1_a2\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":212,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumptions\",\"arguments\":{\"pattern\":\"sess1_*\"}}}"
 
-RETRACT_REPLAY_READ_MCP="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":213,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
+RETRACT_REPLAY_READ_MCP="{\"jsonrpc\":\"2.0\",\"id\":213,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
 
 echo "Test: retract_assumptions WAL replay round-trip CLI+MCP"
 run_dual_transport_scenario \
@@ -749,9 +658,7 @@ run_dual_transport_scenario \
 # --- Test 51: save_snapshot persists current knowledge base to disk (US3) ---
 echo "Test: save_snapshot creates a named snapshot file"
 PERSIST_DIR_51=$(mktemp -d)
-SAVE_SNAP_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":106,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"persisted(data)\"}}}
+SAVE_SNAP_INPUT="{\"jsonrpc\":\"2.0\",\"id\":106,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"persisted(data)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":107,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"test_snap\"}}}
 "
 RESPONSE=$(send_mcp_persist "$SAVE_SNAP_INPUT" "$PERSIST_DIR_51")
@@ -764,9 +671,7 @@ rm -rf "$PERSIST_DIR_51"
 # --- Test 52: list_snapshots enumerates available snapshots (US5) ---
 echo "Test: list_snapshots returns saved snapshot names"
 PERSIST_DIR_52=$(mktemp -d)
-LIST_SNAP_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":108,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"snap_alpha\"}}}
+LIST_SNAP_INPUT="{\"jsonrpc\":\"2.0\",\"id\":108,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"snap_alpha\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":109,\"method\":\"tools/call\",\"params\":{\"name\":\"list_snapshots\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp_persist "$LIST_SNAP_INPUT" "$PERSIST_DIR_52")
@@ -779,9 +684,7 @@ rm -rf "$PERSIST_DIR_52"
 # --- Test 53: restore_snapshot loads knowledge base from snapshot file (US3) ---
 echo "Test: restore_snapshot restores from named snapshot"
 PERSIST_DIR_53=$(mktemp -d)
-RESTORE_SNAP_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":110,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"before_snap(x)\"}}}
+RESTORE_SNAP_INPUT="{\"jsonrpc\":\"2.0\",\"id\":110,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"before_snap(x)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":111,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"restore_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":112,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"restore_test\"}}}
 "
@@ -795,9 +698,7 @@ rm -rf "$PERSIST_DIR_53"
 # --- Test 54: get_persistence_status reports journal and directory info (US5) ---
 echo "Test: get_persistence_status returns status fields"
 PERSIST_DIR_54=$(mktemp -d)
-STATUS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":113,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"tracked(entry)\"}}}
+STATUS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":113,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"tracked(entry)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":114,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp_persist "$STATUS_INPUT" "$PERSIST_DIR_54")
@@ -810,18 +711,14 @@ rm -rf "$PERSIST_DIR_54"
 # --- Test 55: WAL replay restores knowledge base after server restart (US1, US2) ---
 echo "Test: WAL replays facts on server restart"
 PERSIST_DIR_55=$(mktemp -d)
-WAL_WRITE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":115,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"durable(alpha)\"}}}
+WAL_WRITE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":115,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"durable(alpha)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":116,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"durable(beta)\"}}}
 "
 RESPONSE=$(send_mcp_persist "$WAL_WRITE_INPUT" "$PERSIST_DIR_55")
 WRITE_LINE=$(echo "$RESPONSE" | grep '"id":116')
 assert_contains "WAL write returns success" "$WRITE_LINE" '"isError":false'
 
-WAL_REPLAY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":117,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"durable(alpha)\"}}}
+WAL_REPLAY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":117,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"durable(alpha)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":118,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"durable(beta)\"}}}
 "
 RESPONSE=$(send_mcp_persist "$WAL_REPLAY_INPUT" "$PERSIST_DIR_55")
@@ -834,9 +731,7 @@ rm -rf "$PERSIST_DIR_55"
 # --- Test 56: WAL replay respects clear_context operation (US2) ---
 echo "Test: WAL replay preserves clear_context operation"
 PERSIST_DIR_56=$(mktemp -d)
-CLEAR_WAL_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":119,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"temp_cache(x)\"}}}
+CLEAR_WAL_INPUT="{\"jsonrpc\":\"2.0\",\"id\":119,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"temp_cache(x)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":120,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"temp_cache(_)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":121,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"persistent(y)\"}}}
 "
@@ -844,9 +739,7 @@ RESPONSE=$(send_mcp_persist "$CLEAR_WAL_INPUT" "$PERSIST_DIR_56")
 CLEAR_LINE=$(echo "$RESPONSE" | grep '"id":120')
 assert_contains "clear_context write returns success" "$CLEAR_LINE" '"isError":false'
 
-CLEAR_REPLAY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":122,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"temp_cache(x)\"}}}
+CLEAR_REPLAY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":122,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"temp_cache(x)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":123,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"persistent(y)\"}}}
 "
 RESPONSE=$(send_mcp_persist "$CLEAR_REPLAY_INPUT" "$PERSIST_DIR_56")
@@ -859,9 +752,7 @@ rm -rf "$PERSIST_DIR_56"
 # --- Test 57: Snapshot + subsequent WAL entries both restored on restart (US1, US3) ---
 echo "Test: Snapshot plus post-snapshot WAL entries survive restart"
 PERSIST_DIR_57=$(mktemp -d)
-SNAP_WAL_WRITE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":124,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"pre_snap(one)\"}}}
+SNAP_WAL_WRITE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":124,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"pre_snap(one)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":125,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"pre_snap(two)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":126,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"mid_session\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":127,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"post_snap(three)\"}}}
@@ -872,9 +763,7 @@ POST_LINE=$(echo "$RESPONSE" | grep '"id":127')
 assert_contains "save_snapshot mid-session succeeds" "$SNAP_LINE" '"isError":false'
 assert_contains "post-snapshot fact write succeeds" "$POST_LINE" '"isError":false'
 
-SNAP_WAL_REPLAY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":128,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"pre_snap(one)\"}}}
+SNAP_WAL_REPLAY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":128,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"pre_snap(one)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":129,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"pre_snap(two)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":130,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"post_snap(three)\"}}}
 "
@@ -890,9 +779,7 @@ rm -rf "$PERSIST_DIR_57"
 # --- Test 58: get_persistence_status on fresh server reports zero state (US5) ---
 echo "Test: get_persistence_status reports zero state on fresh server"
 PERSIST_DIR_58=$(mktemp -d)
-FRESH_STATUS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":131,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
+FRESH_STATUS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":131,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp_persist "$FRESH_STATUS_INPUT" "$PERSIST_DIR_58")
 FRESH_LINE=$(echo "$RESPONSE" | grep '"id":131')
@@ -927,13 +814,13 @@ for HELP_INVOCATION in "--help" "-h"; do
 done
 
 # US2: zpm serve routes MCP protocol correctly
-echo "Test: zpm serve processes MCP initialize (US2)"
+echo "Test: zpm serve processes server/discover (US2)"
 SERVE_TMPDIR=$(mktemp -d)
 mkdir -p "$SERVE_TMPDIR/.zpm/data" "$SERVE_TMPDIR/.zpm/kb"
-SERVE_RESPONSE=$(cd "$SERVE_TMPDIR" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+SERVE_RESPONSE=$(cd "$SERVE_TMPDIR" && mcp_frames "$DISCOVER_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 rm -rf "$SERVE_TMPDIR"
 assert_contains "zpm serve returns correct server name" "$SERVE_RESPONSE" '"name":"zpm"'
-assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"protocolVersion":"2025-11-25"'
+assert_contains "zpm serve returns correct protocol version" "$SERVE_RESPONSE" '"supportedVersions":["2026-07-28"]'
 
 # US3: `zpm version` subcommand prints version string and exits 0.
 # Note: the old `--version` / `-v` global flags were dropped by the zig-cli
@@ -984,9 +871,9 @@ echo "Test: zpm serve from subdirectory finds parent .zpm/ (US4)"
 UPWARD_ROOT=$(mktemp -d)
 mkdir -p "$UPWARD_ROOT/.zpm/data" "$UPWARD_ROOT/.zpm/kb"
 mkdir -p "$UPWARD_ROOT/src/subpkg"
-UPWARD_RESPONSE=$(cd "$UPWARD_ROOT/src/subpkg" && printf '%s\n' "$INIT_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+UPWARD_RESPONSE=$(cd "$UPWARD_ROOT/src/subpkg" && mcp_frames "$DISCOVER_REQ" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
 assert_contains "zpm serve from nested subdir returns server name" "$UPWARD_RESPONSE" '"name":"zpm"'
-assert_contains "zpm serve from nested subdir returns protocol version" "$UPWARD_RESPONSE" '"protocolVersion":"2025-11-25"'
+assert_contains "zpm serve from nested subdir returns protocol version" "$UPWARD_RESPONSE" '"supportedVersions":["2026-07-28"]'
 rm -rf "$UPWARD_ROOT"
 
 # --- Test: zpm serve without .zpm/ exits with error (T011/US2) ---
@@ -1001,9 +888,7 @@ rm -rf "$NO_ZPM_DIR"
 # --- Test: snapshot lands in .zpm/kb/, WAL stays in .zpm/data/ (T012/US3) ---
 echo "Test: snapshot/WAL path split - snapshot in kb/, WAL in data/ (US3)"
 SPLIT_DIR=$(mktemp -d)
-SPLIT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path_split(verified)\"}}}
+SPLIT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path_split(verified)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"split_test\"}}}
 "
 send_mcp_persist "$SPLIT_INPUT" "$SPLIT_DIR" > /dev/null
@@ -1031,9 +916,7 @@ echo "Test: .pl file in .zpm/kb/ is auto-loaded on zpm serve startup (US5)"
 AUTOLOAD_DIR=$(mktemp -d)
 mkdir -p "$AUTOLOAD_DIR/.zpm/data" "$AUTOLOAD_DIR/.zpm/kb"
 echo 'autoloaded(hello).' > "$AUTOLOAD_DIR/.zpm/kb/preload.pl"
-AUTOLOAD_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":300,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(hello)\"}}}"
+AUTOLOAD_INPUT="{\"jsonrpc\":\"2.0\",\"id\":300,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(hello)\"}}}"
 AUTOLOAD_RESPONSE=$(send_mcp_persist "$AUTOLOAD_INPUT" "$AUTOLOAD_DIR")
 AUTOLOAD_LINE=$(echo "$AUTOLOAD_RESPONSE" | grep '"id":300')
 assert_contains ".pl auto-load: explain_why is not an error" "$AUTOLOAD_LINE" '"isError":false'
@@ -1046,9 +929,7 @@ NON_PL_DIR=$(mktemp -d)
 mkdir -p "$NON_PL_DIR/.zpm/data" "$NON_PL_DIR/.zpm/kb"
 echo 'this is not prolog' > "$NON_PL_DIR/.zpm/kb/readme.txt"
 echo 'autoloaded(world).' > "$NON_PL_DIR/.zpm/kb/facts.pl"
-NON_PL_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":301,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(world)\"}}}"
+NON_PL_INPUT="{\"jsonrpc\":\"2.0\",\"id\":301,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"autoloaded(world)\"}}}"
 NON_PL_RESPONSE=$(send_mcp_persist "$NON_PL_INPUT" "$NON_PL_DIR")
 NON_PL_LINE=$(echo "$NON_PL_RESPONSE" | grep '"id":301')
 assert_contains "non-.pl ignored: server still starts and responds" "$NON_PL_LINE" '"isError":false'
@@ -1061,9 +942,7 @@ SYNERR_DIR=$(mktemp -d)
 mkdir -p "$SYNERR_DIR/.zpm/data" "$SYNERR_DIR/.zpm/kb"
 echo 'this is not valid prolog !!!' > "$SYNERR_DIR/.zpm/kb/broken.pl"
 echo 'valid_fact(ok).' > "$SYNERR_DIR/.zpm/kb/valid.pl"
-SYNERR_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"valid_fact(ok)\"}}}"
+SYNERR_INPUT="{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"valid_fact(ok)\"}}}"
 SYNERR_RESPONSE=$(send_mcp_persist "$SYNERR_INPUT" "$SYNERR_DIR")
 SYNERR_LINE=$(echo "$SYNERR_RESPONSE" | grep '"id":302')
 assert_contains "syntax-error .pl skipped: server still responds" "$SYNERR_LINE" '"isError":false'
@@ -1075,14 +954,13 @@ echo "Test: zpm serve with read-only .zpm/data/ runs in degraded mode (US2)"
 DEGRADED_DIR=$(mktemp -d)
 mkdir -p "$DEGRADED_DIR/.zpm/data" "$DEGRADED_DIR/.zpm/kb"
 chmod -w "$DEGRADED_DIR/.zpm/data"
-DEGRADED_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+DEGRADED_INPUT="${DISCOVER_REQ}
 {\"jsonrpc\":\"2.0\",\"id\":400,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}
 "
 DEGRADED_RESPONSE=$(send_mcp_persist "$DEGRADED_INPUT" "$DEGRADED_DIR")
-DEGRADED_INIT_LINE=$(echo "$DEGRADED_RESPONSE" | grep '"id":1')
+DEGRADED_DISCOVER_LINE=$(echo "$DEGRADED_RESPONSE" | grep '"id":1')
 DEGRADED_STATUS_LINE=$(echo "$DEGRADED_RESPONSE" | grep '"id":400')
-assert_contains "degraded mode: MCP handshake succeeds" "$DEGRADED_INIT_LINE" '"name":"zpm"'
+assert_contains "degraded mode: MCP discovery succeeds" "$DEGRADED_DISCOVER_LINE" '"name":"zpm"'
 assert_contains "degraded mode: get_persistence_status returns success" "$DEGRADED_STATUS_LINE" '"isError":false'
 assert_contains "degraded mode: persistence status is degraded" "$DEGRADED_STATUS_LINE" 'degraded'
 chmod +w "$DEGRADED_DIR/.zpm/data"
@@ -1092,13 +970,12 @@ rm -rf "$DEGRADED_DIR"
 echo "Test: missing .zpm/ subdirectories are auto-created on serve startup (US3)"
 SUBDIRS_DIR=$(mktemp -d)
 mkdir -p "$SUBDIRS_DIR/.zpm"
-SUBDIRS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+SUBDIRS_INPUT="${DISCOVER_REQ}
 {\"jsonrpc\":\"2.0\",\"id\":500,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
-SUBDIRS_RESPONSE=$(cd "$SUBDIRS_DIR" && printf '%s\n' "$SUBDIRS_INPUT" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
-SUBDIRS_INIT_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":1')
+SUBDIRS_RESPONSE=$(cd "$SUBDIRS_DIR" && mcp_frames "$SUBDIRS_INPUT" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null || true)
+SUBDIRS_DISCOVER_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":1')
 SUBDIRS_STATUS_LINE=$(echo "$SUBDIRS_RESPONSE" | grep '"id":500')
-assert_contains "auto-create subdirs: MCP handshake succeeds" "$SUBDIRS_INIT_LINE" '"name":"zpm"'
+assert_contains "auto-create subdirs: MCP discovery succeeds" "$SUBDIRS_DISCOVER_LINE" '"name":"zpm"'
 assert_contains "auto-create subdirs: get_persistence_status returns success" "$SUBDIRS_STATUS_LINE" '"isError":false'
 assert_true "auto-create subdirs: .zpm/data/ was created" test -d "$SUBDIRS_DIR/.zpm/data"
 assert_true "auto-create subdirs: .zpm/kb/ was created" test -d "$SUBDIRS_DIR/.zpm/kb"
@@ -1435,9 +1312,7 @@ rm -rf "$FMT_DIR"
 # Feature: F019
 # --- Test 59: full assume→query→retract→query=[] + list_assumptions cycle (US1 #1) ---
 echo "Test: retract_assumption removes fact and disappears from list_assumptions (US1)"
-RETRACT_CYCLE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":132,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"feature(f019, fix, planned)\",\"assumption\":\"spec_draft\"}}}
+RETRACT_CYCLE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":132,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"feature(f019, fix, planned)\",\"assumption\":\"spec_draft\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":133,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(f019, _, _)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":134,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"spec_draft\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":135,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(f019, _, _)\"}}}
@@ -1458,9 +1333,7 @@ assert_not_contains "spec_draft absent from list_assumptions" "$LIST_LINE" 'spec
 
 # --- Test 60: multi-fact same-assumption removal with accurate count (US1 #3) ---
 echo "Test: retract_assumption removes all facts under assumption and reports correct count (US1)"
-RETRACT_MULTI_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":137,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"service(api, running)\",\"assumption\":\"deploy_batch\"}}}
+RETRACT_MULTI_INPUT="{\"jsonrpc\":\"2.0\",\"id\":137,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"service(api, running)\",\"assumption\":\"deploy_batch\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":138,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"service(db, running)\",\"assumption\":\"deploy_batch\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":139,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"deploy_batch\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":140,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"service(_, running)\"}}}
@@ -1480,9 +1353,7 @@ assert_contains "all facts gone after multi-fact retraction" "$QUERY_MULTI_AFTER
 # --- Test 61: restore_snapshot makes feature/3 facts visible in get_knowledge_schema (US2 #1) ---
 echo "Test: restore_snapshot then get_knowledge_schema reports feature/3 count=4 (US2)"
 PERSIST_DIR_61=$(mktemp -d)
-SNAP_WRITE_61="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":141,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(auth, login, done)\"}}}
+SNAP_WRITE_61="{\"jsonrpc\":\"2.0\",\"id\":141,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(auth, login, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":142,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(api, rest, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":143,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(db, postgres, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":144,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature(cache, redis, planned)\"}}}
@@ -1492,9 +1363,7 @@ RESPONSE=$(send_mcp_persist "$SNAP_WRITE_61" "$PERSIST_DIR_61")
 SNAP_61_LINE=$(echo "$RESPONSE" | grep '"id":145')
 assert_contains "save snapshot f019_us2 succeeds" "$SNAP_61_LINE" '"isError":false'
 
-SNAP_READ_61="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":146,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
+SNAP_READ_61="{\"jsonrpc\":\"2.0\",\"id\":146,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":147,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}
 "
 RESPONSE=$(send_mcp_persist "$SNAP_READ_61" "$PERSIST_DIR_61")
@@ -1507,9 +1376,7 @@ assert_contains "get_knowledge_schema after restore reports count 4" "$SCHEMA_61
 
 # --- Test 62: restore_snapshot then query_logic returns 4 bindings (US2 #2) ---
 echo "Test: restore_snapshot then query_logic feature/3 returns 4 bindings (US2)"
-SNAP_QUERY_62="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":148,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
+SNAP_QUERY_62="{\"jsonrpc\":\"2.0\",\"id\":148,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_us2\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":149,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature(F, _, _)\"}}}
 "
 RESPONSE=$(send_mcp_persist "$SNAP_QUERY_62" "$PERSIST_DIR_61")
@@ -1527,9 +1394,7 @@ rm -rf "$PERSIST_DIR_61"
 # --- Test 63: snapshot round-trip preserves both remember_fact and assume_fact entries (US2 #3) ---
 echo "Test: restore_snapshot round-trip preserves dynamic facts and list_assumptions (US2)"
 PERSIST_DIR_63=$(mktemp -d)
-MIXED_WRITE_63="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(zpm, active)\"}}}
+MIXED_WRITE_63="{\"jsonrpc\":\"2.0\",\"id\":150,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"project(zpm, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":151,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"risk(latency, low)\",\"assumption\":\"perf_guess\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":152,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"f019_mixed\"}}}
 "
@@ -1537,9 +1402,7 @@ RESPONSE=$(send_mcp_persist "$MIXED_WRITE_63" "$PERSIST_DIR_63")
 MIXED_SNAP_LINE=$(echo "$RESPONSE" | grep '"id":152')
 assert_contains "save mixed snapshot f019_mixed succeeds" "$MIXED_SNAP_LINE" '"isError":false'
 
-MIXED_READ_63="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":153,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_mixed\"}}}
+MIXED_READ_63="{\"jsonrpc\":\"2.0\",\"id\":153,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"f019_mixed\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":154,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"project(zpm, active)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":155,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}
 "
@@ -1554,9 +1417,7 @@ rm -rf "$PERSIST_DIR_63"
 
 # --- Test 64: retract_assumption with unknown name returns structured error (spec edge case / FR-006 / NFR-003) ---
 echo "Test: retract_assumption with unknown assumption returns isError=true and does not silently succeed (US1)"
-UNKNOWN_RETRACT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":156,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"never_assumed_name\"}}}
+UNKNOWN_RETRACT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":156,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"never_assumed_name\"}}}
 "
 RESPONSE=$(send_mcp "$UNKNOWN_RETRACT_INPUT")
 UNKNOWN_RETRACT_LINE=$(echo "$RESPONSE" | grep '"id":156')
@@ -1569,9 +1430,7 @@ echo "Test: run_dual_transport_scenario - echo via both transports"
 _t65_assert() {
     assert_contains "dual-transport echo contains message text" "$1" 'hello dual'
 }
-DUAL_ECHO_MCP_65="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"hello dual\"}}}"
+DUAL_ECHO_MCP_65="{\"jsonrpc\":\"2.0\",\"id\":200,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"message\":\"hello dual\"}}}"
 T65_PRE_PASS=$PASS
 run_dual_transport_scenario "echo via dual transport" \
     "echo --message 'hello dual'" \
@@ -1590,9 +1449,7 @@ echo "Test: run_dual_transport_scenario - remember_fact success via both transpo
 _t66_assert() {
     assert_contains "dual-transport remember_fact returns success" "$1" 'sensor_active'
 }
-DUAL_REMEMBER_MCP_66="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"sensor_active(t66)\"}}}
+DUAL_REMEMBER_MCP_66="{\"jsonrpc\":\"2.0\",\"id\":201,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"sensor_active(t66)\"}}}
 "
 T66_PRE_PASS=$PASS
 run_dual_transport_scenario "remember_fact via dual transport" \
@@ -1612,9 +1469,7 @@ echo "Test: run_dual_transport_scenario - query_logic via both transports"
 _t67_assert() {
     assert_contains "dual-transport query_logic returns binding" "$1" 't67_val'
 }
-DUAL_QUERY_MCP_67="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"probe(t67_val)\"}}}
+DUAL_QUERY_MCP_67="{\"jsonrpc\":\"2.0\",\"id\":202,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"probe(t67_val)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"probe(X)\"}}}"
 run_dual_transport_scenario "query_logic via dual transport" \
     "remember-fact --fact probe(t67_val) && query-logic --goal probe(X)" \
@@ -1626,9 +1481,7 @@ echo "Test: run_dual_transport_scenario - upsert_fact via both transports"
 _t68_assert() {
     assert_contains "dual-transport upsert_fact confirms operation" "$1" 'svc_t68'
 }
-DUAL_UPSERT_MCP_68="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"status(svc_t68, up)\"}}}
+DUAL_UPSERT_MCP_68="{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"status(svc_t68, up)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":205,\"method\":\"tools/call\",\"params\":{\"name\":\"upsert_fact\",\"arguments\":{\"fact\":\"status(svc_t68, degraded)\"}}}"
 run_dual_transport_scenario "upsert_fact via dual transport" \
     "upsert-fact --fact status(svc_t68,up) && upsert-fact --fact status(svc_t68,degraded)" \
@@ -1640,9 +1493,7 @@ echo "Test: run_dual_transport_scenario - assume_fact via both transports"
 _t69_assert() {
     assert_contains "dual-transport assume_fact returns success" "$1" 'hyp_t69'
 }
-DUAL_ASSUME_MCP_69="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":206,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(hyp_t69)\",\"assumption\":\"t69_guess\"}}}"
+DUAL_ASSUME_MCP_69="{\"jsonrpc\":\"2.0\",\"id\":206,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(hyp_t69)\",\"assumption\":\"t69_guess\"}}}"
 run_dual_transport_scenario "assume_fact via dual transport" \
     "assume-fact ready(hyp_t69) --assumption t69_guess" \
     "$DUAL_ASSUME_MCP_69" \
@@ -1665,9 +1516,7 @@ _t70_assert() {
     fi
     assert_not_contains "[$transport] t70_guess absent from list_assumptions" "$list_line" 't70_guess'
 }
-DUAL_RETRACT_SINGLE_MCP_70="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":207,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc_t70)\",\"assumption\":\"t70_guess\"}}}
+DUAL_RETRACT_SINGLE_MCP_70="{\"jsonrpc\":\"2.0\",\"id\":207,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(svc_t70)\",\"assumption\":\"t70_guess\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":208,\"method\":\"tools/call\",\"params\":{\"name\":\"retract_assumption\",\"arguments\":{\"assumption\":\"t70_guess\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":209,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
 run_dual_transport_scenario "retract_assumption singular via dual transport" \
@@ -1680,9 +1529,7 @@ echo "Test: run_dual_transport_scenario - save_snapshot and list_snapshots via b
 _t71_assert() {
     assert_contains "dual-transport save_snapshot confirms name" "$1" 'snap_t71'
 }
-DUAL_SNAP_MCP_71="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"stored(t71)\"}}}
+DUAL_SNAP_MCP_71="{\"jsonrpc\":\"2.0\",\"id\":210,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"stored(t71)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":211,\"method\":\"tools/call\",\"params\":{\"name\":\"save_snapshot\",\"arguments\":{\"name\":\"snap_t71\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":212,\"method\":\"tools/call\",\"params\":{\"name\":\"list_snapshots\",\"arguments\":{}}}
 {\"jsonrpc\":\"2.0\",\"id\":213,\"method\":\"tools/call\",\"params\":{\"name\":\"restore_snapshot\",\"arguments\":{\"name\":\"snap_t71\"}}}"
@@ -1698,9 +1545,7 @@ echo "Test: run_dual_transport_scenario - define_rule via both transports"
 _t72_assert() {
     assert_contains "dual-transport define_rule derived fact is queryable" "$1" 't72_socrates'
 }
-DUAL_DEFINE_RULE_MCP_72="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"human(t72_socrates)\"}}}
+DUAL_DEFINE_RULE_MCP_72="{\"jsonrpc\":\"2.0\",\"id\":600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"human(t72_socrates)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":601,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"mortal(X)\",\"body\":\"human(X)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":602,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"mortal(t72_socrates)\"}}}"
 run_dual_transport_scenario "define_rule via dual transport" \
@@ -1713,9 +1558,7 @@ echo "Test: run_dual_transport_scenario - forget_fact via both transports"
 _t73_assert() {
     assert_contains "dual-transport forget_fact: query returns empty after retraction" "$1" '[]'
 }
-DUAL_FORGET_MCP_73="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(t73_user, admin)\"}}}
+DUAL_FORGET_MCP_73="{\"jsonrpc\":\"2.0\",\"id\":610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"role(t73_user, admin)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":611,\"method\":\"tools/call\",\"params\":{\"name\":\"forget_fact\",\"arguments\":{\"fact\":\"role(t73_user, admin)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":612,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"role(t73_user, admin)\"}}}"
 run_dual_transport_scenario "forget_fact via dual transport" \
@@ -1728,9 +1571,7 @@ echo "Test: run_dual_transport_scenario - clear_context via both transports"
 _t74_assert() {
     assert_contains "dual-transport clear_context: cleared facts return empty" "$1" '[]'
 }
-DUAL_CLEAR_MCP_74="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"cache(t74_key, val1)\"}}}
+DUAL_CLEAR_MCP_74="{\"jsonrpc\":\"2.0\",\"id\":620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"cache(t74_key, val1)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":621,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"cache(t74_key, val2)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":622,\"method\":\"tools/call\",\"params\":{\"name\":\"clear_context\",\"arguments\":{\"category\":\"cache(t74_key, _)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":623,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"cache(t74_key, _)\"}}}"
@@ -1744,9 +1585,7 @@ echo "Test: run_dual_transport_scenario - update_fact via both transports"
 _t75_assert() {
     assert_contains "dual-transport update_fact: new value is present" "$1" 't75_v2'
 }
-DUAL_UPDATE_MCP_75="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":630,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(t75_key, t75_v1)\"}}}
+DUAL_UPDATE_MCP_75="{\"jsonrpc\":\"2.0\",\"id\":630,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"config(t75_key, t75_v1)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":631,\"method\":\"tools/call\",\"params\":{\"name\":\"update_fact\",\"arguments\":{\"old_fact\":\"config(t75_key, t75_v1)\",\"new_fact\":\"config(t75_key, t75_v2)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":632,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"config(t75_key, X)\"}}}"
 run_dual_transport_scenario "update_fact via dual transport" \
@@ -1759,9 +1598,7 @@ echo "Test: run_dual_transport_scenario - trace_dependency via both transports"
 _t76_assert() {
     assert_contains "dual-transport trace_dependency returns reachable node" "$1" 't76_b'
 }
-DUAL_TRACE_MCP_76="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":640,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(t76_b, t76_a)\"}}}
+DUAL_TRACE_MCP_76="{\"jsonrpc\":\"2.0\",\"id\":640,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"path(t76_b, t76_a)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":641,\"method\":\"tools/call\",\"params\":{\"name\":\"trace_dependency\",\"arguments\":{\"start_node\":\"t76_a\"}}}"
 run_dual_transport_scenario "trace_dependency via dual transport" \
     "remember-fact --fact path(t76_b,t76_a) && trace-dependency --start-node t76_a" \
@@ -1773,9 +1610,7 @@ echo "Test: run_dual_transport_scenario - verify_consistency via both transports
 _t77_assert() {
     assert_contains "dual-transport verify_consistency: violations list present" "$1" 'violations'
 }
-DUAL_VERIFY_MCP_77="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":650,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
+DUAL_VERIFY_MCP_77="{\"jsonrpc\":\"2.0\",\"id\":650,\"method\":\"tools/call\",\"params\":{\"name\":\"verify_consistency\",\"arguments\":{}}}"
 run_dual_transport_scenario "verify_consistency via dual transport" \
     "verify-consistency" \
     "$DUAL_VERIFY_MCP_77" \
@@ -1786,9 +1621,7 @@ echo "Test: run_dual_transport_scenario - explain_why via both transports"
 _t78_assert() {
     assert_contains "dual-transport explain_why returns proven status" "$1" 'proven'
 }
-DUAL_EXPLAIN_MCP_78="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":660,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"status(t78_svc, up)\"}}}
+DUAL_EXPLAIN_MCP_78="{\"jsonrpc\":\"2.0\",\"id\":660,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"status(t78_svc, up)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":661,\"method\":\"tools/call\",\"params\":{\"name\":\"explain_why\",\"arguments\":{\"fact\":\"status(t78_svc, up)\"}}}"
 run_dual_transport_scenario "explain_why via dual transport" \
     "remember-fact --fact status(t78_svc,up) && explain-why --fact status(t78_svc,up)" \
@@ -1800,9 +1633,7 @@ echo "Test: run_dual_transport_scenario - get_knowledge_schema via both transpor
 _t79_assert() {
     assert_contains "dual-transport get_knowledge_schema lists t79_pred predicate" "$1" 't79_pred'
 }
-DUAL_SCHEMA_MCP_79="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":670,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"t79_pred(val)\"}}}
+DUAL_SCHEMA_MCP_79="{\"jsonrpc\":\"2.0\",\"id\":670,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"t79_pred(val)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":671,\"method\":\"tools/call\",\"params\":{\"name\":\"get_knowledge_schema\",\"arguments\":{}}}"
 run_dual_transport_scenario "get_knowledge_schema via dual transport" \
     "remember-fact --fact t79_pred(val) && get-knowledge-schema" \
@@ -1814,9 +1645,7 @@ echo "Test: run_dual_transport_scenario - get_belief_status via both transports"
 _t80_assert() {
     assert_contains "dual-transport get_belief_status returns in for assumed fact" "$1" 'in'
 }
-DUAL_BELIEF_MCP_80="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":680,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t80_svc)\",\"assumption\":\"t80_guess\"}}}
+DUAL_BELIEF_MCP_80="{\"jsonrpc\":\"2.0\",\"id\":680,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t80_svc)\",\"assumption\":\"t80_guess\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":681,\"method\":\"tools/call\",\"params\":{\"name\":\"get_belief_status\",\"arguments\":{\"fact\":\"ready(t80_svc)\"}}}"
 run_dual_transport_scenario "get_belief_status via dual transport" \
     "assume-fact ready(t80_svc) --assumption t80_guess && get-belief-status --fact ready(t80_svc)" \
@@ -1828,9 +1657,7 @@ echo "Test: run_dual_transport_scenario - get_justification via both transports"
 _t81_assert() {
     assert_contains "dual-transport get_justification returns supported fact" "$1" 'ready'
 }
-DUAL_JUST_MCP_81="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":690,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t81_svc)\",\"assumption\":\"t81_probe\"}}}
+DUAL_JUST_MCP_81="{\"jsonrpc\":\"2.0\",\"id\":690,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"ready(t81_svc)\",\"assumption\":\"t81_probe\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":691,\"method\":\"tools/call\",\"params\":{\"name\":\"get_justification\",\"arguments\":{\"assumption\":\"t81_probe\"}}}"
 run_dual_transport_scenario "get_justification via dual transport" \
     "assume-fact ready(t81_svc) --assumption t81_probe && get-justification --assumption t81_probe" \
@@ -1842,9 +1669,7 @@ echo "Test: run_dual_transport_scenario - list_assumptions via both transports"
 _t82_assert() {
     assert_contains "dual-transport list_assumptions includes assumption name" "$1" 't82_hyp'
 }
-DUAL_LIST_ASSUME_MCP_82="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":700,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(t82_node)\",\"assumption\":\"t82_hyp\"}}}
+DUAL_LIST_ASSUME_MCP_82="{\"jsonrpc\":\"2.0\",\"id\":700,\"method\":\"tools/call\",\"params\":{\"name\":\"assume_fact\",\"arguments\":{\"fact\":\"active(t82_node)\",\"assumption\":\"t82_hyp\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":701,\"method\":\"tools/call\",\"params\":{\"name\":\"list_assumptions\",\"arguments\":{}}}"
 run_dual_transport_scenario "list_assumptions via dual transport" \
     "assume-fact active(t82_node) --assumption t82_hyp && list-assumptions" \
@@ -1856,9 +1681,7 @@ echo "Test: run_dual_transport_scenario - get_persistence_status via both transp
 _t83_assert() {
     assert_contains "dual-transport get_persistence_status reports active mode" "$1" 'active'
 }
-DUAL_PERSIST_MCP_83="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":710,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
+DUAL_PERSIST_MCP_83="{\"jsonrpc\":\"2.0\",\"id\":710,\"method\":\"tools/call\",\"params\":{\"name\":\"get_persistence_status\",\"arguments\":{}}}"
 run_dual_transport_scenario "get_persistence_status via dual transport" \
     "get-persistence-status" \
     "$DUAL_PERSIST_MCP_83" \
@@ -1867,9 +1690,7 @@ run_dual_transport_scenario "get_persistence_status via dual transport" \
 # Feature: F021
 # --- Test: tools/list includes memory management tools ---
 echo "Test: tools/list includes memory management tools (F021)"
-TOOLSLIST_F021="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1000,\"method\":\"tools/list\",\"params\":{}}"
+TOOLSLIST_F021="{\"jsonrpc\":\"2.0\",\"id\":1000,\"method\":\"tools/list\",\"params\":{}}"
 RESPONSE=$(send_mcp "$TOOLSLIST_F021")
 TOOLS_MEM_LINE=$(echo "$RESPONSE" | grep '"id":1000')
 for TOOL_NAME in create_memory mount_memory unmount_memory list_memories; do
@@ -1879,9 +1700,7 @@ done
 # --- Test: MCP memory lifecycle with WAL round-trip (F021/US1) ---
 echo "Test: MCP memory lifecycle with WAL round-trip (F021/US1)"
 LIFECYCLE_DIR=$(mktemp -d)
-LIFECYCLE_WRITE="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1001,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
+LIFECYCLE_WRITE="{\"jsonrpc\":\"2.0\",\"id\":1001,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1002,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1003,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"seg_item(wal_entry)\",\"memory\":\"test_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1004,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"test_seg\"}}}
@@ -1898,9 +1717,7 @@ assert_contains "lifecycle: remember_fact into test_seg returns success" "$LIFEC
 assert_contains "lifecycle: query_logic from test_seg returns wal_entry" "$LIFECYCLE_QUERY_LINE" 'wal_entry'
 assert_contains "lifecycle: unmount_memory test_seg returns success" "$LIFECYCLE_UNMOUNT_LINE" '"isError":false'
 
-LIFECYCLE_READ="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1006,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
+LIFECYCLE_READ="{\"jsonrpc\":\"2.0\",\"id\":1006,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"test_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1007,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"test_seg\"}}}"
 RESPONSE=$(send_mcp_persist "$LIFECYCLE_READ" "$LIFECYCLE_DIR")
 LIFECYCLE_REMOUNT_LINE=$(echo "$RESPONSE" | grep '"id":1006')
@@ -1911,9 +1728,7 @@ rm -rf "$LIFECYCLE_DIR"
 
 # --- Test: MCP memory isolation between segments (F021/US2) ---
 echo "Test: MCP memory isolation between segments (F021/US2)"
-ISOLATION_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1010,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"memory_a\"}}}
+ISOLATION_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1010,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"memory_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1011,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"memory_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1012,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"isolated_item(in_a)\",\"memory\":\"memory_a\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1013,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"isolated_item(X)\",\"memory\":\"memory_a\"}}}
@@ -1926,9 +1741,7 @@ assert_not_contains "isolation: query from default does not find in_a" "$ISO_DEF
 
 # --- Test: MCP read-only mount rejects mutations (F021/US3) ---
 echo "Test: MCP read-only mount rejects mutations (F021/US3)"
-READONLY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1020,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_seg\"}}}
+READONLY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1020,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1021,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"ro_seg\",\"mode\":\"ro\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1022,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"forbidden(write)\",\"memory\":\"ro_seg\"}}}"
 RESPONSE=$(send_mcp "$READONLY_INPUT")
@@ -1939,9 +1752,7 @@ assert_contains "read-only: remember_fact into ro segment returns isError true" 
 
 # --- Test: MCP backward compat — no memory param uses default (F021/US4) ---
 echo "Test: MCP backward compat — remember_fact and query_logic without memory param (F021/US4)"
-COMPAT_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1030,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"compat_item(present)\"}}}
+COMPAT_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1030,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"compat_item(present)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1031,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"compat_item(X)\"}}}"
 RESPONSE=$(send_mcp "$COMPAT_INPUT")
 COMPAT_ASSERT_LINE=$(echo "$RESPONSE" | grep '"id":1030')
@@ -1951,9 +1762,7 @@ assert_contains "backward compat: query_logic without memory param finds compat_
 
 # --- Test: MCP create_memory rejects invalid name (F021/US5) ---
 echo "Test: MCP create_memory with invalid name returns error (F021/US5)"
-INVALID_NAME_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1040,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"my-memory\"}}}"
+INVALID_NAME_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1040,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"my-memory\"}}}"
 RESPONSE=$(send_mcp "$INVALID_NAME_INPUT")
 INVALID_NAME_LINE=$(echo "$RESPONSE" | grep '"id":1040')
 assert_contains "create_memory with hyphenated name returns isError true" "$INVALID_NAME_LINE" '"isError":true'
@@ -1961,9 +1770,7 @@ assert_contains "create_memory with hyphenated name returns isError true" "$INVA
 # --- Test: MCP list_memories returns JSON array with default and mounted memories (F021/US6) ---
 echo "Test: MCP list_memories returns default and mounted memories (F021/US6)"
 LIST_MEM_DIR=$(mktemp -d)
-LIST_MEM_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1050,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"listed_seg\"}}}
+LIST_MEM_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1050,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"listed_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1051,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"listed_seg\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1052,\"method\":\"tools/call\",\"params\":{\"name\":\"list_memories\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp_persist "$LIST_MEM_INPUT" "$LIST_MEM_DIR")
@@ -1975,9 +1782,7 @@ rm -rf "$LIST_MEM_DIR"
 
 # --- Test: MCP cross-memory query with module qualification (F021/US7) ---
 echo "Test: MCP cross-memory query with module qualification (F021/US7)"
-CROSS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1060,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"feature_auth\"}}}
+CROSS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1060,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"feature_auth\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1061,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"feature_auth\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1062,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(login, done)\",\"memory\":\"feature_auth\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":1063,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"feature_auth:task_status(X, done)\"}}}"
@@ -2016,10 +1821,9 @@ echo "Test: mounted static and runtime-asserted predicates are discoverable with
         'default_static_fact(sky).' \
         > "$discovery_dir/.zpm/kb/knowledge.pl"
 
-    local discovery_init discovery_input discovery_response
-    discovery_init='{"jsonrpc":"2.0","id":2700,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mounted-predicate-discovery-test","version":"0.1.0"}}}'
-    discovery_input="${discovery_init}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+    local discover_req discovery_input discovery_response
+    discover_req='{"jsonrpc":"2.0","id":2700,"method":"server/discover","params":{}}'
+    discovery_input="${discover_req}
 {\"jsonrpc\":\"2.0\",\"id\":2701,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"discovery_writable\",\"mode\":\"rw\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2702,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"rw_runtime_fact(river)\",\"memory\":\"discovery_writable\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2703,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"rw_static_fact(X)\",\"memory\":\"discovery_writable\"}}}
@@ -2104,17 +1908,13 @@ echo "Test: mounted static and runtime-asserted predicates are discoverable with
 
 run_mounted_predicate_discovery_scenario
 
-DUAL_MEM_WRITE="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":900,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
+DUAL_MEM_WRITE="{\"jsonrpc\":\"2.0\",\"id\":900,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":901,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":902,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"seg_item(seg_item_t84)\",\"memory\":\"seg_t84\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":903,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"seg_t84\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":904,\"method\":\"tools/call\",\"params\":{\"name\":\"unmount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}"
 
-DUAL_MEM_READ="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":910,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
+DUAL_MEM_READ="{\"jsonrpc\":\"2.0\",\"id\":910,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"seg_t84\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":911,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"seg_item(X)\",\"memory\":\"seg_t84\"}}}"
 
 run_dual_transport_scenario \
@@ -2130,9 +1930,7 @@ run_dual_transport_scenario \
 echo "Test: mount_memory via MCP visible to subsequent CLI invocation (F022/US4)"
 F022_COHERE_DIR=$(mktemp -d)
 
-F022_COHERE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":1999,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"from_mcp\"}}}
+F022_COHERE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":1999,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"from_mcp\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2000,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"from_mcp\",\"mode\":\"ro\"}}}"
 F022_COHERE_MCP=$(send_mcp_persist "$F022_COHERE_INPUT" "$F022_COHERE_DIR")
 F022_COHERE_MCP_LINE=$(echo "$F022_COHERE_MCP" | grep '"id":2000')
@@ -2148,9 +1946,7 @@ rm -rf "$F022_COHERE_DIR"
 
 # --- Test: get_kb_overview on empty KB returns empty predicates (F022) ---
 echo "Test: Empty KB get_kb_overview"
-OVERVIEW_EMPTY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2100,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
+OVERVIEW_EMPTY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2100,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$OVERVIEW_EMPTY_INPUT")
 OVERVIEW_EMPTY_LINE=$(echo "$RESPONSE" | grep '"id":2100')
 
@@ -2161,9 +1957,7 @@ assert_contains "empty KB overview has mounts field" "$OVERVIEW_EMPTY_LINE" '\"m
 
 # --- Test: get_kb_overview on populated KB returns predicate metadata (F022) ---
 echo "Test: Populated KB get_kb_overview"
-OVERVIEW_POPULATED_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(tom,bob)\"}}}
+OVERVIEW_POPULATED_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2200,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(tom,bob)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2201,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$OVERVIEW_POPULATED_INPUT")
 OVERVIEW_POPULATED_LINE=$(echo "$RESPONSE" | grep '"id":2201')
@@ -2176,9 +1970,7 @@ assert_contains "populated KB overview includes sample parent(tom,bob)" "$OVERVI
 
 # --- Test: get_kb_overview with sample_size:0 suppresses samples (F022) ---
 echo "Test: get_kb_overview sample_size:0"
-OVERVIEW_S0_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2300,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alpha,beta)\"}}}
+OVERVIEW_S0_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2300,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(alpha,beta)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2301,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(gamma,delta)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2302,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{\"sample_size\":0}}}"
 RESPONSE=$(send_mcp "$OVERVIEW_S0_INPUT")
@@ -2190,9 +1982,7 @@ assert_contains "sample_size:0 overview has count 2" "$OVERVIEW_S0_LINE" '\"coun
 
 # --- Test: get_kb_overview with sample_size:5 and rule returns kind rule or both (F022) ---
 echo "Test: get_kb_overview sample_size:5 with rule"
-OVERVIEW_RULE_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2400,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(a,b)\"}}}
+OVERVIEW_RULE_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2400,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(a,b)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2401,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"parent(b,c)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2402,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"ancestor(X,Y)\",\"body\":\"parent(X,Y)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2403,\"method\":\"tools/call\",\"params\":{\"name\":\"get_kb_overview\",\"arguments\":{\"sample_size\":5}}}"
@@ -2208,9 +1998,7 @@ assert_true "sample_size:5 parent samples count <= 5" test "${PARENT_SAMPLE_COUN
 
 # --- Test: find_predicate_references discovers rule body references (F024) ---
 echo "Test: find_predicate_references with rule body reference"
-FIND_REF_SEED_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2500,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f016, in_progress)\"}}}
+FIND_REF_SEED_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2500,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f016, in_progress)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2501,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"active_work(X)\",\"body\":\"task_status(X, in_progress)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2502,\"method\":\"tools/call\",\"params\":{\"name\":\"find_predicate_references\",\"arguments\":{\"functor\":\"task_status\",\"arity\":2}}}"
 RESPONSE=$(send_mcp "$FIND_REF_SEED_INPUT")
@@ -2222,9 +2010,7 @@ assert_contains "find_predicate_references response contains task_status in body
 
 # --- Test: find_predicate_references missing required functor argument returns error (F024) ---
 echo "Test: find_predicate_references missing functor argument error"
-FIND_REF_MISSING_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2503,\"method\":\"tools/call\",\"params\":{\"name\":\"find_predicate_references\",\"arguments\":{}}}"
+FIND_REF_MISSING_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2503,\"method\":\"tools/call\",\"params\":{\"name\":\"find_predicate_references\",\"arguments\":{}}}"
 RESPONSE=$(send_mcp "$FIND_REF_MISSING_INPUT")
 FIND_REF_MISSING_LINE=$(echo "$RESPONSE" | grep '"id":2503')
 
@@ -2234,9 +2020,7 @@ assert_contains "find_predicate_references missing functor returns isError true"
 
 # --- Test: rename_predicate single-memory happy path (F025/US1) ---
 echo "Test: rename_predicate single-memory happy path"
-RENAME_HAPPY_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f001, done)\"}}}
+RENAME_HAPPY_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2600,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f001, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2601,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f002, pending)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2602,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"is_resolved(F)\",\"body\":\"task_status(F, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2603,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2}}}
@@ -2255,9 +2039,7 @@ assert_contains "after rename, task_status query returns 0 results" "$QUERY_TASK
 
 # --- Test: rename_predicate dry_run preview (F025/US1) ---
 echo "Test: rename_predicate dry_run preview"
-RENAME_DRYRUN_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f003, done)\"}}}
+RENAME_DRYRUN_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2610,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f003, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2611,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f004, pending)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2612,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"is_resolved(F)\",\"body\":\"task_status(F, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2613,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2,\"dry_run\":true}}}
@@ -2278,9 +2060,7 @@ assert_contains "after dry_run, task_status still has pending result" "$QUERY_DR
 
 # --- Test: rename_predicate collision rejection (F025/US2) ---
 echo "Test: rename_predicate collision rejection"
-RENAME_COLLISION_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f005, done)\"}}}
+RENAME_COLLISION_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2620,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(f005, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2621,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"feature_status(f006, pending)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2622,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2}}}"
 RESPONSE=$(send_mcp "$RENAME_COLLISION_INPUT")
@@ -2291,9 +2071,7 @@ assert_contains "collision error message mentions collision" "$RENAME_COLLISION_
 
 # --- Test: rename_predicate ISO operator rejection (F025/US3) ---
 echo "Test: rename_predicate ISO operator rejection"
-RENAME_ISO_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2630,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"=\",\"new_functor\":\"renamed_eq\",\"arity\":2}}}"
+RENAME_ISO_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2630,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"=\",\"new_functor\":\"renamed_eq\",\"arity\":2}}}"
 RESPONSE=$(send_mcp "$RENAME_ISO_INPUT")
 RENAME_ISO_LINE=$(echo "$RESPONSE" | grep '"id":2630')
 
@@ -2301,9 +2079,7 @@ assert_contains "ISO operator returns isError true" "$RENAME_ISO_LINE" '"isError
 
 # --- Test: rename_predicate read-only memory rejection (F025/US4) ---
 echo "Test: rename_predicate read-only memory rejection"
-RENAME_RO_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2640,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_test_f025\"}}}
+RENAME_RO_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2640,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"ro_test_f025\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2641,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"ro_test_f025\",\"mode\":\"ro\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2642,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_predicate\",\"arguments\":{\"old_functor\":\"task_status\",\"new_functor\":\"feature_status\",\"arity\":2,\"memory\":\"ro_test_f025\"}}}"
 RESPONSE=$(send_mcp "$RENAME_RO_INPUT")
@@ -2314,9 +2090,7 @@ assert_contains "read-only error message mentions read-only" "$RENAME_RO_LINE" "
 
 # --- Test: rename_predicate cross-memory propagation (F025/US5) ---
 echo "Test: rename_predicate cross-memory propagation"
-RENAME_CROSS_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":2650,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(default_f, done)\"}}}
+RENAME_CROSS_INPUT="{\"jsonrpc\":\"2.0\",\"id\":2650,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"task_status(default_f, done)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2651,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"audit_f025\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2652,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"audit_f025\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":2653,\"method\":\"tools/call\",\"params\":{\"name\":\"define_rule\",\"arguments\":{\"head\":\"audit_rule(X)\",\"body\":\"default:task_status(X, done)\",\"memory\":\"audit_f025\"}}}
@@ -2341,9 +2115,7 @@ assert_contains "cross-memory rule body does not resolve across engines (ADR-000
 
 echo "Test: clear_context --memory retracts only from segment (B001)"
 PERSIST_DIR_B001=$(mktemp -d)
-SEGMENT_CLEAR_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":3000,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
+SEGMENT_CLEAR_INPUT="{\"jsonrpc\":\"2.0\",\"id\":3000,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3001,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3002,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(a)\",\"memory\":\"pr_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3003,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"foo(X)\",\"memory\":\"pr_test\"}}}
@@ -2367,9 +2139,7 @@ rm -rf "$PERSIST_DIR_B001"
 
 echo "Test: clear_context --memory asymmetry guard — default fact survives segment clear (B001)"
 PERSIST_DIR_B001_ASYM=$(mktemp -d)
-ASYMMETRY_GUARD_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":3010,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(b)\"}}}
+ASYMMETRY_GUARD_INPUT="{\"jsonrpc\":\"2.0\",\"id\":3010,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(b)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3011,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3012,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"pr_test\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3013,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"foo(a)\",\"memory\":\"pr_test\"}}}
@@ -2442,13 +2212,12 @@ run_separator_transport() {
 
     SEPARATOR_TRANSPORT_EXIT=0
     SEPARATOR_TRANSPORT_RESPONSE=$(
-        cd "$dir" && printf '%s\n' "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null
+        cd "$dir" && mcp_frames "$input" | timeout "$TIMEOUT" "$BINARY" serve 2>/dev/null
     ) || SEPARATOR_TRANSPORT_EXIT=$?
 }
 
-SEPARATOR_WRITE_INIT='{"jsonrpc":"2.0","id":4000,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"separator-restart-test","version":"0.1.0"}}}'
-SEPARATOR_WRITE_INPUT="${SEPARATOR_WRITE_INIT}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+SEPARATOR_WRITE_DISCOVER='{"jsonrpc":"2.0","id":4000,"method":"server/discover","params":{}}'
+SEPARATOR_WRITE_INPUT="${SEPARATOR_WRITE_DISCOVER}
 {\"jsonrpc\":\"2.0\",\"id\":4001,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":4002,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":4003,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"fact\":\"adr(rust_path('crate::module::Type'), url('https://example.invalid/guide:-section'), note('quoted :- marker'))\"}}}
@@ -2462,7 +2231,7 @@ assert_exit_code "separator restart: first MCP server stops cleanly after EOF" \
     "$SEPARATOR_TRANSPORT_EXIT" 0
 for RESPONSE_ID in 4000 4001 4002 4003 4004 4005 4006; do
     if [ "$RESPONSE_ID" -eq 4000 ]; then
-        assert_mcp_response_contract "$SEPARATOR_WRITE_RESPONSE" "$RESPONSE_ID" initialize
+        assert_mcp_response_contract "$SEPARATOR_WRITE_RESPONSE" "$RESPONSE_ID" discover
     else
         assert_mcp_response_contract "$SEPARATOR_WRITE_RESPONSE" "$RESPONSE_ID"
     fi
@@ -2484,9 +2253,8 @@ MALFORMED_DYNAMIC_COUNT=$(awk '
 assert_equals "separator restart: snapshot has no dynamic indicator derived from argument content" \
     "0" "$MALFORMED_DYNAMIC_COUNT"
 
-SEPARATOR_READ_INIT='{"jsonrpc":"2.0","id":4010,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"separator-restart-test","version":"0.1.0"}}}'
-SEPARATOR_READ_INPUT="${SEPARATOR_READ_INIT}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
+SEPARATOR_READ_DISCOVER='{"jsonrpc":"2.0","id":4010,"method":"server/discover","params":{}}'
+SEPARATOR_READ_INPUT="${SEPARATOR_READ_DISCOVER}
 {\"jsonrpc\":\"2.0\",\"id\":4011,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"${SEPARATOR_MEMORY}\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":4012,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"adr(A, B, C)\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":4013,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"memory\":\"${SEPARATOR_MEMORY}\",\"goal\":\"impl_note(A, B, C)\"}}}
@@ -2500,7 +2268,7 @@ assert_exit_code "separator restart: second MCP server stops cleanly after EOF" 
     "$SEPARATOR_TRANSPORT_EXIT" 0
 for RESPONSE_ID in 4010 4011 4012 4013 4014 4015 4016; do
     if [ "$RESPONSE_ID" -eq 4010 ]; then
-        assert_mcp_response_contract "$SEPARATOR_READ_RESPONSE" "$RESPONSE_ID" initialize
+        assert_mcp_response_contract "$SEPARATOR_READ_RESPONSE" "$RESPONSE_ID" discover
     else
         assert_mcp_response_contract "$SEPARATOR_READ_RESPONSE" "$RESPONSE_ID"
     fi
@@ -2530,9 +2298,7 @@ trap - EXIT
 
 # --- Public memory-selection runtime contract ---
 echo "Test: MCP named-memory selection preserves default isolation and prefix routing"
-MEMORY_SELECTION_INPUT="${INIT_REQ}
-{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}
-{\"jsonrpc\":\"2.0\",\"id\":3100,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"contract_memory\"}}}
+MEMORY_SELECTION_INPUT="{\"jsonrpc\":\"2.0\",\"id\":3100,\"method\":\"tools/call\",\"params\":{\"name\":\"create_memory\",\"arguments\":{\"name\":\"contract_memory\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3101,\"method\":\"tools/call\",\"params\":{\"name\":\"mount_memory\",\"arguments\":{\"name\":\"contract_memory\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3102,\"method\":\"tools/call\",\"params\":{\"name\":\"remember_fact\",\"arguments\":{\"fact\":\"contract_only(mcp_cli_agreement)\",\"memory\":\"contract_memory\"}}}
 {\"jsonrpc\":\"2.0\",\"id\":3103,\"method\":\"tools/call\",\"params\":{\"name\":\"query_logic\",\"arguments\":{\"goal\":\"contract_only(X)\",\"memory\":\"contract_memory\"}}}

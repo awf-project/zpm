@@ -68,7 +68,7 @@ fn openLockFile(dir: std.Io.Dir) !std.Io.File {
 fn lockEx(fd: std.posix.fd_t) !void {
     while (true) {
         if (std.c.flock(fd, std.posix.LOCK.EX) == 0) return;
-        if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue; // spurious; retry
+        if (std.c._errno().* == @backingInt(std.posix.E.INTR)) continue; // spurious; retry
         return error.FlockFailed;
     }
 }
@@ -387,7 +387,7 @@ test "append handles clause larger than 4KB (no hardcoded limit)" {
     const big = try std.testing.allocator.alloc(u8, 8192);
     defer std.testing.allocator.free(big);
     @memset(big, 'a');
-    const clause = try std.fmt.allocPrint(std.testing.allocator, "data('{s}')", .{big});
+    const clause = try std.testing.allocator.print("data('{s}')", .{big});
     defer std.testing.allocator.free(clause);
 
     try wal.append(.{ .timestamp = 1, .op = .assert, .clause = clause });
@@ -511,7 +511,7 @@ test "replay handles journal larger than 64KB (no hardcoded limit)" {
 
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
-        const clause = try std.fmt.allocPrint(std.testing.allocator, "fact({d})", .{i});
+        const clause = try std.testing.allocator.print("fact({d})", .{i});
         defer std.testing.allocator.free(clause);
         try wal.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = clause });
     }
@@ -578,12 +578,12 @@ test "concurrent writers do not clobber: every line is valid JSON and count matc
     const big = try std.testing.allocator.alloc(u8, 2048);
     defer std.testing.allocator.free(big);
     @memset(big, 'x');
-    const big_clause = try std.fmt.allocPrint(std.testing.allocator, "data_b('{s}')", .{big});
+    const big_clause = try std.testing.allocator.print("data_b('{s}')", .{big});
     defer std.testing.allocator.free(big_clause);
 
     var i: usize = 0;
     while (i < rounds) : (i += 1) {
-        const clause_a = try std.fmt.allocPrint(std.testing.allocator, "fact_a({d})", .{i});
+        const clause_a = try std.testing.allocator.print("fact_a({d})", .{i});
         defer std.testing.allocator.free(clause_a);
         try wal_a.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = clause_a });
         try wal_b.append(.{ .timestamp = @intCast(i), .op = .assert, .clause = big_clause });

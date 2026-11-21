@@ -65,17 +65,17 @@ fn resolveGlobalPath(io: std.Io, allocator: std.mem.Allocator, name: []const u8)
         }
         if (std.c.getenv("HOME")) |home_raw| {
             const home = std.mem.span(home_raw);
-            break :blk try std.fmt.allocPrint(allocator, "{s}/.local/share", .{home});
+            break :blk try allocator.print("{s}/.local/share", .{home});
         }
         return error.HomeNotSet;
     };
     defer allocator.free(base);
 
-    const kb_dir = try std.fmt.allocPrint(allocator, "{s}/zpm/kb", .{base});
+    const kb_dir = try allocator.print("{s}/zpm/kb", .{base});
     defer allocator.free(kb_dir);
     try ensureDirAbsolute(io, kb_dir);
 
-    return std.fmt.allocPrint(allocator, "{s}/zpm/kb/{s}", .{ base, name });
+    return allocator.print("{s}/zpm/kb/{s}", .{ base, name });
 }
 
 fn writeManifestEntry(
@@ -86,7 +86,7 @@ fn writeManifestEntry(
     scope: MemoryScope,
 ) mcp.tools.ToolError!void {
     const path = switch (scope) {
-        .project => try std.fmt.allocPrint(allocator, ".zpm/kb/{s}", .{name}),
+        .project => try allocator.print(".zpm/kb/{s}", .{name}),
         .global => try allocator.dupe(u8, disk_path),
     };
     defer allocator.free(path);
@@ -107,7 +107,7 @@ fn writeManifestEntry(
 pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?std.json.Value) mcp.tools.ToolError!mcp.tools.ToolResult {
     const name = mcp.tools.getString(args, "name") orelse return mcp.tools.ToolError.InvalidArguments;
     if (!isValidAtomName(name)) {
-        const msg = std.fmt.allocPrint(allocator, "Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     }
     const reg = context.getMemoryRegistryAs(MemoryRegistry) orelse return mcp.tools.ToolError.ExecutionFailed;
@@ -115,20 +115,20 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
 
     const scope_str = mcp.tools.getString(args, "scope") orelse "project";
     const scope = parseScope(scope_str) orelse {
-        const msg = std.fmt.allocPrint(allocator, "Invalid scope: {s}", .{scope_str}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Invalid scope: {s}", .{scope_str}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     const disk_path = switch (scope) {
-        .project => std.fmt.allocPrint(allocator, "{s}/{s}", .{ kb, name }) catch return mcp.tools.ToolError.OutOfMemory,
+        .project => allocator.print("{s}/{s}", .{ kb, name }) catch return mcp.tools.ToolError.OutOfMemory,
         .global => resolveGlobalPath(io, allocator, name) catch return mcp.tools.ToolError.ExecutionFailed,
     };
     defer allocator.free(disk_path);
 
     reg.create(io, name, disk_path) catch |err| {
         const msg = switch (err) {
-            error.AlreadyExists => std.fmt.allocPrint(allocator, "Memory already exists: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
-            error.InvalidName => std.fmt.allocPrint(allocator, "Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
+            error.AlreadyExists => allocator.print("Memory already exists: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
+            error.InvalidName => allocator.print("Invalid memory name: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory,
             else => return mcp.tools.ToolError.ExecutionFailed,
         };
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
@@ -141,7 +141,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
         };
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Memory created: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Memory created: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -246,9 +246,9 @@ test "create_memory handler with scope=project adds entry to manifest with relat
     const project_root = path_buf[0..project_root_len];
 
     // kb_dir is the absolute path; project root is its dirname parent (.zpm is inside it)
-    const kb_dir = try std.fmt.allocPrint(allocator, "{s}/.zpm/kb", .{project_root});
+    const kb_dir = try allocator.print("{s}/.zpm/kb", .{project_root});
 
-    const manifest_path = try std.fmt.allocPrint(allocator, "{s}/mounts.json", .{project_root});
+    const manifest_path = try allocator.print("{s}/mounts.json", .{project_root});
     var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, manifest_path);
     defer manifest.deinit();
 
@@ -288,7 +288,7 @@ test "create_memory handler with scope=global resolves path under XDG_DATA_HOME"
     const dir_path = path_buf[0..dir_path_len];
 
     // Isolate XDG_DATA_HOME to the tmp dir so the test is hermetic
-    const xdg_c = try allocator.dupeZ(u8, dir_path);
+    const xdg_c = try allocator.dupeSentinel(u8, dir_path, 0);
     _ = setenv("XDG_DATA_HOME", xdg_c.ptr, 1);
     defer _ = unsetenv("XDG_DATA_HOME");
 
@@ -331,11 +331,11 @@ test "create_memory handler with scope=global falls back to HOME when XDG_DATA_H
     } else null;
 
     _ = unsetenv("XDG_DATA_HOME");
-    const home_c = try allocator.dupeZ(u8, dir_path);
+    const home_c = try allocator.dupeSentinel(u8, dir_path, 0);
     _ = setenv("HOME", home_c.ptr, 1);
     defer {
         if (saved_home) |h| {
-            const restore = allocator.dupeZ(u8, h) catch null;
+            const restore = allocator.dupeSentinel(u8, h, 0) catch null;
             if (restore) |r| _ = setenv("HOME", r.ptr, 1);
         } else {
             _ = unsetenv("HOME");
@@ -413,7 +413,7 @@ test "create_memory handler returns ExecutionFailed when manifest write fails" {
     defer context.clearKbDir();
 
     // Point manifest at a non-existent subdirectory so manifest.write() returns WriteError
-    const bad_manifest_path = try std.fmt.allocPrint(allocator, "{s}/no_such_subdir/mounts.json", .{dir_path});
+    const bad_manifest_path = try allocator.print("{s}/no_such_subdir/mounts.json", .{dir_path});
     var manifest = try MountManifest.init(std.testing.io, std.testing.allocator, bad_manifest_path);
     defer manifest.deinit();
 

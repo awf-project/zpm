@@ -125,7 +125,7 @@ pub const HttpReleaseClient = struct {
         const self: *HttpReleaseClient = @ptrCast(@alignCast(ptr));
         const allocator = self.allocator;
 
-        const url = try std.fmt.allocPrint(allocator, "{s}/releases", .{self.api_base});
+        const url = try allocator.print("{s}/releases", .{self.api_base});
         defer allocator.free(url);
 
         // Fresh std.http.Client per request — reusing one across requests that
@@ -892,8 +892,8 @@ test "printAlreadyUpToDate writes tag" {
 }
 
 test "errorMessage covers every UpgradeError variant" {
-    inline for (@typeInfo(UpgradeError).error_set orelse @compileError("UpgradeError must be non-empty")) |variant| {
-        const err = @field(UpgradeError, variant.name);
+    inline for (@typeInfo(UpgradeError).error_set.error_names.?) |name| {
+        const err = @field(UpgradeError, name);
         const msg = errorMessage(err);
         try std.testing.expect(msg.len > 0);
     }

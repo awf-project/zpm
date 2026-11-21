@@ -62,7 +62,9 @@ On startup, the server:
 
 If no `.zpm/` directory is found in the directory ancestry, the server exits with an error suggesting `zpm init`. If `.zpm/` exists but is not writable, the server enters degraded mode (in-memory only).
 
-The server implements the full MCP protocol, including:
+The server exposes tools over MCP `2026-07-28`.
+
+- Server discovery (`server/discover`)
 - Tool discovery (`tools/list`)
 - Tool execution (`tools/call`)
 - Request/response routing
@@ -71,11 +73,7 @@ This is the primary command for integrating zpm with MCP-compatible clients (Cla
 
 **Example:**
 ```bash
-# Start the server
 zig-out/bin/zpm serve
-
-# In another terminal, send MCP requests
-echo '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {...}}' | socat - EXEC:'zig-out/bin/zpm serve'
 ```
 
 ### `upgrade`
@@ -354,8 +352,8 @@ Per-client configuration examples (Claude Code, Claude Desktop, Cursor, Zed, Gem
 Test that the server starts and responds:
 
 ```bash
-# Send initialize and immediate EOF
-echo '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test"}}}' | zig-out/bin/zpm serve
+# Discover the server and close stdin
+echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"example","version":"1.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}' | zig-out/bin/zpm serve
 ```
 
 ### Check Installation

@@ -700,7 +700,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rename_predicate_unit_tests.step);
 }
 
-fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Step.Compile {
     // Trealla's C code has undefined-behavior patterns that trigger Zig
     // UBSan-on-Debug aborts when fed malformed Prolog (e.g. ")(invalid").
     // Real MCP clients can send arbitrary strings, so aborting the process
@@ -720,7 +720,8 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     mod.addIncludePath(b.path("ffi/trealla/src"));
     mod.addIncludePath(b.path("ffi"));
 
-    const lib_path = b.fmt("-DDEFAULT_LIBRARY_PATH=\"{s}\"", .{b.path("ffi/trealla/library").getPath(b)});
+    const library_dir = b.root.joinString(b.allocator, "ffi/trealla/library") catch @panic("OOM");
+    const lib_path = b.fmt("-DDEFAULT_LIBRARY_PATH=\"{s}\"", .{library_dir});
     const flags: []const []const u8 = &.{
         "-DUSE_OPENSSL=0",
         "-DUSE_FFI=0",
@@ -733,7 +734,7 @@ fn buildTrealla(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     // Build bin2c as a native build tool to embed .pl libraries as C arrays
     const bin2c_mod = b.createModule(.{
         .target = b.graph.host,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
     });
     const bin2c = b.addExecutable(.{
         .name = "bin2c",

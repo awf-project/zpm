@@ -41,14 +41,14 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     engine.retractFact(fact) catch {
-        const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("No matching clause for: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
         pm.journalMutation(JournalEntry{ .timestamp = wal.nowSeconds(), .op = .retract, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
-    const msg = std.fmt.allocPrint(allocator, "Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Retracted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

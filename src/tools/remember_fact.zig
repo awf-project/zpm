@@ -42,18 +42,18 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     engine.assertFact(fact) catch {
-        const msg = std.fmt.allocPrint(allocator, "Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Failed to assert: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
     if (target_pm) |pm| {
         pm.journalMutation(JournalEntry{ .timestamp = nowSeconds(), .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
-    if (std.fmt.allocPrint(allocator, "zpm_source({s}, interactive).", .{fact}) catch null) |sc| {
+    if (allocator.print("zpm_source({s}, interactive).", .{fact}) catch null) |sc| {
         defer allocator.free(sc);
         engine.assertFact(sc) catch {};
     }
-    const msg = std.fmt.allocPrint(allocator, "Asserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Asserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -245,7 +245,7 @@ test "remember_fact.handler with named memory asserts qualified fact and journal
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const feature_path = try std.fmt.allocPrint(allocator, "{s}/feature_auth", .{dir_path});
+    const feature_path = try allocator.print("{s}/feature_auth", .{dir_path});
     defer allocator.free(feature_path);
     try std.Io.Dir.cwd().createDir(std.testing.io, feature_path, .default_dir);
 
@@ -338,7 +338,7 @@ test "remember_fact.handler with read-only memory returns error with read-only m
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const ro_path = try std.fmt.allocPrint(allocator, "{s}/ro_mem", .{dir_path});
+    const ro_path = try allocator.print("{s}/ro_mem", .{dir_path});
     defer allocator.free(ro_path);
     try std.Io.Dir.cwd().createDir(std.testing.io, ro_path, .default_dir);
 

@@ -46,7 +46,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
     engine.retractFact(old_fact) catch {
-        const msg = std.fmt.allocPrint(allocator, "No matching clause for: {s}", .{old_fact}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("No matching clause for: {s}", .{old_fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
@@ -58,7 +58,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = new_fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Updated: {s}", .{new_fact}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Updated: {s}", .{new_fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

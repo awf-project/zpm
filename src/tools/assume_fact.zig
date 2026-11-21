@@ -52,7 +52,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     const engine = mem.engine orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const justification = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
+    const justification = allocator.print("tms_justification({s}, {s})", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(justification);
 
     // Check idempotency first so the journal mirrors the engine ops —
@@ -65,7 +65,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     };
 
     engine.assertFact(fact) catch {
-        const msg = std.fmt.allocPrint(allocator, "assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("assume_fact: failed to assert fact: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
@@ -81,7 +81,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         }
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Assumed: {s} under assumption '{s}'", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Assumed: {s} under assumption '{s}'", .{ fact, assumption }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -268,7 +268,7 @@ test "assume_fact.handler with named memory asserts qualified fact and journals 
     context.setEngine(engine);
     defer context.clearEngine();
 
-    const test_seg_path = try std.fmt.allocPrint(allocator, "{s}/test_seg", .{dir_path});
+    const test_seg_path = try allocator.print("{s}/test_seg", .{dir_path});
     defer allocator.free(test_seg_path);
     try std.Io.Dir.cwd().createDir(std.testing.io, test_seg_path, .default_dir);
 

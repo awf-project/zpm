@@ -37,7 +37,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     target_pm.restoreSnapshot(engine, name) catch return mcp.tools.ToolError.ExecutionFailed;
 
-    const msg = std.fmt.allocPrint(allocator, "Snapshot '{s}' restored successfully.", .{name}) catch
+    const msg = allocator.print("Snapshot '{s}' restored successfully.", .{name}) catch
         return mcp.tools.ToolError.ExecutionFailed;
     defer allocator.free(msg);
 

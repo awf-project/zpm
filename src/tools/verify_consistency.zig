@@ -40,7 +40,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         if (!isValidAtomName(s)) {
             return mcp.tools.errorResult(allocator, "Invalid scope name") catch return mcp.tools.ToolError.OutOfMemory;
         }
-        break :blk std.fmt.allocPrint(allocator, "integrity_violation_{s}(X)", .{s}) catch return mcp.tools.ToolError.OutOfMemory;
+        break :blk allocator.print("integrity_violation_{s}(X)", .{s}) catch return mcp.tools.ToolError.OutOfMemory;
     } else allocator.dupe(u8, "integrity_violation(X)") catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
@@ -68,8 +68,8 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 fn termToStr(allocator: std.mem.Allocator, term: engine_mod.Term) ![]const u8 {
     return switch (term) {
         .atom => |s| allocator.dupe(u8, s),
-        .integer => |i| std.fmt.allocPrint(allocator, "{d}", .{i}),
-        .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
+        .integer => |i| allocator.print("{d}", .{i}),
+        .float => |f| allocator.print("{d}", .{f}),
         .variable => |s| allocator.dupe(u8, s),
         .list => |items| blk: {
             var aw: std.Io.Writer.Allocating = .init(allocator);

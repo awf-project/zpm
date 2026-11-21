@@ -30,7 +30,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const query_str = std.fmt.allocPrint(allocator, "tms_justification({s}, A)", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+    const query_str = allocator.print("tms_justification({s}, A)", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(query_str);
 
     var qr = engine.query(query_str) catch {
@@ -54,7 +54,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     defer if (owned_source) |s| allocator.free(s);
 
     const source: []const u8 = blk: {
-        const source_query = std.fmt.allocPrint(allocator, "zpm_source({s}, S)", .{fact}) catch break :blk "unknown";
+        const source_query = allocator.print("zpm_source({s}, S)", .{fact}) catch break :blk "unknown";
         defer allocator.free(source_query);
         var sqr = engine.query(source_query) catch break :blk "unknown";
         defer sqr.deinit();

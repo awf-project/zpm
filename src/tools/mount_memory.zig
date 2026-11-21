@@ -45,12 +45,12 @@ fn resolveGlobalPath(allocator: std.mem.Allocator, name: []const u8) ![]const u8
         }
         if (std.c.getenv("HOME")) |home_raw| {
             const home = std.mem.span(home_raw);
-            break :blk try std.fmt.allocPrint(allocator, "{s}/.local/share", .{home});
+            break :blk try allocator.print("{s}/.local/share", .{home});
         }
         return error.HomeNotSet;
     };
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/zpm/kb/{s}", .{ base, name });
+    return allocator.print("{s}/zpm/kb/{s}", .{ base, name });
 }
 
 fn writeManifestEntry(
@@ -62,7 +62,7 @@ fn writeManifestEntry(
     mode: MemoryMode,
 ) mcp.tools.ToolError!void {
     const path = switch (scope) {
-        .project => try std.fmt.allocPrint(allocator, ".zpm/kb/{s}", .{name}),
+        .project => try allocator.print(".zpm/kb/{s}", .{name}),
         .global => try allocator.dupe(u8, disk_path),
     };
     defer allocator.free(path);
@@ -94,7 +94,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
 
     const scope_str = mcp.tools.getString(args, "scope") orelse "project";
     const scope = parseScope(scope_str) orelse {
-        const msg = std.fmt.allocPrint(allocator, "Invalid scope: {s}", .{scope_str}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Invalid scope: {s}", .{scope_str}) catch return mcp.tools.ToolError.OutOfMemory;
         return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
 
@@ -103,7 +103,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
     const disk_path = switch (scope) {
         .project => blk: {
             const kb = context.getKbDir() orelse return mcp.tools.ToolError.ExecutionFailed;
-            break :blk std.fmt.allocPrint(allocator, "{s}/{s}", .{ kb, name }) catch return mcp.tools.ToolError.OutOfMemory;
+            break :blk allocator.print("{s}/{s}", .{ kb, name }) catch return mcp.tools.ToolError.OutOfMemory;
         },
         .global => resolveGlobalPath(allocator, name) catch return mcp.tools.ToolError.ExecutionFailed,
     };
@@ -111,7 +111,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
 
     {
         var check_dir = std.Io.Dir.openDirAbsolute(io, disk_path, .{}) catch {
-            const msg = std.fmt.allocPrint(allocator, "Memory directory not found: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+            const msg = allocator.print("Memory directory not found: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
             return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
         };
         check_dir.close(io);
@@ -122,7 +122,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
         reg.mount(name, disk_path, scope, mode, io) catch |err| switch (err) {
             error.AlreadyMounted => break :blk true,
             else => {
-                const msg = std.fmt.allocPrint(allocator, "Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
+                const msg = allocator.print("Failed to mount memory: {s}", .{name}) catch return mcp.tools.ToolError.OutOfMemory;
                 return mcp.tools.errorResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
             },
         };
@@ -146,7 +146,7 @@ pub fn handler(_: ?*anyopaque, io: std.Io, allocator: std.mem.Allocator, args: ?
         break :blk @tagName(entry.mode);
     } else mode_str;
 
-    const msg = std.fmt.allocPrint(allocator, "Memory mounted: {s} ({s})", .{ name, effective_mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Memory mounted: {s} ({s})", .{ name, effective_mode_str }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }
@@ -235,7 +235,7 @@ test "mount_memory handler is idempotent for already-mounted memory" {
     defer kf.close(std.testing.io);
     try kf.writeStreamingAll(std.testing.io, ":- module(dup_mem, []).\n");
 
-    try registry.mount("dup_mem", try std.fmt.allocPrint(allocator, "{s}/dup_mem", .{dir_path}), .project, .rw, std.testing.io);
+    try registry.mount("dup_mem", try allocator.print("{s}/dup_mem", .{dir_path}), .project, .rw, std.testing.io);
 
     var obj: std.json.ObjectMap = .{};
     try obj.put(allocator, "name", .{ .string = "dup_mem" });
@@ -527,7 +527,7 @@ test "mount_memory handler with scope=global resolves path under XDG_DATA_HOME a
     defer glob_kf.close(std.testing.io);
     try glob_kf.writeStreamingAll(std.testing.io, ":- module(glob_mem, []).\n");
 
-    const xdg_c = try allocator.dupeZ(u8, dir_path);
+    const xdg_c = try allocator.dupeSentinel(u8, dir_path, 0);
     _ = setenv("XDG_DATA_HOME", xdg_c.ptr, 1);
     defer _ = unsetenv("XDG_DATA_HOME");
 
@@ -578,7 +578,7 @@ test "mount_memory handler with scope=global returns error when global directory
     const dir_path = path_buf[0..dir_path_len];
 
     // Synthetic XDG_DATA_HOME with NO zpm/kb/<name> created — accessAbsolute should fail
-    const xdg_c = try allocator.dupeZ(u8, dir_path);
+    const xdg_c = try allocator.dupeSentinel(u8, dir_path, 0);
     _ = setenv("XDG_DATA_HOME", xdg_c.ptr, 1);
     defer _ = unsetenv("XDG_DATA_HOME");
 

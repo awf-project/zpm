@@ -7,13 +7,13 @@ description: "Explore the ZPM MCP protocol and tool contracts for Prolog queries
 ## Protocol
 
 - **Transport**: STDIO (stdin/stdout)
-- **Protocol version**: `2025-11-25`
+- **Protocol version**: `2026-07-28`
 - **Server name**: `zpm`
-- **Server version**: `0.4.0`
+- **Server version**: reported by `server/discover`
 
 ## Server Capabilities
 
-After initialization, the server advertises:
+The `server/discover` result advertises these capabilities.
 
 | Capability | Supported | Details |
 |------------|-----------|---------|
@@ -23,19 +23,35 @@ After initialization, the server advertises:
 
 ## Lifecycle
 
-1. Client sends `initialize` request with protocol version and client info
-2. Server responds with `InitializeResult` containing server info and capabilities
-3. Client sends `notifications/initialized`
-4. Server enters active state and accepts `tools/list` and `tools/call` requests
-5. On STDIO EOF, server exits with code 0
+Send one JSON-RPC request per line on STDIO. Each request includes `params._meta` with the protocol version, client identity, and client capabilities.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "server/discover",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": {
+        "name": "example",
+        "version": "1.0"
+      },
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+The server returns `result.supportedVersions`, `result.capabilities`, and its identity under `result._meta["io.modelcontextprotocol/serverInfo"]`. Requests are independent. Closing stdin ends the server process.
 
 ## Tool Discovery
 
-Clients discover available tools by sending a `tools/list` request after the initialize handshake:
-
 ```json
-{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"example","version":"1.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}
 ```
+
+The tool examples below omit the common request metadata and show the tool-specific fields of each result. Include the same `params._meta` object when sending a `tools/call` request. A completed call carries `result.resultType` equal to `"complete"`.
 
 ## Memory Parameter
 

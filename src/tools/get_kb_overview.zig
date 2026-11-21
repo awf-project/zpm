@@ -364,7 +364,7 @@ fn formatIso8601(allocator: std.mem.Allocator, mtime_ns: i128) ![]u8 {
     const year_day = ep_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_secs = es.getDaySeconds();
-    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+    return allocator.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         year_day.year,
         month_day.month.numeric(),
         month_day.day_index + 1,
@@ -647,7 +647,7 @@ test "overview samples quoted functors without executing embedded goals" {
         try std.testing.expectEqual(@as(i64, 1), predicate.get("count").?.integer);
         const samples = predicate.get("samples").?.array.items;
         try std.testing.expectEqual(@as(usize, 1), samples.len);
-        const expected_suffix = try std.fmt.allocPrint(allocator, "({s})", .{case.value});
+        const expected_suffix = try allocator.print("({s})", .{case.value});
         try std.testing.expect(std.mem.endsWith(u8, samples[0].string, expected_suffix));
     }
 }
@@ -1281,31 +1281,29 @@ test "handler result length is under 64 KiB when budgeting is applied" {
     // sample = 24 + 1 + 8*48 + 7 + 1 = 417 chars.
     // Entry at size=2: 80+24+417*2 = 938 chars. 80 × 938 = 75,040 > 64 KiB ✓
     // At size=1: 80 × (417 + 80) = 80 × 497 = 39,760 < 64 KiB ✓ → stops here.
-    const arg_a = "a" ** 48;
-    const arg_b = "b" ** 48;
-    const arg_c = "c" ** 48;
-    const arg_d = "d" ** 48;
-    const arg_e = "e" ** 48;
-    const arg_f = "f" ** 48;
-    const arg_g = "g" ** 48;
-    const arg_h = "h" ** 48;
-    const arg_i = "i" ** 48;
-    const arg_j = "j" ** 48;
-    const arg_k = "k" ** 48;
-    const arg_l = "l" ** 48;
-    const arg_m = "m" ** 48;
-    const arg_n = "n" ** 48;
-    const arg_o = "o" ** 48;
-    const arg_p = "p" ** 48;
+    const arg_a: [48]u8 = @splat('a');
+    const arg_b: [48]u8 = @splat('b');
+    const arg_c: [48]u8 = @splat('c');
+    const arg_d: [48]u8 = @splat('d');
+    const arg_e: [48]u8 = @splat('e');
+    const arg_f: [48]u8 = @splat('f');
+    const arg_g: [48]u8 = @splat('g');
+    const arg_h: [48]u8 = @splat('h');
+    const arg_i: [48]u8 = @splat('i');
+    const arg_j: [48]u8 = @splat('j');
+    const arg_k: [48]u8 = @splat('k');
+    const arg_l: [48]u8 = @splat('l');
+    const arg_m: [48]u8 = @splat('m');
+    const arg_n: [48]u8 = @splat('n');
+    const arg_o: [48]u8 = @splat('o');
+    const arg_p: [48]u8 = @splat('p');
     var i: usize = 0;
     while (i < 80) : (i += 1) {
-        const f1 = try std.fmt.allocPrint(
-            allocator,
+        const f1 = try allocator.print(
             "kboverview_test_pred_{d}({s},{s},{s},{s},{s},{s},{s},{s})",
             .{ i, arg_a, arg_b, arg_c, arg_d, arg_e, arg_f, arg_g, arg_h },
         );
-        const f2 = try std.fmt.allocPrint(
-            allocator,
+        const f2 = try allocator.print(
             "kboverview_test_pred_{d}({s},{s},{s},{s},{s},{s},{s},{s})",
             .{ i, arg_i, arg_j, arg_k, arg_l, arg_m, arg_n, arg_o, arg_p },
         );

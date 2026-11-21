@@ -42,7 +42,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
     const engine = context.getEngineForMemory(context.resolveMemoryName(args)) orelse return mcp.tools.ToolError.ExecutionFailed;
 
-    const goal = std.fmt.allocPrint(allocator, "path(X, {s})", .{start_node}) catch return mcp.tools.ToolError.OutOfMemory;
+    const goal = allocator.print("path(X, {s})", .{start_node}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(goal);
 
     var query_result = engine.query(goal) catch {

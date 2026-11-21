@@ -147,7 +147,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     const effective_arity: ?i64 = blk: {
         if (arity_arg != null) break :blk arity_arg;
 
-        const raw_q = std.fmt.allocPrint(allocator, "current_predicate({s}/A)", .{old_functor}) catch
+        const raw_q = allocator.print("current_predicate({s}/A)", .{old_functor}) catch
             return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(raw_q);
 
@@ -286,13 +286,13 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
             defer allocator.free(new_head);
 
             const retract_str = if (c.is_rule)
-                std.fmt.allocPrint(allocator, "{s} :- {s}", .{ c.head_str, c.body_str }) catch continue
+                allocator.print("{s} :- {s}", .{ c.head_str, c.body_str }) catch continue
             else
                 allocator.dupe(u8, c.head_str) catch continue;
             defer allocator.free(retract_str);
 
             const assert_str = if (c.is_rule)
-                std.fmt.allocPrint(allocator, "{s} :- {s}", .{ new_head, c.body_str }) catch continue
+                allocator.print("{s} :- {s}", .{ new_head, c.body_str }) catch continue
             else
                 allocator.dupe(u8, new_head) catch continue;
             defer allocator.free(assert_str);
@@ -317,13 +317,13 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
 
         // Rename TMS justifications.
         for (justifs.items) |j| {
-            const old_tms = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ j.fact_str, j.assumption_str }) catch continue;
+            const old_tms = allocator.print("tms_justification({s}, {s})", .{ j.fact_str, j.assumption_str }) catch continue;
             defer allocator.free(old_tms);
 
             const new_fact_str = replaceFactFunctor(allocator, j.fact_str, old_functor, new_functor) catch continue;
             defer allocator.free(new_fact_str);
 
-            const new_tms = std.fmt.allocPrint(allocator, "tms_justification({s}, {s})", .{ new_fact_str, j.assumption_str }) catch continue;
+            const new_tms = allocator.print("tms_justification({s}, {s})", .{ new_fact_str, j.assumption_str }) catch continue;
             defer allocator.free(new_tms);
 
             engine.retractFact(old_tms) catch {};
@@ -350,9 +350,9 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
                 const new_body = rewriteBody(allocator, r.body, old_functor, new_functor) catch continue;
                 defer allocator.free(new_body);
 
-                const bare_retract = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ r.head, r.body }) catch continue;
+                const bare_retract = allocator.print("{s} :- {s}", .{ r.head, r.body }) catch continue;
                 defer allocator.free(bare_retract);
-                const bare_assert = std.fmt.allocPrint(allocator, "{s} :- {s}", .{ r.head, new_body }) catch continue;
+                const bare_assert = allocator.print("{s} :- {s}", .{ r.head, new_body }) catch continue;
                 defer allocator.free(bare_assert);
 
                 ref_engine.retractFact(bare_retract) catch {};
@@ -639,7 +639,7 @@ fn buildConcreteHead(
     var i: i64 = 0;
     while (i < arity) : (i += 1) {
         if (i > 0) try w.writeByte(',');
-        const key = try std.fmt.allocPrint(allocator, "A{d}", .{i});
+        const key = try allocator.print("A{d}", .{i});
         defer allocator.free(key);
         if (bindings.get(key)) |term| {
             const s = try term_utils.termToString(allocator, term);
@@ -744,7 +744,7 @@ fn collectRuleBodyRefs(
 fn replaceFactFunctor(allocator: std.mem.Allocator, fact_str: []const u8, old_fn: []const u8, new_fn: []const u8) ![]u8 {
     if (std.mem.startsWith(u8, fact_str, old_fn)) {
         const rest = fact_str[old_fn.len..];
-        return std.fmt.allocPrint(allocator, "{s}{s}", .{ new_fn, rest });
+        return allocator.print("{s}{s}", .{ new_fn, rest });
     }
     return allocator.dupe(u8, fact_str);
 }

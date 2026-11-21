@@ -77,7 +77,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
     }
 
     var list_qr = engine.query("tms_justification(_,A)") catch {
-        const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': 0 assumption(s) removed", .{pattern}) catch return mcp.tools.ToolError.OutOfMemory;
+        const msg = allocator.print("Retracted pattern '{s}': 0 assumption(s) removed", .{pattern}) catch return mcp.tools.ToolError.OutOfMemory;
         defer allocator.free(msg);
         return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
     };
@@ -110,7 +110,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         retractAssumptionJournaled(allocator, engine, target_pm, assumption, memory_name) catch {};
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Retracted pattern '{s}': {d} assumption(s) removed", .{ pattern, matching.items.len }) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

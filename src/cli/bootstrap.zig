@@ -85,7 +85,7 @@ fn migrateToManifest(allocator: std.mem.Allocator, paths: project.ProjectPaths, 
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
         if (context.isDefaultMemory(entry.name)) continue;
-        const rel_path = std.fmt.allocPrint(allocator, ".zpm/kb/{s}", .{entry.name}) catch continue;
+        const rel_path = allocator.print(".zpm/kb/{s}", .{entry.name}) catch continue;
         defer allocator.free(rel_path);
         manifest.addEntry(.{
             .name = entry.name,
@@ -327,7 +327,7 @@ test "initBootstrap returns NotFound when no .zpm directory exists" {
     const pid = std.c.getpid();
     const counter = notfound_counter.fetchAdd(1, .monotonic);
     var path_buf: [256]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/zpm-test-bootstrap-notfound-{d}-{d}", .{ pid, counter });
+    const tmp_path = try std.mem.printSentinel(&path_buf, "/tmp/zpm-test-bootstrap-notfound-{d}-{d}", .{ pid, counter }, 0);
     try std.Io.Dir.cwd().createDir(std.testing.io, tmp_path, .default_dir);
     defer std.Io.Dir.deleteDirAbsolute(std.testing.io, tmp_path) catch {};
 
@@ -366,7 +366,7 @@ test "initBootstrap creates .zpm/kb/default directory if missing" {
     var ctx = try initBootstrap(allocator, std.testing.io);
     defer ctx.deinit();
 
-    const default_dir = try std.fmt.allocPrint(allocator, "{s}/default", .{ctx.paths.kb_dir});
+    const default_dir = try allocator.print("{s}/default", .{ctx.paths.kb_dir});
     defer allocator.free(default_dir);
     var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, default_dir, .{});
     defer dir.close(std.testing.io);

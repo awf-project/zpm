@@ -56,7 +56,7 @@ pub fn handler(_: ?*anyopaque, _: std.Io, allocator: std.mem.Allocator, args: ?s
         pm.journalMutation(JournalEntry{ .timestamp = ts, .clause = fact }) catch return mcp.tools.ToolError.ExecutionFailed;
     }
 
-    const msg = std.fmt.allocPrint(allocator, "Upserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
+    const msg = allocator.print("Upserted: {s}", .{fact}) catch return mcp.tools.ToolError.OutOfMemory;
     defer allocator.free(msg);
     return mcp.tools.textResult(allocator, msg) catch return mcp.tools.ToolError.OutOfMemory;
 }

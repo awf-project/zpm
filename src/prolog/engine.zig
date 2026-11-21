@@ -166,10 +166,10 @@ pub const Engine = struct {
     /// Key format: `"{mod}:{F}/{A}"` when module is non-null, else `"{F}/{A}"`.
     fn markDynamic(self: *Engine, module: ?[]const u8, functor: []const u8, arity: usize) EngineError!void {
         const key = if (module) |mod|
-            std.fmt.allocPrint(self.allocator, "{s}:{s}/{d}", .{ mod, functor, arity }) catch
+            self.allocator.print("{s}:{s}/{d}", .{ mod, functor, arity }) catch
                 return EngineError.OutOfMemory
         else
-            std.fmt.allocPrint(self.allocator, "{s}/{d}", .{ functor, arity }) catch
+            self.allocator.print("{s}/{d}", .{ functor, arity }) catch
                 return EngineError.OutOfMemory;
         if (self.declared_dynamic.contains(key)) {
             self.allocator.free(key);
@@ -205,16 +205,14 @@ pub const Engine = struct {
     fn declareDynamic(self: *Engine, module: ?[]const u8, functor: []const u8, arity: usize) EngineError!void {
         if (self.isDynamic(module, functor, arity)) return;
         if (module) |mod| {
-            const source = std.fmt.allocPrint(
-                self.allocator,
+            const source = self.allocator.print(
                 ":- dynamic({s}:{s}/{d}).\n",
                 .{ mod, functor, arity },
             ) catch return EngineError.OutOfMemory;
             defer self.allocator.free(source);
             self.loadString(source) catch {};
         } else {
-            const code = std.fmt.allocPrintSentinel(
-                self.allocator,
+            const code = self.allocator.printSentinel(
                 ":- dynamic({s}/{d}).",
                 .{ functor, arity },
                 0,
@@ -253,8 +251,7 @@ pub const Engine = struct {
             return EngineError.OutOfMemory;
         defer self.allocator.free(escaped);
 
-        const code = std.fmt.allocPrintSentinel(
-            self.allocator,
+        const code = self.allocator.printSentinel(
             "catch((read_term_from_atom('{s}.', ZpmG_, [variable_names(ZpmV_)])," ++
                 " findall(ZpmV_, call(ZpmG_), ZpmS_)," ++
                 " zpm_emit_solutions(ZpmS_))," ++
@@ -295,15 +292,13 @@ pub const Engine = struct {
             self.declareDynamic(fa.module, fa.functor, fa.arity) catch {};
         }
         const code = if (has_rule)
-            std.fmt.allocPrintSentinel(
-                self.allocator,
+            self.allocator.printSentinel(
                 "assertz(({s})).",
                 .{stripped},
                 0,
             ) catch return EngineError.OutOfMemory
         else
-            std.fmt.allocPrintSentinel(
-                self.allocator,
+            self.allocator.printSentinel(
                 "assertz({s}).",
                 .{stripped},
                 0,
@@ -330,15 +325,13 @@ pub const Engine = struct {
             return EngineError.OutOfMemory;
         const has_rule = if (scan) |value| value.rule_separator != null else false;
         const code = if (has_rule)
-            std.fmt.allocPrintSentinel(
-                self.allocator,
+            self.allocator.printSentinel(
                 "(retract(({s})) -> write(zpm_retract_ok) ; write(zpm_retract_no)).",
                 .{stripped},
                 0,
             ) catch return EngineError.OutOfMemory
         else
-            std.fmt.allocPrintSentinel(
-                self.allocator,
+            self.allocator.printSentinel(
                 "(retract({s}) -> write(zpm_retract_ok) ; write(zpm_retract_no)).",
                 .{stripped},
                 0,
@@ -378,16 +371,14 @@ pub const Engine = struct {
                     // mod is a sub-slice of `stripped` starting at index 0;
                     // bare is everything after "mod:".
                     const bare = stripped[mod.len + 1 ..]; // skip "mod:"
-                    break :blk std.fmt.allocPrintSentinel(
-                        self.allocator,
+                    break :blk self.allocator.printSentinel(
                         "{s}:retractall({s}).",
                         .{ mod, bare },
                         0,
                     ) catch return EngineError.OutOfMemory;
                 }
             }
-            break :blk std.fmt.allocPrintSentinel(
-                self.allocator,
+            break :blk self.allocator.printSentinel(
                 "retractall({s}).",
                 .{stripped},
                 0,
@@ -431,7 +422,7 @@ pub const Engine = struct {
             const arity = std.fmt.parseInt(usize, key[slash + 1 ..], 10) catch continue;
 
             if (arity == 0) {
-                const code = std.fmt.allocPrintSentinel(self.allocator, "retractall({s}).", .{functor}, 0) catch return EngineError.OutOfMemory;
+                const code = self.allocator.printSentinel("retractall({s}).", .{functor}, 0) catch return EngineError.OutOfMemory;
                 defer self.allocator.free(code);
                 _ = self.evalSilently(code);
                 continue;
@@ -442,8 +433,7 @@ pub const Engine = struct {
             var i: usize = 1;
             while (i < arity) : (i += 1) args_buf.appendSlice(self.allocator, ",_") catch return EngineError.OutOfMemory;
             const args = args_buf.items;
-            const code = std.fmt.allocPrintSentinel(
-                self.allocator,
+            const code = self.allocator.printSentinel(
                 "retractall({s}({s})).",
                 .{ functor, args },
                 0,
@@ -512,8 +502,7 @@ pub const Engine = struct {
             return EngineError.OutOfMemory;
         defer self.allocator.free(escaped);
 
-        const code = std.fmt.allocPrintSentinel(
-            self.allocator,
+        const code = self.allocator.printSentinel(
             "consult('{s}').",
             .{escaped},
             0,
@@ -549,8 +538,7 @@ pub const Engine = struct {
 
         const pid = std.c.getpid();
         const counter = g_src_counter.fetchAdd(1, .monotonic);
-        const tmppath = std.fmt.allocPrintSentinel(
-            self.allocator,
+        const tmppath = self.allocator.printSentinel(
             "/tmp/zpm_src_{d}_{d}.pl",
             .{ pid, counter },
             0,

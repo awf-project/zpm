@@ -13,11 +13,10 @@ pub const Snapshot = struct {
     path: []const u8,
 
     pub fn generate(allocator: std.mem.Allocator, engine: *Engine, dir_path: []const u8, name: []const u8, io: std.Io) !Snapshot {
-        const snapshot_name = try std.fmt.allocPrint(allocator, "{s}.pl", .{name});
+        const snapshot_name = try allocator.print("{s}.pl", .{name});
         errdefer allocator.free(snapshot_name);
 
-        const tmp_name = try std.fmt.allocPrint(
-            allocator,
+        const tmp_name = try allocator.print(
             "{s}.tmp-{d}-{d}",
             .{ snapshot_name, std.c.getpid(), staging_counter.fetchAdd(1, .monotonic) },
         );
@@ -140,9 +139,9 @@ const TestOutputCapture = struct {
     ended: bool = false,
 
     fn begin(allocator: std.mem.Allocator, dir_path: []const u8) !TestOutputCapture {
-        const out_path = try std.fmt.allocPrintSentinel(allocator, "{s}/captured.stdout", .{dir_path}, 0);
+        const out_path = try allocator.printSentinel("{s}/captured.stdout", .{dir_path}, 0);
         errdefer allocator.free(out_path);
-        const err_path = try std.fmt.allocPrintSentinel(allocator, "{s}/captured.stderr", .{dir_path}, 0);
+        const err_path = try allocator.printSentinel("{s}/captured.stderr", .{dir_path}, 0);
         errdefer allocator.free(err_path);
 
         _ = fflush(null);

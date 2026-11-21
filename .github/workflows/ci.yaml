@@ -3,7 +3,7 @@
 name: CI
 
 env:
-  ZIG_VERSION: "0.16.0"
+  ZIG_VERSION: "0.17.1"
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Check Zig formatting
-        run: zig fmt --check .
+        run: make lint
 
   test:
     runs-on: ubuntu-latest
@@ -52,7 +52,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Build release
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build -Doptimize=safe
 
       - uses: actions/upload-artifact@v7
         with:

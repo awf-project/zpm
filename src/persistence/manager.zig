@@ -135,7 +135,7 @@ pub const PersistenceManager = struct {
         const snap_name = if (std.mem.endsWith(u8, name, ".pl"))
             try self.allocator.dupe(u8, name)
         else
-            try std.fmt.allocPrint(self.allocator, "{s}.pl", .{name});
+            try self.allocator.print("{s}.pl", .{name});
         defer self.allocator.free(snap_name);
         const snap_path = try std.fs.path.join(self.allocator, &.{ self.snapshot_dir_path, snap_name });
         defer self.allocator.free(snap_path);
