@@ -34,7 +34,7 @@ Welcome to zpm documentation. Choose your path:
 
 ## Documentation Site
 
-This documentation is also available online at **https://awf-project.github.io/zpm/**. The site is built with Hugo and the Thulite/Doks theme, and deploys automatically via GitHub Actions on push to `main`.
+This documentation is also available online at **https://docs.awf-project.ai/zpm/**. The site is built with Hugo and the Thulite/Doks theme, and deploys automatically via GitHub Actions on push to `main`.
 
 To preview locally: `cd site && npm ci && npm run dev`
 

@@ -174,7 +174,7 @@ Add zpm to your MCP client configuration. For example, in Claude Code's `setting
 
 ## Documentation
 
-Browse the documentation online at **https://awf-project.ai/zpm/** or in the [`docs/`](docs/) directory:
+Browse the documentation online at **https://docs.awf-project.ai/zpm/** or in the [`docs/`](docs/) directory:
 
 - [Project Brief](docs/project-brief.md) -- Vision and objectives
 - [Getting Started](docs/getting-started/) -- Build, install, and first steps
