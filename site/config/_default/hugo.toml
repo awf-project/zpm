@@ -1,5 +1,5 @@
 title = "ZPM — Zig Prolog MCP Server"
-baseurl = "https://awf-project.github.io/zpm/"
+baseurl = "https://docs.awf-project.ai/zpm/"
 disableAliases = true
 disableHugoGeneratorInject = true
 # disableKinds = ["taxonomy", "term"]

@@ -43,7 +43,7 @@ site/config/production/
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `baseURL` | `https://awf-project.github.io/zpm/` | Public URL where the site is deployed |
+| `baseURL` | `https://docs.awf-project.ai/zpm/` | Public URL where the site is deployed |
 | `title` | `zpm` | Site title (appears in browser tab and header) |
 | `description` | `A Prolog inference engine for MCP` | Site description (used in meta tags and search) |
 | `languageCode` | `en-us` | Primary language code |
@@ -200,7 +200,7 @@ Controls markdown rendering behavior. `unsafe = true` allows embedding HTML in m
 ## production/hugo.toml (Production Overrides)
 
 ```toml
-baseURL = "https://awf-project.github.io/zpm/"
+baseURL = "https://docs.awf-project.ai/zpm/"
 [outputs]
 [outputs.home]
 formats = ["HTML", "RSS", "JSON"]
