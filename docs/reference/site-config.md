@@ -336,6 +336,4 @@ enable = true
 
 ## See Also
 
-- [Local Site Development](../getting-started/site-development.md)
-- [Contributing to Documentation](../user-guide/contributing-docs.md)
 - [Thulite/Doks Theme Documentation](https://getdoks.org/)

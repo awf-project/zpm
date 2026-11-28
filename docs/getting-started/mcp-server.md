@@ -202,5 +202,5 @@ The first response lists `supportedVersions`, `capabilities`, and the server nam
 ## Next Steps
 
 - Read the [MCP Tools Reference](../reference/mcp-tools.md) for detailed tool documentation
-- Check [Project Brief](../project-brief.md) for vision and roadmap
-- Review [Makefile](../../Makefile) for all available build targets
+- Check [Project Brief](https://github.com/awf-project/zpm/blob/main/docs/project-brief.md) for vision and roadmap
+- Review [Makefile](https://github.com/awf-project/zpm/blob/main/Makefile) for all available build targets

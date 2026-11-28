@@ -3,7 +3,7 @@ title: "Prolog Engine Reference"
 ---
 
 
-The Prolog inference engine in zpm uses [Trealla Prolog](https://github.com/infradig/trealla) via a C99 API, exposing a memory-safe Zig API for querying, asserting facts, and loading programs.
+The Prolog inference engine in zpm uses [Trealla Prolog](https://github.com/trealla-prolog/trealla-prolog) via a C99 API, exposing a memory-safe Zig API for querying, asserting facts, and loading programs.
 
 ## Engine Lifecycle
 

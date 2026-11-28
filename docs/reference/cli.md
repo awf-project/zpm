@@ -414,5 +414,3 @@ The following CLI features are deferred and not currently implemented:
 - `--transport` flag — TCP/HTTP server modes (currently STDIO only)
 - `--log-level` flag — Debug logging control
 - Cross-process locking for concurrent CLI + `zpm serve` access to the same `.zpm/`
-
-See the [Roadmap](../README.md#roadmap) for more details.
