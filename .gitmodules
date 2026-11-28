@@ -1,4 +1,4 @@
 [submodule "ffi/trealla"]
 	path = ffi/trealla
 	url = https://github.com/trealla-prolog/trealla
-	branch = v3.15.46
+	branch = v3.15.48
